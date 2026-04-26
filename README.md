@@ -1,6 +1,7 @@
 # Setsuna
 
-[Русский](README_RU.md)
+<details open>
+<summary>🇬🇧 English</summary>
 
 ---
 
@@ -16,12 +17,38 @@ Setsuna is a desktop app for reading Japanese text.
 
 ## Download
 
-➡️ Releases: https://github.com/Lilislv/Setsuna/releases
+➡️ https://github.com/Lilislv/Setsuna/releases
+
+</details>
+
+---
+
+<details>
+<summary>🇷🇺 Русский</summary>
+
+---
+
+Setsuna — десктоп приложение для чтения японского текста.
+
+## Функции
+
+- Лукап слов (как Yomitan)
+- Импорт словарей Yomitan
+- Интеграция с Anki (карточки в 1 клик)
+- Статистика чтения
+- Встроенный браузер
+
+## Скачать
+
+➡️ https://github.com/Lilislv/Setsuna/releases
+
+</details>
+
+---
 
 ## Privacy Policy
 
-Setsuna stores user data locally and optionally in Google Drive AppData.
-
+Setsuna stores user data locally and optionally in Google Drive AppData.  
 No personal data is collected or shared.
 
 ## Terms of Service
