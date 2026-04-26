@@ -1,0 +1,4826 @@
+[
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) в простом стиле.\nПример: 食べる (есть) → 食べた (съел)",
+      "en": "Casual past tense.\nExample: taberu (eat) → tabeta (ate)"
+    },
+    "in": "た",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов на く.\nПример: 歩く (идти) → 歩いた (шел)",
+      "en": "Casual past tense (ku-verbs).\nExample: aruku (walk) → aruita (walked)"
+    },
+    "in": "いた",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов на ぐ.\nПример: 泳ぐ (плавать) → 泳いだ (плавал)",
+      "en": "Casual past tense (gu-verbs).\nExample: oyogu (swim) → oyoida (swam)"
+    },
+    "in": "いだ",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов на す.\nПример: 隠す (прятать) → 隠した (спрятал)",
+      "en": "Casual past tense (su-verbs).\nExample: kakusu (hide) → kakushita (hid)"
+    },
+    "in": "した",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов на う.\nПример: 買う (покупать) → 買った (купил)",
+      "en": "Casual past tense (u-verbs).\nExample: kau (buy) → katta (bought)"
+    },
+    "in": "った",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов на つ.\nПример: 待つ (ждать) → 待った (ждал)",
+      "en": "Casual past tense (tsu-verbs).\nExample: matsu (wait) → matta (waited)"
+    },
+    "in": "った",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов на る.\nПример: 走る (бежать) → 走った (побежал)",
+      "en": "Casual past tense (ru-verbs).\nExample: hashiru (run) → hashitta (ran)"
+    },
+    "in": "った",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死んだ (умер)",
+      "en": "Casual past tense (nu-verbs).\nExample: shinu (die) → shinda (died)"
+    },
+    "in": "んだ",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов на ぶ.\nПример: 遊ぶ (играть) → 遊んだ (играл)",
+      "en": "Casual past tense (bu-verbs).\nExample: asobu (play) → asonda (played)"
+    },
+    "in": "んだ",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов на む.\nПример: 読む (читать) → 読んだ (читал)",
+      "en": "Casual past tense (mu-verbs).\nExample: yomu (read) → yonda (read)"
+    },
+    "in": "んだ",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для глаголов する.\nПример: 愛した → 愛する",
+      "en": "Past tense for suru-verbs."
+    },
+    "in": "した",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время",
+      "en": "Past tense"
+    },
+    "desc": {
+      "ru": "Прошедшее время (Past) для くる.\nПример: きた → くる",
+      "en": "Past tense for kuru-verbs."
+    },
+    "in": "きた",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма. Используется для просьб или текущих действий.\nПример: 見る (смотреть) → 見て (смотри / смотря)",
+      "en": "Te-form. Used for requests or ongoing states.\nExample: miru (see) → mite (look / seeing)"
+    },
+    "in": "て",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов на く.\nПример: 聞く (слушать) → 聞いて (слушай)",
+      "en": "Te-form for ku-verbs.\nExample: kiku (listen) → kiite (listen)"
+    },
+    "in": "いて",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов на ぐ.\nПример: 急ぐ (спешить) → 急いで (спеши)",
+      "en": "Te-form for gu-verbs.\nExample: isogu (hurry) → isoide (hurry)"
+    },
+    "in": "いで",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов на す.\nПример: 探す (искать) → 探して (ищи)",
+      "en": "Te-form for su-verbs.\nExample: sagasu (search) → sagashite (search)"
+    },
+    "in": "して",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов на う.\nПример: 歌う (петь) → 歌って (пой)",
+      "en": "Te-form for u-verbs.\nExample: utau (sing) → utatte (sing)"
+    },
+    "in": "って",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов на つ.\nПример: 持つ (держать) → 持って (держи)",
+      "en": "Te-form for tsu-verbs.\nExample: motsu (hold) → motte (hold)"
+    },
+    "in": "って",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов на る.\nПример: 帰る (возвращаться) → 帰って (возвращайся)",
+      "en": "Te-form for ru-verbs.\nExample: kaeru (return) → kaette (return)"
+    },
+    "in": "って",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死んで (умри)",
+      "en": "Te-form for nu-verbs.\nExample: shinu (die) → shinde (die)"
+    },
+    "in": "んで",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов на ぶ.\nПример: 呼ぶ (звать) → 呼んで (зови)",
+      "en": "Te-form for bu-verbs.\nExample: yobu (call) → yonde (call)"
+    },
+    "in": "んで",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов на む.\nПример: 飲む (пить) → 飲んで (пей)",
+      "en": "Te-form for mu-verbs.\nExample: nomu (drink) → nonde (drink)"
+    },
+    "in": "んで",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для глаголов する.\nПример: 運転して → 運転する",
+      "en": "Te-form for suru-verbs."
+    },
+    "in": "して",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Te-form (て-форма)",
+      "en": "Te-form"
+    },
+    "desc": {
+      "ru": "Соединительная форма для くる.\nПример: きて → くる",
+      "en": "Te-form for kuru-verbs."
+    },
+    "in": "きて",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма («не ...»).\nПример: 諦める (сдаваться) → 諦めない (не сдаваться)",
+      "en": "Casual negative form.\nExample: akirameru (give up) → akiramenai (not give up)"
+    },
+    "in": "ない",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов на く.\nПример: 泣く (плакать) → 泣かない (не плакать)",
+      "en": "Casual negative form (ku-verbs).\nExample: naku (cry) → nakanai (not cry)"
+    },
+    "in": "かない",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов на ぐ.\nПример: 脱ぐ (снимать) → 脱がない (не снимать)",
+      "en": "Casual negative form (gu-verbs).\nExample: nugu (take off) → nuganai (not take off)"
+    },
+    "in": "がない",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов на す.\nПример: 許す (прощать) → 許さない (не прощать)",
+      "en": "Casual negative form (su-verbs).\nExample: yurusu (forgive) → yurusanai (not forgive)"
+    },
+    "in": "さない",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов на つ.\nПример: 勝つ (побеждать) → 勝たない (не побеждать)",
+      "en": "Casual negative form (tsu-verbs).\nExample: katsu (win) → katanai (not win)"
+    },
+    "in": "たない",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死なない (не умирать)",
+      "en": "Casual negative form (nu-verbs).\nExample: shinu (die) → shinanai (not die)"
+    },
+    "in": "なない",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов на ぶ.\nПример: 飛ぶ (летать) → 飛ばない (не летать)",
+      "en": "Casual negative form (bu-verbs).\nExample: tobu (fly) → tobanai (not fly)"
+    },
+    "in": "ばない",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов на む.\nПример: 休む (отдыхать) → 休まない (не отдыхать)",
+      "en": "Casual negative form (mu-verbs).\nExample: yasumu (rest) → yasumanai (not rest)"
+    },
+    "in": "まない",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов на る.\nПример: 切る (резать) → 切らない (не резать)",
+      "en": "Casual negative form (ru-verbs).\nExample: kiru (cut) → kiranai (not cut)"
+    },
+    "in": "らない",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов на う (окончание わ).\nПример: 笑う (смеяться) → 笑わない (не смеяться)",
+      "en": "Casual negative form (u-verbs).\nExample: warau (laugh) → warawanai (not laugh)"
+    },
+    "in": "わない",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для глаголов する.\nПример: 愛しない → 愛する",
+      "en": "Negative form for suru-verbs."
+    },
+    "in": "しない",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание",
+      "en": "Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для くる.\nПример: こない → くる",
+      "en": "Negative form for kuru-verbs."
+    },
+    "in": "こない",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Окончание な (Прил / Частица / Запрет)",
+      "en": "Na-ending / Particle / Prohibition"
+    },
+    "desc": {
+      "ru": "Может быть окончанием Na-прилагательного (綺麗な), частицей эмоции (いいな) или грубым запретом (食べるな).",
+      "en": "Can be a Na-adjective ending, emotion particle, or prohibition."
+    },
+    "in": "な",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Частица など (и так далее)",
+      "en": "Particle nado"
+    },
+    "desc": {
+      "ru": "Означает перечисление: «и так далее», «и тому подобное».",
+      "en": "Means 'etc.', 'and so on'."
+    },
+    "in": "など",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Частица なんて (пренебрежение)",
+      "en": "Particle nante"
+    },
+    "desc": {
+      "ru": "Используется для выражения удивления, пренебрежения или выделения.",
+      "en": "Used to express surprise or contempt."
+    },
+    "in": "なんて",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Частица なんか (что-то вроде)",
+      "en": "Particle nanka"
+    },
+    "desc": {
+      "ru": "Означает «что-то вроде», часто выражает смягчение или пренебрежение.",
+      "en": "Means 'things like', often expresses modesty or contempt."
+    },
+    "in": "なんか",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное (вежливое) окончание глагола.\nПример: 見る (смотреть) → 見ます",
+      "en": "Polite form (~masu).\nExample: miru (see) → mimasu"
+    },
+    "in": "ます",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание глагола на く.\nПример: 書く (писать) → 書きます",
+      "en": "Polite form for ku-verbs.\nExample: kaku (write) → kakimasu"
+    },
+    "in": "きます",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание глагола на ぐ.\nПример: 泳ぐ (плавать) → 泳ぎます",
+      "en": "Polite form for gu-verbs.\nExample: oyogu (swim) → oyogimasu"
+    },
+    "in": "ぎます",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание глагола на す.\nПример: 話す (говорить) → 話します",
+      "en": "Polite form for su-verbs.\nExample: hanasu (speak) → hanashimasu"
+    },
+    "in": "します",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание глагола на つ.\nПример: 待つ (ждать) → 待ちます",
+      "en": "Polite form for tsu-verbs.\nExample: matsu (wait) → machimasu"
+    },
+    "in": "ちます",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание глагола на ぬ.\nПример: 死ぬ (умирать) → 死にます",
+      "en": "Polite form for nu-verbs.\nExample: shinu (die) → shinimasu"
+    },
+    "in": "にます",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание глагола на ぶ.\nПример: 遊ぶ (играть) → 遊びます",
+      "en": "Polite form for bu-verbs.\nExample: asobu (play) → asobimasu"
+    },
+    "in": "びます",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание глагола на む.\nПример: 読む (читать) → 読みます",
+      "en": "Polite form for mu-verbs.\nExample: yomu (read) → yomimasu"
+    },
+    "in": "みます",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание глагола на る.\nПример: 帰る (возвращаться) → 帰ります",
+      "en": "Polite form for ru-verbs.\nExample: kaeru (return) → kaerimasu"
+    },
+    "in": "ります",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание глагола на う.\nПример: 買う (покупать) → 買います",
+      "en": "Polite form for u-verbs.\nExample: kau (buy) → kaimasu"
+    },
+    "in": "います",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание для する.\nПример: します → する",
+      "en": "Polite form for suru."
+    },
+    "in": "します",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Вежливая форма (~ます)",
+      "en": "Polite form"
+    },
+    "desc": {
+      "ru": "Формальное окончание для くる.\nПример: きます → くる",
+      "en": "Polite form for kuru."
+    },
+    "in": "きます",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Вежливость (Прошедшее)",
+      "en": "Polite Past"
+    },
+    "desc": {
+      "ru": "Прошедшее время в вежливом стиле.\nПример: 食べる (есть) → 食べました (съел)",
+      "en": "Polite past tense.\nExample: taberu (eat) → tabemashita (ate)"
+    },
+    "in": "ました",
+    "out": "ます"
+  },
+  {
+    "reason": {
+      "ru": "Вежливость (Отрицание)",
+      "en": "Polite Negative"
+    },
+    "desc": {
+      "ru": "Отрицательная форма в вежливом стиле.\nПример: 食べる (есть) → 食べません (не ем)",
+      "en": "Polite negative form.\nExample: taberu (eat) → tabemasen (not eat)"
+    },
+    "in": "ません",
+    "out": "ます"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Означает способность или возможность («могу сделать»).\nПример: 食べる (есть) → 食べられる (могу съесть)",
+      "en": "Indicates ability to do something ('can do').\nExample: taberu (eat) → taberareru (can eat)"
+    },
+    "in": "られる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для глаголов на く.\nПример: 歩く (идти) → 歩ける (могу идти)",
+      "en": "Potential form for ku-verbs.\nExample: aruku (walk) → arukeru (can walk)"
+    },
+    "in": "ける",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для глаголов на ぐ.\nПример: 泳ぐ (плавать) → 泳げる (могу плавать)",
+      "en": "Potential form for gu-verbs.\nExample: oyogu (swim) → oyogeru (can swim)"
+    },
+    "in": "げる",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для глаголов на す.\nПример: 話す (говорить) → 話せる (могу говорить)",
+      "en": "Potential form for su-verbs.\nExample: hanasu (speak) → hanaseru (can speak)"
+    },
+    "in": "せる",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для глаголов на つ.\nПример: 待つ (ждать) → 待てる (могу ждать)",
+      "en": "Potential form for tsu-verbs.\nExample: matsu (wait) → materu (can wait)"
+    },
+    "in": "てる",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死ねる (могу умереть)",
+      "en": "Potential form for nu-verbs.\nExample: shinu (die) → shineru (can die)"
+    },
+    "in": "ねる",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для глаголов на ぶ.\nПример: 遊ぶ (играть) → 遊べる (могу играть)",
+      "en": "Potential form for bu-verbs.\nExample: asobu (play) → asoberu (can play)"
+    },
+    "in": "べる",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для глаголов на む.\nПример: 読む (читать) → 読める (могу читать)",
+      "en": "Potential form for mu-verbs.\nExample: yomu (read) → yomeru (can read)"
+    },
+    "in": "める",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для глаголов на る (Godan).\nПример: 切る (резать) → 切れる (могу резать)",
+      "en": "Potential form for ru-verbs (Godan).\nExample: kiru (cut) → kireru (can cut)"
+    },
+    "in": "れる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для глаголов на う.\nПример: 買う (покупать) → 買える (могу купить)",
+      "en": "Potential form for u-verbs.\nExample: kau (buy) → kaeru (can buy)"
+    },
+    "in": "える",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для する (делать).\nПример: する → できる (могу сделать)",
+      "en": "Potential form for Suru (do).\nExample: suru → dekiru (can do)"
+    },
+    "in": "できる",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Потенциальный залог",
+      "en": "Potential form"
+    },
+    "desc": {
+      "ru": "Потенциальный залог для くる (приходить).\nПример: くる → こられる (могу прийти)",
+      "en": "Potential form for Kuru (come).\nExample: kuru → korareru (can come)"
+    },
+    "in": "こられる",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Действие совершается НАД объектом. Часто выражает ущерб («страдательный залог»).\nПример: 食べる (есть) → 食べられる (быть съеденным)",
+      "en": "Action is done TO the subject (often implies suffering).\nExample: taberu (eat) → taberareru (be eaten)"
+    },
+    "in": "られる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов на く.\nПример: 書く (писать) → 書かれる (быть написанным)",
+      "en": "Passive form for ku-verbs.\nExample: kaku (write) → kakareru (be written)"
+    },
+    "in": "かれる",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов на ぐ.\nПример: 泳ぐ (плавать) → 泳がれる",
+      "en": "Passive form for gu-verbs.\nExample: oyogu (swim) → oyogareru"
+    },
+    "in": "がれる",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов на す.\nПример: 刺す (колоть) → 刺される (быть уколотым)",
+      "en": "Passive form for su-verbs.\nExample: sasu (stab) → sasareru (be stabbed)"
+    },
+    "in": "される",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов на つ.\nПример: 待つ (ждать) → 待たれる (быть ожидаемым)",
+      "en": "Passive form for tsu-verbs.\nExample: matsu (wait) → matareru (be waited for)"
+    },
+    "in": "たれる",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死なれる",
+      "en": "Passive form for nu-verbs.\nExample: shinu (die) → shinareru"
+    },
+    "in": "なれる",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов на ぶ.\nПример: 呼ぶ (звать) → 呼ばれる (быть позванным)",
+      "en": "Passive form for bu-verbs.\nExample: yobu (call) → yobareru (be called)"
+    },
+    "in": "ばれる",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов на む.\nПример: 踏む (наступать) → 踏まれる (быть растоптанным)",
+      "en": "Passive form for mu-verbs.\nExample: fumu (step on) → fumareru (be stepped on)"
+    },
+    "in": "まれる",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов на る (Godan).\nПример: 怒る (злиться) → 怒られる (подвергнуться гневу)",
+      "en": "Passive form for ru-verbs (Godan).\nExample: okoru (get angry) → okorareru (be yelled at)"
+    },
+    "in": "られる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов на う.\nПример: 言う (говорить) → 言われる (быть сказанным)",
+      "en": "Passive form for u-verbs.\nExample: iu (say) → iwareru (be told)"
+    },
+    "in": "われる",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Пассивный залог",
+      "en": "Passive form"
+    },
+    "desc": {
+      "ru": "Пассивный залог для глаголов する.",
+      "en": "Passive form for suru-verbs."
+    },
+    "in": "される",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Означает «заставить» или «разрешить» кому-то сделать что-то.\nПример: 食べる (есть) → 食べさせる (заставить/дать поесть)",
+      "en": "Indicates making or letting someone do something.\nExample: taberu (eat) → tabesaseru (make/let eat)"
+    },
+    "in": "させる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов на く.\nПример: 泣く (плакать) → 泣かせる (довести до слез)",
+      "en": "Causative form for ku-verbs.\nExample: naku (cry) → nakaseru (make cry)"
+    },
+    "in": "かせる",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов на ぐ.\nПример: 泳ぐ (плавать) → 泳がせる (заставить плавать)",
+      "en": "Causative form for gu-verbs.\nExample: oyogu (swim) → oyogaseru (make swim)"
+    },
+    "in": "がせる",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов на す.\nПример: 直す (исправлять) → 直させる (заставить исправить)",
+      "en": "Causative form for su-verbs.\nExample: naosu (fix) → naosaseru (make fix)"
+    },
+    "in": "させる",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов на つ.\nПример: 待つ (ждать) → 待たせる (заставить ждать)",
+      "en": "Causative form for tsu-verbs.\nExample: matsu (wait) → mataseru (make wait)"
+    },
+    "in": "たせる",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死なせる (дать умереть)",
+      "en": "Causative form for nu-verbs.\nExample: shinu (die) → shinaseru (let die)"
+    },
+    "in": "なせる",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов на ぶ.\nПример: 遊ぶ (играть) → 遊ばせる (дать поиграть)",
+      "en": "Causative form for bu-verbs.\nExample: asobu (play) → asobaseru (let play)"
+    },
+    "in": "ばせる",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов на む.\nПример: 休む (отдыхать) → 休ませる (дать отдохнуть)",
+      "en": "Causative form for mu-verbs.\nExample: yasumu (rest) → yasumaseru (let rest)"
+    },
+    "in": "ませる",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов на る (Godan).\nПример: 知る (знать) → 知らせる (дать знать / сообщить)",
+      "en": "Causative form for ru-verbs (Godan).\nExample: shiru (know) → shiraseru (let know / inform)"
+    },
+    "in": "らせる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов на う.\nПример: 買う (покупать) → 買わせる (заставить купить)",
+      "en": "Causative form for u-verbs.\nExample: kau (buy) → kawaseru (make buy)"
+    },
+    "in": "わせる",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для глаголов する.",
+      "en": "Causative form for suru-verbs."
+    },
+    "in": "させる",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив (Побуждение)",
+      "en": "Causative form"
+    },
+    "desc": {
+      "ru": "Побудительный залог для くる.",
+      "en": "Causative form for kuru-verbs."
+    },
+    "in": "こさせる",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Означает «меня заставили сделать» (действие выполняется через силу).\nПример: 食べる (есть) → 食べさせられる (меня заставили есть)",
+      "en": "Indicates being forced to do something.\nExample: taberu (eat) → tabesaserareru (forced to eat)"
+    },
+    "in": "させられる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов на く).\nПример: 書く (писать) → 書かされる (заставили писать)",
+      "en": "Forced to do (ku-verbs).\nExample: kaku (write) → kakasareru (forced to write)"
+    },
+    "in": "かされる",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов на ぐ).\nПример: 泳ぐ (плавать) → 泳がされる (заставили плыть)",
+      "en": "Forced to do (gu-verbs).\nExample: oyogu (swim) → oyogasareru (forced to swim)"
+    },
+    "in": "がされる",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов на す).\nПример: 話す (говорить) → 話させられる (заставили говорить)",
+      "en": "Forced to do (su-verbs).\nExample: hanasu (speak) → hanasaserareru (forced to speak)"
+    },
+    "in": "させられる",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов на つ).\nПример: 待つ (ждать) → 待たされる (заставили ждать)",
+      "en": "Forced to do (tsu-verbs).\nExample: matsu (wait) → matasareru (forced to wait)"
+    },
+    "in": "たされる",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов на ぬ).\nПример: 死ぬ (умирать) → 死なされる",
+      "en": "Forced to do (nu-verbs).\nExample: shinu (die) → shinasareru"
+    },
+    "in": "なされる",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов на ぶ).\nПример: 呼ぶ (звать) → 呼ばされる",
+      "en": "Forced to do (bu-verbs).\nExample: yobu (call) → yobasareru"
+    },
+    "in": "ばされる",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов на む).\nПример: 飲む (пить) → 飲まされる (заставили пить)",
+      "en": "Forced to do (mu-verbs).\nExample: nomu (drink) → nomasareru (forced to drink)"
+    },
+    "in": "まされる",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов на る - Godan).\nПример: 走る (бежать) → 走らされる (заставили бежать)",
+      "en": "Forced to do (ru-verbs Godan).\nExample: hashiru (run) → hashirasareru (forced to run)"
+    },
+    "in": "らされる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов на う).\nПример: 買う (покупать) → 買わされる (заставили купить)",
+      "en": "Forced to do (u-verbs).\nExample: kau (buy) → kawasareru (forced to buy)"
+    },
+    "in": "わされる",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Каузатив-Пассив",
+      "en": "Causative-Passive"
+    },
+    "desc": {
+      "ru": "Меня заставили сделать (для глаголов する).",
+      "en": "Causative-Passive for suru-verbs."
+    },
+    "in": "させられる",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать что-то).\nПример: 食べる (есть) → 食べたい (хочу есть)",
+      "en": "Tai-form (want to do).\nExample: taberu (eat) → tabetai (want to eat)"
+    },
+    "in": "たい",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать) для глаголов на く.\nПример: 行く (идти) → 行きたい (хочу пойти)",
+      "en": "Tai-form for ku-verbs.\nExample: iku (go) → ikitai (want to go)"
+    },
+    "in": "きたい",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать) для глаголов на ぐ.\nПример: 泳ぐ (плавать) → 泳ぎたい (хочу плавать)",
+      "en": "Tai-form for gu-verbs.\nExample: oyogu (swim) → oyogitai (want to swim)"
+    },
+    "in": "ぎたい",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать) для глаголов на す.\nПример: 話す (говорить) → 話したい (хочу поговорить)",
+      "en": "Tai-form for su-verbs.\nExample: hanasu (speak) → hanashitai (want to speak)"
+    },
+    "in": "したい",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать) для глаголов на つ.\nПример: 待つ (ждать) → 待ちたい (хочу подождать)",
+      "en": "Tai-form for tsu-verbs.\nExample: matsu (wait) → machitai (want to wait)"
+    },
+    "in": "ちたい",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать) для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死にたい (хочу умереть)",
+      "en": "Tai-form for nu-verbs.\nExample: shinu (die) → shinitai (want to die)"
+    },
+    "in": "にたい",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать) для глаголов на ぶ.\nПример: 遊ぶ (играть) → 遊びたい (хочу поиграть)",
+      "en": "Tai-form for bu-verbs.\nExample: asobu (play) → asobitai (want to play)"
+    },
+    "in": "びたい",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать) для глаголов на む.\nПример: 飲む (пить) → 飲みたい (хочу выпить)",
+      "en": "Tai-form for mu-verbs.\nExample: nomu (drink) → nomitai (want to drink)"
+    },
+    "in": "みたい",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать) для глаголов на る (Godan).\nПример: 帰る (возвращаться) → 帰りたい (хочу вернуться)",
+      "en": "Tai-form for ru-verbs (Godan).\nExample: kaeru (return) → kaeritai (want to return)"
+    },
+    "in": "りたい",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Желание (~たい)",
+      "en": "Want to do (~tai)"
+    },
+    "desc": {
+      "ru": "Форма желания (хочу сделать) для глаголов на う.\nПример: 会う (встретиться) → 会いたい (хочу встретиться)",
+      "en": "Tai-form for u-verbs.\nExample: au (meet) → aitai (want to meet)"
+    },
+    "in": "いたい",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり. Означает нестрогое перечисление действий («то одно, то другое»).\nПример: 食べる (есть) → 食べたり (то ел, то...)",
+      "en": "Tari-form (doing things like A and B).\nExample: taberu (eat) → tabetari (eating and...)"
+    },
+    "in": "たり",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり для глаголов на く.\nПример: 歩く (идти) → 歩いたり",
+      "en": "Tari-form for ku-verbs.\nExample: aruku (walk) → aruitari"
+    },
+    "in": "いたり",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり для глаголов на ぐ.\nПример: 泳ぐ (плавать) → 泳いだり",
+      "en": "Tari-form for gu-verbs.\nExample: oyogu (swim) → oyoidari"
+    },
+    "in": "いだり",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり для глаголов на す.\nПример: 話す (говорить) → 話したり",
+      "en": "Tari-form for su-verbs.\nExample: hanasu (speak) → hanashitari"
+    },
+    "in": "したり",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり для глаголов на う.\nПример: 買う (покупать) → 買ったり",
+      "en": "Tari-form for u-verbs.\nExample: kau (buy) → kattari"
+    },
+    "in": "ったり",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり для глаголов на つ.\nПример: 待つ (ждать) → 待ったり",
+      "en": "Tari-form for tsu-verbs.\nExample: matsu (wait) → mattari"
+    },
+    "in": "ったり",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり для глаголов на る.\nПример: 走る (бежать) → 走ったり",
+      "en": "Tari-form for ru-verbs.\nExample: hashiru (run) → hashittari"
+    },
+    "in": "ったり",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死んだり",
+      "en": "Tari-form for nu-verbs.\nExample: shinu (die) → shindari"
+    },
+    "in": "んだり",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり для глаголов на ぶ.\nПример: 遊ぶ (играть) → 遊んだり",
+      "en": "Tari-form for bu-verbs.\nExample: asobu (play) → asondari"
+    },
+    "in": "んだり",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Множественное действие (~たり)",
+      "en": "Tari-form"
+    },
+    "desc": {
+      "ru": "Форма ~たり для глаголов на む.\nПример: 飲む (пить) → 飲んだり",
+      "en": "Tari-form for mu-verbs.\nExample: nomu (drink) → nondari"
+    },
+    "in": "んだり",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма (Если...).\nПример: 食べる (есть) → 食べれば (если съесть)",
+      "en": "Ba-conditional form (If...).\nExample: taberu (eat) → tabereba (if eat)"
+    },
+    "in": "れば",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для глаголов на う.\nПример: 買う (покупать) → 買えば (если купить)",
+      "en": "Ba-conditional form for u-verbs.\nExample: kau (buy) → kaeba (if buy)"
+    },
+    "in": "えば",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для глаголов на く.\nПример: 書く (писать) → 書けば (если написать)",
+      "en": "Ba-conditional form for ku-verbs.\nExample: kaku (write) → kakeba (if write)"
+    },
+    "in": "けば",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для глаголов на ぐ.\nПример: 急ぐ (спешить) → 急げば (если поспешить)",
+      "en": "Ba-conditional form for gu-verbs.\nExample: isogu (hurry) → isogeba (if hurry)"
+    },
+    "in": "げば",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для глаголов на す.\nПример: 探す (искать) → 探せば (если поискать)",
+      "en": "Ba-conditional form for su-verbs.\nExample: sagasu (search) → sagaseba (if search)"
+    },
+    "in": "せば",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для глаголов на つ.\nПример: 待つ (ждать) → 待てば (если подождать)",
+      "en": "Ba-conditional form for tsu-verbs.\nExample: matsu (wait) → mateba (if wait)"
+    },
+    "in": "てば",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死ねば (если умрет)",
+      "en": "Ba-conditional form for nu-verbs.\nExample: shinu (die) → shineba (if die)"
+    },
+    "in": "ねば",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для глаголов на ぶ.\nПример: 呼ぶ (звать) → 呼べば (если позвать)",
+      "en": "Ba-conditional form for bu-verbs.\nExample: yobu (call) → yobeba (if call)"
+    },
+    "in": "べば",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для глаголов на む.\nПример: 飲む (пить) → 飲めば (если выпить)",
+      "en": "Ba-conditional form for mu-verbs.\nExample: nomu (drink) → nomeba (if drink)"
+    },
+    "in": "めば",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для する (делать).\nПример: する → すれば (если сделать)",
+      "en": "Ba-conditional form for Suru.\nExample: suru → sureba (if do)"
+    },
+    "in": "すれば",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Условие (~ば)",
+      "en": "Conditional (~ba)"
+    },
+    "desc": {
+      "ru": "Условная форма для くる (приходить).\nПример: くる → くれば (если прийти)",
+      "en": "Ba-conditional form for Kuru.\nExample: kuru → kureba (if come)"
+    },
+    "in": "くれば",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Устаревшая/письменная форма отрицания (~ず). Аналог ~ない.\nПример: 知る (знать) → 知らず (не зная)",
+      "en": "Formal/Written negative form (~zu). Equivalent to ~nai.\nExample: shiru (know) → shirazu (without knowing)"
+    },
+    "in": "ず",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для глаголов на く.\nПример: 書く (писать) → 書かず (не написав)",
+      "en": "Formal negative form (~zu) for ku-verbs.\nExample: kaku (write) → kakazu (without writing)"
+    },
+    "in": "かず",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для глаголов на ぐ.",
+      "en": "Formal negative form (~zu) for gu-verbs."
+    },
+    "in": "がず",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для глаголов на す.",
+      "en": "Formal negative form (~zu) for su-verbs."
+    },
+    "in": "さず",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для глаголов на つ.",
+      "en": "Formal negative form (~zu) for tsu-verbs."
+    },
+    "in": "たず",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для глаголов на ぬ.",
+      "en": "Formal negative form (~zu) for nu-verbs."
+    },
+    "in": "なず",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для глаголов на ぶ.",
+      "en": "Formal negative form (~zu) for bu-verbs."
+    },
+    "in": "ばず",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для глаголов на む.",
+      "en": "Formal negative form (~zu) for mu-verbs."
+    },
+    "in": "まず",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для глаголов на る (Godan).",
+      "en": "Formal negative form (~zu) for ru-verbs (Godan)."
+    },
+    "in": "らず",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для глаголов на う.",
+      "en": "Formal negative form (~zu) for u-verbs."
+    },
+    "in": "わず",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для する.\nПример: する (делать) → せず (не сделав)",
+      "en": "Formal negative form (~zu) for Suru.\nExample: suru (do) → sezu (without doing)"
+    },
+    "in": "せず",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Zu-form)",
+      "en": "Negative (Zu-form)"
+    },
+    "desc": {
+      "ru": "Письменная форма отрицания (~ず) для くる.",
+      "en": "Formal negative form (~zu) for Kuru."
+    },
+    "in": "こず",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное/Кансайское отрицание (~ん). Аналог ~ない.\nПример: 知る (знать) → 知らん (не знаю)",
+      "en": "Slang/Kansai negative form (~n). Equivalent to ~nai.\nExample: shiru (know) → shiran (don't know)"
+    },
+    "in": "ん",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для глаголов на く.\nПример: 書く (писать) → 書かん (не пишу)",
+      "en": "Slang negative form (~n) for ku-verbs.\nExample: kaku (write) → kakan (don't write)"
+    },
+    "in": "かん",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для глаголов на ぐ.",
+      "en": "Slang negative form (~n) for gu-verbs."
+    },
+    "in": "がん",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для глаголов на す.",
+      "en": "Slang negative form (~n) for su-verbs."
+    },
+    "in": "さん",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для глаголов на つ.",
+      "en": "Slang negative form (~n) for tsu-verbs."
+    },
+    "in": "たん",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для глаголов на ぬ.",
+      "en": "Slang negative form (~n) for nu-verbs."
+    },
+    "in": "なん",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для глаголов на ぶ.",
+      "en": "Slang negative form (~n) for bu-verbs."
+    },
+    "in": "ばん",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для глаголов на む.",
+      "en": "Slang negative form (~n) for mu-verbs."
+    },
+    "in": "まん",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для глаголов на る (Godan).",
+      "en": "Slang negative form (~n) for ru-verbs (Godan)."
+    },
+    "in": "らん",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для глаголов на う.",
+      "en": "Slang negative form (~n) for u-verbs."
+    },
+    "in": "わん",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для する.\nПример: する (делать) → せん (не делаю)",
+      "en": "Slang negative form (~n) for Suru.\nExample: suru (do) → sen (don't do)"
+    },
+    "in": "せん",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное)",
+      "en": "Negative (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное отрицание (~ん) для くる.",
+      "en": "Slang negative form (~n) for Kuru."
+    },
+    "in": "こん",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Необходимость (Разговорная)",
+      "en": "Obligation (Casual)"
+    },
+    "desc": {
+      "ru": "Конструкция なきゃ + ならない.\nОзначает жесткую необходимость: «Должен / Обязан что-то сделать».\nПример: 行かなきゃならない (Я должен пойти).",
+      "en": "Must do (casual form).\nExample: ikanakya naranai (I must go)."
+    },
+    "in": "なきゃならない",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Необходимость (Сленг)",
+      "en": "Obligation (Slang)"
+    },
+    "desc": {
+      "ru": "Сленговая/Кансайская форма от なきゃならない.\nОзначает «Должен / Обязан».\nПример: 探さなきゃならん (Нужно обязательно поискать).",
+      "en": "Must do (slang).\nExample: sagasanakya naran (Must search)."
+    },
+    "in": "なきゃならん",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Необходимость (Разговорная)",
+      "en": "Obligation (Casual)"
+    },
+    "desc": {
+      "ru": "Конструкция なきゃ + いけない.\nОзначает «Должен / Нельзя не сделать».\nПример: 食べなきゃいけない (Нужно поесть).",
+      "en": "Must do (casual form).\nExample: tabenakya ikenai (Must eat)."
+    },
+    "in": "なきゃいけない",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Необходимость (Сленг)",
+      "en": "Obligation (Slang)"
+    },
+    "desc": {
+      "ru": "Сленговая/Кансайская форма от なきゃいけない.\nПример: やらなきゃいかん (Обязан сделать).",
+      "en": "Must do (slang).\nExample: yaranakya ikan (Must do)."
+    },
+    "in": "なきゃいかん",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Необходимость (Разговорная)",
+      "en": "Obligation (Casual)"
+    },
+    "desc": {
+      "ru": "Конструкция なくちゃ + ならない.\nАналог なきゃならない («Должен»).",
+      "en": "Must do (casual form)."
+    },
+    "in": "なくちゃならない",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Необходимость (Сленг)",
+      "en": "Obligation (Slang)"
+    },
+    "desc": {
+      "ru": "Сленговая форма от なくちゃならない.",
+      "en": "Must do (slang)."
+    },
+    "in": "なくちゃならん",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Необходимость (Разговорная)",
+      "en": "Obligation (Casual)"
+    },
+    "desc": {
+      "ru": "Конструкция なくちゃ + いけない («Должен»).",
+      "en": "Must do (casual form)."
+    },
+    "in": "なくちゃいけない",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Необходимость (Сленг)",
+      "en": "Obligation (Slang)"
+    },
+    "desc": {
+      "ru": "Сленговая форма от なくちゃいけない.",
+      "en": "Must do (slang)."
+    },
+    "in": "なくちゃいかん",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Прошедшее время (Прилагательное)",
+      "en": "Past Adjective"
+    },
+    "desc": {
+      "ru": "Прошедшее время для い-прилагательных.\nПример: 高い (дорогой) → 高かった (был дорогим)",
+      "en": "Past tense for i-adjectives.\nExample: takai (expensive) → takakatta (was expensive)"
+    },
+    "in": "かった",
+    "out": "い"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Прилагательное)",
+      "en": "Negative Adjective"
+    },
+    "desc": {
+      "ru": "Отрицательная форма для い-прилагательных.\nПример: 寒い (холодный) → 寒くない (не холодный)",
+      "en": "Negative form for i-adjectives.\nExample: samui (cold) → samukunai (not cold)"
+    },
+    "in": "くない",
+    "out": "い"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание в прошлом (Прилагательное)",
+      "en": "Past Negative Adj"
+    },
+    "desc": {
+      "ru": "Отрицание в прошедшем времени для い-прилагательных.\nПример: 痛い (больно) → 痛くなかった (было не больно)",
+      "en": "Past negative for i-adjectives.\nExample: itai (painful) → itakunakatta (was not painful)"
+    },
+    "in": "くなかった",
+    "out": "い"
+  },
+  {
+    "reason": {
+      "ru": "Условие (Прилагательное)",
+      "en": "Conditional Adj"
+    },
+    "desc": {
+      "ru": "Условная форма (~ば) для い-прилагательных.\nПример: 安い (дешевый) → 安ければ (если будет дешево)",
+      "en": "Conditional form for i-adjectives.\nExample: yasui (cheap) → yasukereba (if cheap)"
+    },
+    "in": "ければ",
+    "out": "い"
+  },
+  {
+    "reason": {
+      "ru": "Наречие (Adverb)",
+      "en": "Adverbial form"
+    },
+    "desc": {
+      "ru": "Превращает い-прилагательное в наречие или служит для соединения.\nПример: 早い (быстрый) → 早く (быстро)",
+      "en": "Turns i-adjective into adverb.\nExample: hayai (fast) → hayaku (quickly)"
+    },
+    "in": "く",
+    "out": "い"
+  },
+  {
+    "reason": {
+      "ru": "Существительное (Степень)",
+      "en": "Noun (Degree)"
+    },
+    "desc": {
+      "ru": "Превращает прилагательное в существительное, обозначающее объективную степень.\nПример: 高い (высокий) → 高さ (высота)",
+      "en": "Turns adjective into noun indicating objective degree.\nExample: takai (high) → takasa (height)"
+    },
+    "in": "さ",
+    "out": "い"
+  },
+  {
+    "reason": {
+      "ru": "Существительное (Состояние)",
+      "en": "Noun (State)"
+    },
+    "desc": {
+      "ru": "Превращает прилагательное в существительное, обозначающее субъективное состояние.\nПример: 悲しい (грустный) → 悲しみ (грусть)",
+      "en": "Turns adjective into noun indicating subjective state.\nExample: kanashii (sad) → kanashimi (sadness)"
+    },
+    "in": "み",
+    "out": "い"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Выражает намерение, призыв к действию или предположение.\nПример: 食べる (есть) → 食べよう (давай поедим!)",
+      "en": "Expresses intention or 'let's do'.\nExample: taberu (eat) → tabeyou (let's eat!)"
+    },
+    "in": "よう",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для глаголов на く.\nПример: 行く (идти) → 行こう (пойдем!)",
+      "en": "Volitional form for ku-verbs.\nExample: iku (go) → ikou (let's go!)"
+    },
+    "in": "こう",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для глаголов на ぐ.\nПример: 泳ぐ (плавать) → 泳ごう (поплаваем!)",
+      "en": "Volitional form for gu-verbs."
+    },
+    "in": "ごう",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для глаголов на す.\nПример: 探す (искать) → 探そう (поищем!)",
+      "en": "Volitional form for su-verbs."
+    },
+    "in": "そう",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для глаголов на つ.\nПример: 勝つ (побеждать) → 勝とう (победим!)",
+      "en": "Volitional form for tsu-verbs."
+    },
+    "in": "とう",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死のう",
+      "en": "Volitional form for nu-verbs."
+    },
+    "in": "のう",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для глаголов на ぶ.\nПример: 遊ぶ (играть) → 遊ぼう (поиграем!)",
+      "en": "Volitional form for bu-verbs."
+    },
+    "in": "ぼう",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для глаголов на む.\nПример: 飲む (пить) → 飲もう (выпьем!)",
+      "en": "Volitional form for mu-verbs."
+    },
+    "in": "もう",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для глаголов на る (Godan).\nПример: 走る (бежать) → 走ろう (побежали!)",
+      "en": "Volitional form for ru-verbs (Godan)."
+    },
+    "in": "ろう",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для глаголов на う.\nПример: 買う (покупать) → 買おう (купим!)",
+      "en": "Volitional form for u-verbs."
+    },
+    "in": "おう",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для する (делать).\nПример: する → しよう (сделаем!)",
+      "en": "Volitional form for Suru."
+    },
+    "in": "しよう",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Волевая форма (Давай сделаем)",
+      "en": "Volitional form"
+    },
+    "desc": {
+      "ru": "Волевая форма для くる (приходить).\nПример: くる → こよう (придем!)",
+      "en": "Volitional form for Kuru."
+    },
+    "in": "こよう",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый, резкий приказ.\nПример: 食べる (есть) → 食べろ (Ешь!)",
+      "en": "Harsh command.\nExample: taberu (eat) → tabero (Eat!)"
+    },
+    "in": "ろ",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для глаголов на く.\nПример: 行く (идти) → 行け (Иди!)",
+      "en": "Harsh command for ku-verbs.\nExample: iku (go) → ike (Go!)"
+    },
+    "in": "け",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для глаголов на ぐ.\nПример: 泳ぐ (плавать) → 泳げ (Плыви!)",
+      "en": "Harsh command for gu-verbs."
+    },
+    "in": "げ",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для глаголов на す.\nПример: 隠す (прятать) → 隠せ (Прячь!)",
+      "en": "Harsh command for su-verbs."
+    },
+    "in": "せ",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для глаголов на つ.\nПример: 待つ (ждать) → 待て (Жди!)",
+      "en": "Harsh command for tsu-verbs."
+    },
+    "in": "て",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для глаголов на ぬ.\nПример: 死ぬ (умирать) → 死ね (Умри!)",
+      "en": "Harsh command for nu-verbs."
+    },
+    "in": "ね",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для глаголов на ぶ.\nПример: 飛ぶ (летать) → 飛べ (Лети!)",
+      "en": "Harsh command for bu-verbs."
+    },
+    "in": "べ",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для глаголов на む.\nПример: 読む (читать) → 読め (Читай!)",
+      "en": "Harsh command for mu-verbs."
+    },
+    "in": "め",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для глаголов на る (Godan).\nПример: 走る (бежать) → 走れ (Беги!)",
+      "en": "Harsh command for ru-verbs (Godan)."
+    },
+    "in": "れ",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для глаголов на う.\nПример: 歌う (петь) → 歌え (Пой!)",
+      "en": "Harsh command for u-verbs."
+    },
+    "in": "え",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для する (делать).\nПример: する → しろ (Сделай!)",
+      "en": "Harsh command for Suru."
+    },
+    "in": "しろ",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Повелительное наклонение",
+      "en": "Imperative (Command)"
+    },
+    "desc": {
+      "ru": "Грубый приказ для くる (приходить).\nПример: くる → こい (Иди сюда!)",
+      "en": "Harsh command for Kuru."
+    },
+    "in": "こい",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.\nПример: 飲む → 飲みなさい (Пей).",
+      "en": "Polite command from superior.\nExample: nomu → nominasai (Drink)."
+    },
+    "in": "なさい",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.",
+      "en": "Polite command from superior."
+    },
+    "in": "きなさい",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.",
+      "en": "Polite command from superior."
+    },
+    "in": "ぎなさい",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.",
+      "en": "Polite command from superior."
+    },
+    "in": "しなさい",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.",
+      "en": "Polite command from superior."
+    },
+    "in": "ちなさい",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.",
+      "en": "Polite command from superior."
+    },
+    "in": "になさい",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.",
+      "en": "Polite command from superior."
+    },
+    "in": "びなさい",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.",
+      "en": "Polite command from superior."
+    },
+    "in": "みなさい",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.",
+      "en": "Polite command from superior."
+    },
+    "in": "りなさい",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему.",
+      "en": "Polite command from superior."
+    },
+    "in": "いなさい",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему для する.",
+      "en": "Polite command from superior for Suru."
+    },
+    "in": "しなさい",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Мягкий приказ",
+      "en": "Polite Command"
+    },
+    "desc": {
+      "ru": "Вежливый приказ от старшего к младшему для くる.",
+      "en": "Polite command from superior for Kuru."
+    },
+    "in": "きなさい",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Вежливое предположение",
+      "en": "Polite Presumptive"
+    },
+    "desc": {
+      "ru": "Вежливая форма волевого наклонения / предположения.\nПример: 行きましょう (Давайте пойдем).",
+      "en": "Polite 'let's do' or presumptive.\nExample: ikimashou (Let's go)."
+    },
+    "in": "ましょう",
+    "out": "ます"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~ている). Означает состояние или действие, происходящее прямо сейчас.\nПример: 食べる → 食べている (ест сейчас)",
+      "en": "Continuous state (~te iru).\nExample: taberu → tabete iru (is eating)"
+    },
+    "in": "ている",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~ている) для глаголов на く.",
+      "en": "Continuous state for ku-verbs."
+    },
+    "in": "いている",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~でいる) для глаголов на ぐ.",
+      "en": "Continuous state for gu-verbs."
+    },
+    "in": "いでいる",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~ている) для глаголов на す.",
+      "en": "Continuous state for su-verbs."
+    },
+    "in": "している",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~ている) для глаголов する.",
+      "en": "Continuous state for suru-verbs."
+    },
+    "in": "している",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид для くる.",
+      "en": "Continuous state for kuru."
+    },
+    "in": "きている",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~ている) для глаголов на う.",
+      "en": "Continuous state for u-verbs."
+    },
+    "in": "っている",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~ている) для глаголов на つ.",
+      "en": "Continuous state for tsu-verbs."
+    },
+    "in": "っている",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~ている) для глаголов на る.",
+      "en": "Continuous state for ru-verbs."
+    },
+    "in": "っている",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~でいる) для глаголов на ぬ.",
+      "en": "Continuous state for nu-verbs."
+    },
+    "in": "んでいる",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~でいる) для глаголов на ぶ.",
+      "en": "Continuous state for bu-verbs."
+    },
+    "in": "んでいる",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие",
+      "en": "Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид (~でいる) для глаголов на む.\nПример: 飲む → 飲んでいる (пьет)",
+      "en": "Continuous state for mu-verbs.\nExample: nomu → nonde iru (is drinking)"
+    },
+    "in": "んでいる",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошедшем времени (~ていた).\nПример: 食べる → 食べていた (ел / был в состоянии еды)",
+      "en": "Past continuous state (~te ita).\nExample: taberu → tabete ita (was eating)"
+    },
+    "in": "ていた",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~ていた) для глаголов на く.",
+      "en": "Past continuous state for ku-verbs."
+    },
+    "in": "いていた",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~でいた) для глаголов на ぐ.",
+      "en": "Past continuous state for gu-verbs."
+    },
+    "in": "いでいた",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~ていた) для глаголов на す.",
+      "en": "Past continuous state for su-verbs."
+    },
+    "in": "していた",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~ていた) для глаголов する.",
+      "en": "Past continuous state for suru-verbs."
+    },
+    "in": "していた",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом для くる.",
+      "en": "Past continuous state for kuru."
+    },
+    "in": "きていた",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~ていた) для глаголов на う.",
+      "en": "Past continuous state for u-verbs."
+    },
+    "in": "っていた",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~ていた) для глаголов на つ.",
+      "en": "Past continuous state for tsu-verbs."
+    },
+    "in": "っていた",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~ていた) для глаголов на る.",
+      "en": "Past continuous state for ru-verbs."
+    },
+    "in": "っていた",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~でいた) для глаголов на ぬ.",
+      "en": "Past continuous state for nu-verbs."
+    },
+    "in": "んでいた",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~でいた) для глаголов на ぶ.",
+      "en": "Past continuous state for bu-verbs."
+    },
+    "in": "んでいた",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Длительное в прошлом",
+      "en": "Past Ongoing state"
+    },
+    "desc": {
+      "ru": "Длительный вид в прошлом (~でいた) для глаголов на む.\nПример: 滲む → 滲んでいた (сочилось / расплывалось)",
+      "en": "Past continuous state for mu-verbs.\nExample: nijimu → nijinde ita (was blurring/oozing)"
+    },
+    "in": "んでいた",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно / в избытке.\nПример: 食べる → 食べすぎる (переесть).",
+      "en": "Doing something too much.\nExample: taberu → tabesugiru (eat too much)."
+    },
+    "in": "すぎる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для глаголов на く.",
+      "en": "Doing something too much for ku-verbs."
+    },
+    "in": "きすぎる",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для глаголов на ぐ.",
+      "en": "Doing something too much for gu-verbs."
+    },
+    "in": "ぎすぎる",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для глаголов на す.",
+      "en": "Doing something too much for su-verbs."
+    },
+    "in": "しすぎる",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для глаголов на つ.",
+      "en": "Doing something too much for tsu-verbs."
+    },
+    "in": "ちすぎる",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для глаголов на ぬ.",
+      "en": "Doing something too much for nu-verbs."
+    },
+    "in": "にすぎる",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для глаголов на ぶ.",
+      "en": "Doing something too much for bu-verbs."
+    },
+    "in": "びすぎる",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для глаголов на む.",
+      "en": "Doing something too much for mu-verbs."
+    },
+    "in": "みすぎる",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для глаголов на る (Godan).",
+      "en": "Doing something too much for ru-verbs (Godan)."
+    },
+    "in": "りすぎる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для глаголов на う.",
+      "en": "Doing something too much for u-verbs."
+    },
+    "in": "いすぎる",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для する.",
+      "en": "Doing something too much for Suru."
+    },
+    "in": "しすぎる",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (~すぎる)",
+      "en": "Excessive (~sugiru)"
+    },
+    "desc": {
+      "ru": "Сделать что-то слишком сильно для くる.",
+      "en": "Doing something too much for Kuru."
+    },
+    "in": "きすぎる",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Чрезмерность (Прилагательное)",
+      "en": "Excessive Adj"
+    },
+    "desc": {
+      "ru": "Чрезмерное свойство для い-прилагательных.\nПример: 高い → 高すぎる (слишком дорогой).",
+      "en": "Excessive trait for i-adjectives.\nExample: takai → takasugiru (too expensive)."
+    },
+    "in": "すぎる",
+    "out": "い"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.\nПример: 食べる → 食べやすい (легко есть).",
+      "en": "Easy to do.\nExample: taberu → tabeyasui (easy to eat)."
+    },
+    "in": "やすい",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.",
+      "en": "Easy to do."
+    },
+    "in": "きやすい",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.",
+      "en": "Easy to do."
+    },
+    "in": "ぎやすい",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.",
+      "en": "Easy to do."
+    },
+    "in": "しやすい",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.",
+      "en": "Easy to do."
+    },
+    "in": "ちやすい",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.",
+      "en": "Easy to do."
+    },
+    "in": "にやすい",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.",
+      "en": "Easy to do."
+    },
+    "in": "びやすい",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.",
+      "en": "Easy to do."
+    },
+    "in": "みやすい",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.",
+      "en": "Easy to do."
+    },
+    "in": "りやすい",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить.",
+      "en": "Easy to do."
+    },
+    "in": "いやすい",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Легкость (~やすい)",
+      "en": "Easy to (~yasui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие легко выполнить для する.",
+      "en": "Easy to do for Suru."
+    },
+    "in": "しやすい",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.\nПример: 読む → 読みにくい (трудно читать).",
+      "en": "Hard to do.\nExample: yomu → yominikui (hard to read)."
+    },
+    "in": "にくい",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.",
+      "en": "Hard to do."
+    },
+    "in": "きにくい",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.",
+      "en": "Hard to do."
+    },
+    "in": "ぎにくい",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.",
+      "en": "Hard to do."
+    },
+    "in": "しにくい",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.",
+      "en": "Hard to do."
+    },
+    "in": "ちにくい",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.",
+      "en": "Hard to do."
+    },
+    "in": "ににくい",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.",
+      "en": "Hard to do."
+    },
+    "in": "びにくい",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.",
+      "en": "Hard to do."
+    },
+    "in": "みにくい",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.",
+      "en": "Hard to do."
+    },
+    "in": "りにくい",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить.",
+      "en": "Hard to do."
+    },
+    "in": "いにくい",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Сложность (~にくい)",
+      "en": "Hard to (~nikui)"
+    },
+    "desc": {
+      "ru": "Означает, что действие трудно выполнить для する.",
+      "en": "Hard to do for Suru."
+    },
+    "in": "しにくい",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).\nПример: 歩く → 歩きながら (на ходу / пока шел).",
+      "en": "Doing two actions simultaneously.\nExample: aruku → arukinagara (while walking)."
+    },
+    "in": "ながら",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).",
+      "en": "Doing two actions simultaneously."
+    },
+    "in": "きながら",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).",
+      "en": "Doing two actions simultaneously."
+    },
+    "in": "ぎながら",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).",
+      "en": "Doing two actions simultaneously."
+    },
+    "in": "しながら",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).",
+      "en": "Doing two actions simultaneously."
+    },
+    "in": "ちながら",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).",
+      "en": "Doing two actions simultaneously."
+    },
+    "in": "にながら",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).",
+      "en": "Doing two actions simultaneously."
+    },
+    "in": "びながら",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).",
+      "en": "Doing two actions simultaneously."
+    },
+    "in": "みながら",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).",
+      "en": "Doing two actions simultaneously."
+    },
+    "in": "りながら",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно («делая что-то...»).",
+      "en": "Doing two actions simultaneously."
+    },
+    "in": "いながら",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Одновременность (~ながら)",
+      "en": "While doing (~nagara)"
+    },
+    "desc": {
+      "ru": "Означает выполнение двух действий одновременно для する.",
+      "en": "Doing two actions simultaneously for Suru."
+    },
+    "in": "しながら",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.\nПример: 降る → 降りそう (кажется, пойдет дождь).",
+      "en": "Looks like it's about to happen.\nExample: furu → furisou (looks like it will rain)."
+    },
+    "in": "そう",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.",
+      "en": "Looks like it's about to happen."
+    },
+    "in": "きそう",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.",
+      "en": "Looks like it's about to happen."
+    },
+    "in": "ぎそう",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.",
+      "en": "Looks like it's about to happen."
+    },
+    "in": "しそう",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.",
+      "en": "Looks like it's about to happen."
+    },
+    "in": "ちそう",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.",
+      "en": "Looks like it's about to happen."
+    },
+    "in": "にそう",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.",
+      "en": "Looks like it's about to happen."
+    },
+    "in": "びそう",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.",
+      "en": "Looks like it's about to happen."
+    },
+    "in": "みそう",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.",
+      "en": "Looks like it's about to happen."
+    },
+    "in": "りそう",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Вид / Ощущение (~そう)",
+      "en": "Looks like (~sou)"
+    },
+    "desc": {
+      "ru": "Означает, что что-то выглядит так, будто сейчас произойдет.",
+      "en": "Looks like it's about to happen."
+    },
+    "in": "いそう",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Вид (Прилагательное)",
+      "en": "Looks like Adj"
+    },
+    "desc": {
+      "ru": "Означает, что предмет выглядит обладающим этим свойством.\nПример: 美味しい → 美味しそう (выглядит вкусно).",
+      "en": "Looks like it has this property.\nExample: oishii → oishisou (looks delicious)."
+    },
+    "in": "そう",
+    "out": "い"
+  },
+  {
+    "reason": {
+      "ru": "Вид (Хороший)",
+      "en": "Looks good"
+    },
+    "desc": {
+      "ru": "Исключение для слова いい (хороший).\nПример: よさそう (выглядит хорошо).",
+      "en": "Exception for word ii (good).\nExample: yosasou (looks good)."
+    },
+    "in": "よさそう",
+    "out": "いい"
+  },
+  {
+    "reason": {
+      "ru": "Вид (Отсутствие)",
+      "en": "Looks like not"
+    },
+    "desc": {
+      "ru": "Исключение для слова ない (нет).\nПример: なさそう (кажется, этого нет).",
+      "en": "Exception for word nai (not exist).\nExample: nasasou (looks like it doesn't exist)."
+    },
+    "in": "なさそう",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.\nПример: 行く → 行きたがる (он хочет пойти).",
+      "en": "Indicates someone else wants to do it.\nExample: iku → ikitagaru (he wants to go)."
+    },
+    "in": "たがる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.",
+      "en": "Indicates someone else wants to do it."
+    },
+    "in": "きたがる",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.",
+      "en": "Indicates someone else wants to do it."
+    },
+    "in": "ぎたがる",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.",
+      "en": "Indicates someone else wants to do it."
+    },
+    "in": "したがる",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.",
+      "en": "Indicates someone else wants to do it."
+    },
+    "in": "ちたがる",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.",
+      "en": "Indicates someone else wants to do it."
+    },
+    "in": "にたがる",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.",
+      "en": "Indicates someone else wants to do it."
+    },
+    "in": "びたがる",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.",
+      "en": "Indicates someone else wants to do it."
+    },
+    "in": "みたがる",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.",
+      "en": "Indicates someone else wants to do it."
+    },
+    "in": "りたがる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать.",
+      "en": "Indicates someone else wants to do it."
+    },
+    "in": "いたがる",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Желание 3-го лица",
+      "en": "3rd Person Want"
+    },
+    "desc": {
+      "ru": "Означает, что кто-то другой (не я) хочет это сделать для する.",
+      "en": "Indicates someone else wants to do it for Suru."
+    },
+    "in": "したがる",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.\nПример: 逃げる → 逃げやがる (Сбежал, ублюдок).",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action.\nExample: nigeru → nigeyagaru (The bastard ran away)."
+    },
+    "in": "やがる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action."
+    },
+    "in": "きやがる",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action."
+    },
+    "in": "ぎやがる",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action."
+    },
+    "in": "しやがる",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action."
+    },
+    "in": "ちやがる",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action."
+    },
+    "in": "にやがる",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action."
+    },
+    "in": "びやがる",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action."
+    },
+    "in": "みやがる",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action."
+    },
+    "in": "りやがる",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる). Показывает ненависть или презрение к чужому действию.",
+      "en": "Abusive slang suffix (~yagaru). Shows contempt for the action."
+    },
+    "in": "いやがる",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Презрение (Сленг)",
+      "en": "Contempt (Slang)"
+    },
+    "desc": {
+      "ru": "Грубый суффикс (~やがる) для する.",
+      "en": "Abusive slang suffix (~yagaru) for Suru."
+    },
+    "in": "しやがる",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする / ~おうとする» (Tae Kim).\nОзначает попытку или намерение совершить действие («пытался», «собирался что-то сделать»).",
+      "en": "Grammar '~you to suru / ~ou to suru' (Tae Kim).\nIndicates an attempt or intention to do the action ('tried to', 'was about to')."
+    },
+    "in": "こうとする",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする / ~おうとする» (Tae Kim).",
+      "en": "Grammar '~you to suru / ~ou to suru' (Tae Kim)."
+    },
+    "in": "そうとする",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする / ~おうとする» (Tae Kim).",
+      "en": "Grammar '~you to suru / ~ou to suru' (Tae Kim)."
+    },
+    "in": "とうとする",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする / ~おうとする» (Tae Kim).",
+      "en": "Grammar '~you to suru / ~ou to suru' (Tae Kim)."
+    },
+    "in": "のうとする",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする / ~おうとする» (Tae Kim).",
+      "en": "Grammar '~you to suru / ~ou to suru' (Tae Kim)."
+    },
+    "in": "ぼうとする",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする / ~おうとする» (Tae Kim).",
+      "en": "Grammar '~you to suru / ~ou to suru' (Tae Kim)."
+    },
+    "in": "もうとする",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする / ~おうとする» (Tae Kim).",
+      "en": "Grammar '~you to suru / ~ou to suru' (Tae Kim)."
+    },
+    "in": "ろうとする",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする» (Tae Kim).\nОзначает попытку или намерение совершить действие (для глаголов Ichidan).",
+      "en": "Grammar '~you to suru' (Tae Kim).\nIndicates an attempt or intention to do the action (Ichidan)."
+    },
+    "in": "ようとする",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする» (Tae Kim).\nОзначает попытку или намерение совершить действие (для する).",
+      "en": "Grammar '~you to suru' (Tae Kim).\nIndicates an attempt or intention to do the action (Suru)."
+    },
+    "in": "しようとする",
+    "out": "する"
+  },
+  {
+    "reason": {
+      "ru": "Попытка / Намерение",
+      "en": "Volitional / Attempt"
+    },
+    "desc": {
+      "ru": "Грамматика «~ようとする» (Tae Kim).\nОзначает попытку или намерение совершить действие (для くる).",
+      "en": "Grammar '~you to suru' (Tae Kim).\nIndicates an attempt or intention to do the action (Kuru)."
+    },
+    "in": "こようとする",
+    "out": "くる"
+  },
+  {
+    "reason": {
+      "ru": "Завершение / Сожаление (Past)",
+      "en": "Completion / Regret (Past)"
+    },
+    "desc": {
+      "ru": "Прошедшее время от ~ちまう (Tae Kim).\nРазговорное сокращение от ~てしまった (сделать полностью / с сожалением).",
+      "en": "Past tense of ~ちまう (casual for ~てしまった)."
+    },
+    "in": "ちまった",
+    "out": "ちまう"
+  },
+  {
+    "reason": {
+      "ru": "Завершение / Сожаление (Past)",
+      "en": "Completion / Regret (Past)"
+    },
+    "desc": {
+      "ru": "Прошедшее время от ~ちゃう (Tae Kim).\nРазговорное сокращение от ~てしまった.",
+      "en": "Past tense of ~ちゃう (casual for ~てしまった)."
+    },
+    "in": "ちゃった",
+    "out": "ちゃう"
+  },
+  {
+    "reason": {
+      "ru": "Завершение / Сожаление (Past)",
+      "en": "Completion / Regret (Past)"
+    },
+    "desc": {
+      "ru": "Прошедшее время от ~じまう (Tae Kim).\nРазговорное сокращение от ~でしまった.",
+      "en": "Past tense of ~じまう (casual for ~でしまった)."
+    },
+    "in": "じまった",
+    "out": "じまう"
+  },
+  {
+    "reason": {
+      "ru": "Завершение / Сожаление (Past)",
+      "en": "Completion / Regret (Past)"
+    },
+    "desc": {
+      "ru": "Прошедшее время от ~じゃう (Tae Kim).\nРазговорное сокращение от ~でしまった.",
+      "en": "Past tense of ~じゃう (casual for ~でしまった)."
+    },
+    "in": "じゃった",
+    "out": "じゃう"
+  },
+  {
+    "reason": {
+      "ru": "Завершение / Сожаление",
+      "en": "Completion / Regret"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение от ~てしまう (Tae Kim).\nОзначает завершенность действия или сожаление о случившемся.",
+      "en": "Casual contraction of ~てしまう (completion / regret)."
+    },
+    "in": "ちまう",
+    "out": "て"
+  },
+  {
+    "reason": {
+      "ru": "Завершение / Сожаление",
+      "en": "Completion / Regret"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение от ~てしまう (Tae Kim).\nОзначает завершенность действия или сожаление о случившемся.",
+      "en": "Casual contraction of ~てしまう (completion / regret)."
+    },
+    "in": "ちゃう",
+    "out": "て"
+  },
+  {
+    "reason": {
+      "ru": "Завершение / Сожаление",
+      "en": "Completion / Regret"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение от ~でしまう (Tae Kim).\nОзначает завершенность действия или сожаление о случившемся.",
+      "en": "Casual contraction of ~でしまう (completion / regret)."
+    },
+    "in": "じまう",
+    "out": "で"
+  },
+  {
+    "reason": {
+      "ru": "Завершение / Сожаление",
+      "en": "Completion / Regret"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение от ~でしまう (Tae Kim).\nОзначает завершенность действия или сожаление о случившемся.",
+      "en": "Casual contraction of ~でしまう (completion / regret)."
+    },
+    "in": "じゃう",
+    "out": "で"
+  },
+  {
+    "reason": {
+      "ru": "Действие заранее (Past)",
+      "en": "Preparation (Past)"
+    },
+    "desc": {
+      "ru": "Прошедшее время от ~とく (Tae Kim).\nСокращение от ~ておいた (сделал заранее).",
+      "en": "Past tense of ~とく (casual for ~ておいた)."
+    },
+    "in": "といた",
+    "out": "とく"
+  },
+  {
+    "reason": {
+      "ru": "Действие заранее (Past)",
+      "en": "Preparation (Past)"
+    },
+    "desc": {
+      "ru": "Прошедшее время от ~どく (Tae Kim).\nСокращение от ~でおいた (сделал заранее).",
+      "en": "Past tense of ~どく (casual for ~でおいた)."
+    },
+    "in": "どいた",
+    "out": "どく"
+  },
+  {
+    "reason": {
+      "ru": "Действие заранее",
+      "en": "Preparation"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение от ~ておく (Tae Kim).\nОзначает сделать действие заранее или оставить всё как есть.",
+      "en": "Casual contraction of ~ておく (to do in advance)."
+    },
+    "in": "とく",
+    "out": "て"
+  },
+  {
+    "reason": {
+      "ru": "Действие заранее",
+      "en": "Preparation"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение от ~でおく (Tae Kim).\nОзначает сделать действие заранее или оставить всё как есть.",
+      "en": "Casual contraction of ~でおく (to do in advance)."
+    },
+    "in": "どく",
+    "out": "で"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие (Сленг)",
+      "en": "Ongoing state (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение от ~ている (Tae Kim).\nОзначает текущее состояние или длительное действие («прямо сейчас»).",
+      "en": "Casual contraction of ~ている (ongoing state or action)."
+    },
+    "in": "てる",
+    "out": "て"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие (Сленг)",
+      "en": "Ongoing state (Slang)"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение от ~でいる (Tae Kim).",
+      "en": "Casual contraction of ~でいる."
+    },
+    "in": "でる",
+    "out": "で"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие в прошлом (Сленг)",
+      "en": "Ongoing state Past (Slang)"
+    },
+    "desc": {
+      "ru": "Прошедшее время от ~てる.\nРазговорное сокращение от ~ていた.",
+      "en": "Past tense of ~てる (casual for ~ていた)."
+    },
+    "in": "てた",
+    "out": "てる"
+  },
+  {
+    "reason": {
+      "ru": "Длительное действие в прошлом (Сленг)",
+      "en": "Ongoing state Past (Slang)"
+    },
+    "desc": {
+      "ru": "Прошедшее время от ~でる.\nРазговорное сокращение от ~でいた.",
+      "en": "Past tense of ~でる (casual for ~でいた)."
+    },
+    "in": "でた",
+    "out": "でる"
+  },
+  {
+    "reason": {
+      "ru": "Объяснение / Эмоция",
+      "en": "Explanatory (nda)"
+    },
+    "desc": {
+      "ru": "Частица んだ. Добавляет объяснение, уверенность или эмоциональный окрас.\nПример: 探る (искать) → 探るんだ (я ведь ищу / я точно найду!)",
+      "en": "Explanatory particle 'nda'. Adds emotion or explanation.\nExample: saguru → sagurun da"
+    },
+    "in": "んだ",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Объяснение / Эмоция",
+      "en": "Explanatory (noda)"
+    },
+    "desc": {
+      "ru": "Частица のだ. Более литературный (письменный) вариант んだ.",
+      "en": "Explanatory particle 'noda'. Written form of 'nda'."
+    },
+    "in": "のだ",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Объяснение (Вежливо)",
+      "en": "Explanatory (Polite)"
+    },
+    "desc": {
+      "ru": "Частица んです. Вежливая форма んだ.",
+      "en": "Polite explanatory 'ndesu'."
+    },
+    "in": "んです",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Объяснение (Вежливо)",
+      "en": "Explanatory (Polite)"
+    },
+    "desc": {
+      "ru": "Частица のです. Вежливая литературная форма のだ.",
+      "en": "Polite explanatory 'nodesu'."
+    },
+    "in": "のです",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Подтверждение / Сленг",
+      "en": "Confirmation (jan)"
+    },
+    "desc": {
+      "ru": "Окончание じゃん. Разговорное «ведь так?», «не так ли?».",
+      "en": "Casual 'isn't it?' (jan)."
+    },
+    "in": "じゃん",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Подтверждение",
+      "en": "Confirmation (janai)"
+    },
+    "desc": {
+      "ru": "Окончание じゃない. В конце глагола используется как риторический вопрос: «ведь правда?».",
+      "en": "Casual 'isn't it?' (janai)."
+    },
+    "in": "じゃない",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Эмоциональная частица",
+      "en": "Particle (wa)"
+    },
+    "desc": {
+      "ru": "Частица わ. Перечисление действий (~わ~わ), либо женский акцент или кансайский диалект.\nПример: 泣くわ喚くわ (и плачет, и кричит).",
+      "en": "Particle 'wa'. Feminine, Kansai, or listing actions."
+    },
+    "in": "わ",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Мужской акцент (Призыв)",
+      "en": "Particle (zo)"
+    },
+    "desc": {
+      "ru": "Частица ぞ. Мужская речь, призыв к действию, грубое утверждение.\nПример: 行くぞ (Погнали!)",
+      "en": "Particle 'zo'. Masculine emphasis."
+    },
+    "in": "ぞ",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Мужской акцент (Уверенность)",
+      "en": "Particle (ze)"
+    },
+    "desc": {
+      "ru": "Частица ぜ. Крутой мужской сленг, уверенность в словах.\nПример: やるぜ (Я сделаю это).",
+      "en": "Particle 'ze'. Masculine confidence."
+    },
+    "in": "ぜ",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Сомнение / Раздумье",
+      "en": "Particle (kana)"
+    },
+    "desc": {
+      "ru": "Частица かな. Означает раздумье: «интересно... / может быть...».\nПример: 出来るかな (Смогу ли я?).",
+      "en": "Particle 'kana'. I wonder..."
+    },
+    "in": "かな",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Сомнение (Женское)",
+      "en": "Particle (kashira)"
+    },
+    "desc": {
+      "ru": "Частица かしら. Означает раздумье (женская речь).\nПример: 来るかしら (Придет ли?).",
+      "en": "Particle 'kashira'. I wonder... (feminine)"
+    },
+    "in": "かしら",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Напоминание",
+      "en": "Particle (kke)"
+    },
+    "desc": {
+      "ru": "Частица っけ. Попытка вспомнить что-то («как там было...», «разве...»).\nПример: 何だっけ (Что это было?).",
+      "en": "Particle 'kke'. Trying to recall."
+    },
+    "in": "っけ",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Усиление",
+      "en": "Particle (sa)"
+    },
+    "desc": {
+      "ru": "Частица さ. Добавляет легкость, непринужденность или уверенность.\nПример: 行くさ (Конечно пойду).",
+      "en": "Particle 'sa'. Light emphasis."
+    },
+    "in": "さ",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Перечисление",
+      "en": "Listing (dano)"
+    },
+    "desc": {
+      "ru": "Частица だの. Используется для пренебрежительного перечисления («то одно, то другое...»).\nПример: 痛いだの (то болит, то...).",
+      "en": "Particle 'dano'. Negative listing."
+    },
+    "in": "だの",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Разговорная частица って",
+      "en": "Particle tte"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение от と (цитирование) или は (тема).",
+      "en": "Casual quote marker or topic marker."
+    },
+    "in": "って",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Отрицательное намерение",
+      "en": "Negative Volition"
+    },
+    "desc": {
+      "ru": "Грамматика ~まい. Означает «я точно не буду этого делать» или «вряд ли это произойдет».\nПример: 行くまい (Точно не пойду).",
+      "en": "Grammar ~mai. Strong negative intention."
+    },
+    "in": "まい",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Должен / Обязан",
+      "en": "Should do"
+    },
+    "desc": {
+      "ru": "Грамматика ~べき. Означает моральный долг или сильный совет: «следует сделать».\nПример: 行くべき (Тебе следует пойти).",
+      "en": "Grammar ~beki. Strong recommendation / obligation."
+    },
+    "in": "べき",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Запрет",
+      "en": "Must not do"
+    },
+    "desc": {
+      "ru": "Грамматика ~べからず. Письменный, строгий запрет: «нельзя делать».\nПример: 入るべからず (Входить запрещено).",
+      "en": "Grammar ~bekarazu. Strict written prohibition."
+    },
+    "in": "べからず",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи (напр. 噛み殺す).",
+      "en": "Stem"
+    },
+    "in": "き",
+    "out": "く"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "し",
+    "out": "す"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "ち",
+    "out": "つ"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "に",
+    "out": "ぬ"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "み",
+    "out": "む"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "り",
+    "out": "る"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "い",
+    "out": "う"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "ぎ",
+    "out": "ぐ"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "び",
+    "out": "ぶ"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "じ",
+    "out": "ず"
+  },
+  {
+    "reason": {
+      "ru": "Основа",
+      "en": "Stem"
+    },
+    "desc": {
+      "ru": "Основа глагола (連用形). Используется как существительное или для связи.",
+      "en": "Stem"
+    },
+    "in": "ぢ",
+    "out": "づ"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "え",
+    "out": "える"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "け",
+    "out": "ける"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "げ",
+    "out": "げる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "せ",
+    "out": "せる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "ぜ",
+    "out": "ぜる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "て",
+    "out": "てる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "で",
+    "out": "でる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "ね",
+    "out": "ねる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "へ",
+    "out": "へる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "べ",
+    "out": "べる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "ぺ",
+    "out": "ぺる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "め",
+    "out": "める"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения (или основа пассива).",
+      "en": "Stem"
+    },
+    "in": "れ",
+    "out": "れる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "い",
+    "out": "いる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "き",
+    "out": "きる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "ぎ",
+    "out": "ぎる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "し",
+    "out": "しる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "じ",
+    "out": "じる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "ち",
+    "out": "ちる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "ぢ",
+    "out": "ぢる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "に",
+    "out": "にる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "ひ",
+    "out": "ひる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "び",
+    "out": "びる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "ぴ",
+    "out": "ぴる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "み",
+    "out": "みる"
+  },
+  {
+    "reason": {
+      "ru": "Основа (ru-глаголы)",
+      "en": "Stem (Ichidan)"
+    },
+    "desc": {
+      "ru": "Основа глагола 2-го спряжения. Форма без «る».",
+      "en": "Stem"
+    },
+    "in": "り",
+    "out": "りる"
+  },
+  {
+    "reason": {
+      "ru": "Классическое прошедшее",
+      "en": "Classical Past"
+    },
+    "desc": {
+      "ru": "Книжный/устаревший аналог «た» (суффикс し).",
+      "en": "Classical Past"
+    },
+    "in": "し",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Классическое прошедшее",
+      "en": "Classical Past"
+    },
+    "desc": {
+      "ru": "Книжный/устаревший аналог «た» (суффикс し).",
+      "en": "Classical Past"
+    },
+    "in": "れし",
+    "out": "れる"
+  },
+  {
+    "reason": {
+      "ru": "Классическое прошедшее",
+      "en": "Classical Past"
+    },
+    "desc": {
+      "ru": "Книжный/устаревший аналог «た» (суффикс し).",
+      "en": "Classical Past"
+    },
+    "in": "せし",
+    "out": "せる"
+  },
+  {
+    "reason": {
+      "ru": "Предположение (~だろう)",
+      "en": "Presumption (~darou)"
+    },
+    "desc": {
+      "ru": "Окончание だろう / だろ: разговорное предположение или вопросительное «ведь..., наверное?».\nПример: 始まらねぇだろう → 始まらねぇ",
+      "en": "Sentence ending darou/daro: presumption or tag question.\nExample: hajimaranee darou → hajimaranee"
+    },
+    "in": "だろう",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Предположение (~だろ)",
+      "en": "Presumption (~daro)"
+    },
+    "desc": {
+      "ru": "Разговорное сокращение だろ от だろう.\nПример: 無理だろ → 無理",
+      "en": "Casual shortened daro from darou.\nExample: muri daro → muri"
+    },
+    "in": "だろ",
+    "out": ""
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное ねぇ)",
+      "en": "Negative (Slang nee)"
+    },
+    "desc": {
+      "ru": "Грубое/разговорное сокращение ない → ねぇ.\nПример: 始まらねぇ → 始まらない",
+      "en": "Rough/casual contraction nai → nee.\nExample: hajimaranee → hajimaranai"
+    },
+    "in": "ねぇ",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное ねえ)",
+      "en": "Negative (Slang nee)"
+    },
+    "desc": {
+      "ru": "Вариант записи ねえ вместо ねぇ.\nПример: 始まらねえ → 始まらない",
+      "en": "Variant spelling nee instead of ねぇ.\nExample: hajimaranee → hajimaranai"
+    },
+    "in": "ねえ",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Отрицание (Разговорное ねー)",
+      "en": "Negative (Slang nee)"
+    },
+    "desc": {
+      "ru": "Вариант записи ねー вместо ねぇ.\nПример: 始まらねー → 始まらない",
+      "en": "Variant spelling nee as ねー.\nExample: hajimaranee → hajimaranai"
+    },
+    "in": "ねー",
+    "out": "ない"
+  },
+  {
+    "reason": {
+      "ru": "Выглядит как / качество (~げ)",
+      "en": "Appearance / quality (~ge)"
+    },
+    "desc": {
+      "ru": "Суффикс げ: «выглядит..., с оттенком...». Часто присоединяется к основе い-прилагательного.\nПример: 儚げ → 儚い; 儚げな声 → 儚い",
+      "en": "Suffix ~ge: 'seems/looks ...', often attaches to i-adjective stems.\nExample: hakanage → hakanai"
+    },
+    "in": "げ",
+    "out": "い"
+  }
+]

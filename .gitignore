@@ -1,0 +1,32 @@
+# node
+node_modules/
+dist/
+build/
+
+# tauri
+src-tauri/target/
+target/
+
+# базы
+*.db
+*.sqlite
+*.sqlite3
+
+# билды
+*.exe
+*.msi
+*.zip
+
+# мусор
+.DS_Store
+Thumbs.db
+
+# env
+.env
+.env.local
+.vs/
+.vscode/
+*.vsidx
+*.wsuo
+src-tauri/debug_screenshot.*
+src-tauri/2
