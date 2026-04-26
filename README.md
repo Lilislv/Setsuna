@@ -1,7 +1,38 @@
-# Tauri + React + Typescript
+# Setsuna
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-## Recommended IDE Setup
+[Русский](README_RU.md)
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+---
+
+Setsuna is a desktop app for reading Japanese text.
+
+## Features
+
+- Word lookup (Yomitan-like)
+- Yomitan dictionary import
+- Anki integration (1-click mining)
+- Reading statistics
+- Built-in browser
+- Google Drive AppData sync
+
+## Download
+
+➡️ Releases: https://github.com/Lilislv/Setsuna/releases
+
+## Website
+
+https://www.setsunalookup.ru
+
+## Privacy Policy
+
+https://www.setsunalookup.ru/privacy.html
+
+## Terms of Service
+
+https://www.setsunalookup.ru/terms.html
+
+## License
+
+MIT
