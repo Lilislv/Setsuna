@@ -1,25 +1,161 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Setsuna Terms of Service</title>
-<style>
-body {
-    max-width: 800px;
-    margin: 40px auto;
-    font-family: Arial, sans-serif;
-    line-height: 1.6;
-    padding: 0 16px;
-}
-h1 { font-size: 28px; }
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Terms of service for Setsuna, a desktop Japanese reading assistant." />
+  <title>Setsuna Terms of Service</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111213;
+      --panel: #191b1f;
+      --text: #f1f3f5;
+      --muted: #a1a8b3;
+      --border: #2a2e35;
+      --accent: #4fa6ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      line-height: 1.7;
+    }
+
+    main {
+      width: min(900px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 56px 0;
+    }
+
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 800;
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #050607;
+      color: var(--accent);
+      font-size: 22px;
+      font-family: "Yu Mincho", "Noto Serif JP", serif;
+    }
+
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    header {
+      padding: 42px 0 20px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(36px, 7vw, 62px);
+      line-height: 1.08;
+    }
+
+    .updated {
+      margin: 14px 0 0;
+      color: var(--muted);
+    }
+
+    section {
+      margin-top: 18px;
+      padding: 22px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 20px;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    p + p {
+      margin-top: 12px;
+    }
+  </style>
 </head>
 <body>
+  <main>
+    <nav aria-label="Site navigation">
+      <a class="brand" href="/">
+        <span class="mark">刹</span>
+        <span>Setsuna</span>
+      </a>
+      <div class="links">
+        <a href="/">Home</a>
+        <a href="/privacy.html">Privacy</a>
+        <a href="https://github.com/Lilislv/Setsuna">GitHub</a>
+      </div>
+    </nav>
 
-<h1>Terms of Service</h1>
+    <header>
+      <h1>Terms of Service</h1>
+      <p class="updated">Last updated: April 30, 2026</p>
+    </header>
 
-<p>This software is provided "as is", without warranty of any kind.</p>
-<p>You use it at your own risk.</p>
+    <section>
+      <h2>Use of the App</h2>
+      <p>Setsuna is provided as a desktop tool for Japanese reading, dictionary lookup, progress tracking, and study-card creation.</p>
+      <p>Users are responsible for how they configure the app and for complying with the terms of any third-party tools, dictionaries, media, or services they use with it.</p>
+    </section>
 
+    <section>
+      <h2>Google Drive Sync</h2>
+      <p>If cloud sync is enabled, Setsuna uses Google Drive AppData only to store and synchronize Setsuna app data for the signed-in user.</p>
+      <p>The user may disable sync or revoke access from their Google account settings at any time.</p>
+    </section>
+
+    <section>
+      <h2>No Warranty</h2>
+      <p>The software is provided "as is", without warranties of any kind. Use it at your own risk.</p>
+      <p>The developer is not responsible for data loss, misconfigured local tools, dictionary content, or third-party service availability.</p>
+    </section>
+
+    <section>
+      <h2>Contact</h2>
+      <p>For questions about these terms, contact the developer through <a href="https://github.com/Lilislv/Setsuna">GitHub</a> or by email at <a href="mailto:setsunalookup@gmail.com">setsunalookup@gmail.com</a>.</p>
+    </section>
+  </main>
 </body>
 </html>
