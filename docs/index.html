@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Setsuna is a desktop app for reading Japanese text, looking up words, and creating Anki cards." />
+  <title>Setsuna - Japanese Reading Assistant</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111213;
+      --panel: #191b1f;
+      --text: #f1f3f5;
+      --muted: #a1a8b3;
+      --border: #2a2e35;
+      --accent: #4fa6ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      line-height: 1.6;
+    }
+
+    main {
+      width: min(1040px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 72px 0 56px;
+    }
+
+    header {
+      display: grid;
+      gap: 20px;
+      padding-bottom: 42px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #050607;
+      color: var(--accent);
+      font-size: 24px;
+      font-family: "Yu Mincho", "Noto Serif JP", serif;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 760px;
+      font-size: clamp(40px, 7vw, 76px);
+      line-height: 1.05;
+    }
+
+    .lead {
+      margin: 0;
+      max-width: 690px;
+      color: var(--muted);
+      font-size: 19px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    a.button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 16px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+      background: var(--panel);
+    }
+
+    a.primary {
+      border-color: #2e6ea8;
+      background: #12304a;
+    }
+
+    section {
+      padding: 40px 0 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      min-height: 148px;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .card h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 46px;
+      padding-top: 22px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        padding-top: 44px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand">
+        <div class="mark">刹</div>
+        <span>Setsuna</span>
+      </div>
+      <h1>Japanese reading assistant for visual novels, books, and mining.</h1>
+      <p class="lead">
+        Setsuna helps learners read Japanese text, look up words with local dictionaries, track reading progress,
+        and create Anki cards from desktop reading sessions.
+      </p>
+      <nav class="actions" aria-label="Primary links">
+        <a class="button primary" href="https://github.com/Lilislv/Setsuna/releases">Download</a>
+        <a class="button" href="https://github.com/Lilislv/Setsuna">GitHub</a>
+        <a class="button" href="/privacy.html">Privacy Policy</a>
+      </nav>
+    </header>
+
+    <section aria-label="Features">
+      <div class="grid">
+        <article class="card">
+          <h2>Dictionary lookup</h2>
+          <p>Use local Yomitan-style dictionaries for fast Japanese word lookup while reading.</p>
+        </article>
+        <article class="card">
+          <h2>Anki mining</h2>
+          <p>Create study cards with sentence context, dictionary data, audio, and screenshots.</p>
+        </article>
+        <article class="card">
+          <h2>Private sync</h2>
+          <p>Optional Google Drive AppData sync stores app data privately in the user's own account.</p>
+        </article>
+      </div>
+    </section>
+
+    <footer>
+      <span>Setsuna is an independent desktop application.</span>
+      <a href="/privacy.html">Privacy Policy</a>
+      <a href="/terms.html">Terms of Service</a>
+      <a href="mailto:setsunalookup@gmail.com">Contact</a>
+    </footer>
+  </main>
+</body>
+</html>
