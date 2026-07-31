@@ -1313,7 +1313,10 @@ fn load_rules() -> Vec<(Value, Value, String, String)> {
 
 #[tauri::command]
 async fn get_installed_dicts(app: tauri::AppHandle) -> Result<Vec<String>, String> {
-    let db = open_db(&app)?;
+    let mut db = open_db(&app)?;
+    // Older builds could leave one row per dated revision. Clean those rows
+    // before exposing dictionary names to the frontend.
+    dictionary_import::cleanup_stale_dictionary_revisions(&mut db)?;
     let mut names = HashSet::new();
     for table in ["entries", "frequencies", "pitches", "pronunciations"] {
         let sql = format!(

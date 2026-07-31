@@ -184,6 +184,15 @@ fn import_dictionaries_blocking(
     index_result?;
     let result = batch_result.map(|_| total_added);
     if result.is_ok() {
+        emit_progress(
+            &app,
+            "Dictionary import",
+            total_dicts,
+            total_dicts,
+            total_dicts,
+            total_added,
+            "Import complete",
+        );
         if let Ok(mut recent) = RECENT_DICTIONARY_IMPORT
             .get_or_init(|| Mutex::new(None))
             .lock()
@@ -314,6 +323,69 @@ fn rebuild_import_indexes(db: &rusqlite::Connection) -> Result<(), String> {
         .map_err(|e| format!("Failed to save dictionary indexes: {}", e))?;
     db.execute_batch("PRAGMA synchronous = NORMAL;")
         .map_err(|e| format!("Failed to finalize dictionary database: {}", e))
+}
+
+/// Removes superseded revisions of auto-updatable dictionaries.
+///
+/// Yomitan dictionaries commonly put the revision date in `title`.  The
+/// source URL is the stable identity, so retaining every title creates a new
+/// dictionary on every update and makes the settings list grow indefinitely.
+pub fn cleanup_stale_dictionary_revisions(db: &mut rusqlite::Connection) -> Result<usize, String> {
+    let mut stmt = db
+        .prepare(
+            "SELECT title, imported_at_ms,
+                    CASE WHEN download_url != '' THEN download_url ELSE index_url END AS source_key
+             FROM dictionary_meta
+             WHERE is_updatable = 1
+               AND (download_url != '' OR index_url != '')
+             ORDER BY source_key, imported_at_ms DESC, title DESC",
+        )
+        .map_err(|e| format!("Failed to inspect dictionary revisions: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1).unwrap_or_default(),
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| format!("Failed to read dictionary revisions: {e}"))?;
+
+    let mut latest_by_source = std::collections::HashSet::new();
+    let mut stale_titles = Vec::new();
+    for row in rows {
+        let (title, _imported_at, source_key) =
+            row.map_err(|e| format!("Failed to read dictionary revision: {e}"))?;
+        if !latest_by_source.insert(source_key) {
+            stale_titles.push(title);
+        }
+    }
+    drop(stmt);
+
+    if stale_titles.is_empty() {
+        return Ok(0);
+    }
+
+    let tx = db
+        .transaction()
+        .map_err(|e| format!("Failed to start dictionary cleanup: {e}"))?;
+    for title in &stale_titles {
+        for table in ["entries", "frequencies", "pitches", "pronunciations"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE dict_name = ?1"),
+                params![title],
+            )
+            .map_err(|e| format!("Failed to remove stale dictionary data: {e}"))?;
+        }
+        tx.execute(
+            "DELETE FROM dictionary_meta WHERE title = ?1",
+            params![title],
+        )
+        .map_err(|e| format!("Failed to remove stale dictionary metadata: {e}"))?;
+    }
+    tx.commit()
+        .map_err(|e| format!("Failed to save dictionary cleanup: {e}"))?;
+    Ok(stale_titles.len())
 }
 
 fn emit_progress(
@@ -566,6 +638,46 @@ fn import_yomitan_zip(
     );
     let tx = begin_import_transaction(db)?;
     let mut words_added = 0usize;
+
+    // A revision may have a different title (for example `JMdict [2026-07-31]`)
+    // while keeping the same update source. Remove the previous revision inside
+    // this transaction before importing the replacement.
+    let source_key = if !metadata.download_url.trim().is_empty() {
+        metadata.download_url.trim()
+    } else {
+        metadata.index_url.trim()
+    };
+    if !source_key.is_empty() {
+        let mut stale_stmt = tx
+            .prepare(
+                "SELECT title FROM dictionary_meta
+                 WHERE title != ?1 AND is_updatable = 1
+                   AND (download_url = ?2 OR (download_url = '' AND index_url = ?2))",
+            )
+            .map_err(|e| format!("Failed to inspect previous dictionary revision: {e}"))?;
+        let stale_titles = stale_stmt
+            .query_map(params![&dict_name, source_key], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|e| format!("Failed to read previous dictionary revision: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect previous dictionary revision: {e}"))?;
+        drop(stale_stmt);
+        for stale_title in stale_titles {
+            for table in ["entries", "frequencies", "pitches", "pronunciations"] {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE dict_name = ?1"),
+                    params![&stale_title],
+                )
+                .map_err(|e| format!("Failed to replace previous dictionary: {e}"))?;
+            }
+            tx.execute(
+                "DELETE FROM dictionary_meta WHERE title = ?1",
+                params![&stale_title],
+            )
+            .map_err(|e| format!("Failed to replace previous dictionary metadata: {e}"))?;
+        }
+    }
 
     // Re-imports and updates replace the prior revision atomically.
     for table in ["entries", "frequencies", "pitches", "pronunciations"] {
