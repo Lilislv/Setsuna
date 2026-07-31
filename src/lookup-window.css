@@ -1,0 +1,202 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+.lookup-agent-root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: var(--bg-secondary);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.48);
+}
+
+.lookup-agent-toolbar {
+  position: fixed;
+  z-index: 22000;
+  top: 0;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+}
+
+.lookup-agent-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 3px 6px 2px 9px;
+}
+
+.lookup-agent-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lookup-agent-mark {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  background: var(--accent-color);
+  color: #fff;
+  font: 700 12px/1 var(--font-stack);
+}
+
+.lookup-agent-title > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.lookup-agent-title strong {
+  color: var(--text-primary);
+  font: 600 12px/1 var(--font-stack);
+}
+
+.lookup-agent-title span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 11px/1 var(--font-stack);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lookup-agent-tools {
+  display: grid;
+  grid-template-columns: minmax(132px, 1.2fr) auto minmax(118px, 1fr) auto;
+  align-items: end;
+  gap: 6px;
+  padding: 2px 7px 7px;
+}
+
+.lookup-agent-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lookup-agent-field > span {
+  padding-left: 2px;
+  color: var(--text-muted);
+  font: 10px/1 var(--font-stack);
+}
+
+.lookup-agent-toolbar select,
+.lookup-agent-toolbar button {
+  min-width: 0;
+  height: 29px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: 12px/1 var(--font-stack);
+}
+
+.lookup-agent-toolbar select {
+  width: 100%;
+  padding: 0 7px;
+  text-overflow: ellipsis;
+}
+
+.lookup-agent-toolbar select:disabled {
+  opacity: 0.72;
+}
+
+.lookup-agent-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  cursor: pointer;
+}
+
+.lookup-agent-toolbar button:hover,
+.lookup-agent-toolbar button.is-active {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
+.lookup-agent-region { margin-top: 13px; }
+
+.lookup-agent-source {
+  height: 29px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  color: var(--text-muted);
+  font: 10px/1 var(--font-stack);
+  white-space: nowrap;
+}
+
+.lookup-agent-source::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #777;
+  content: "";
+}
+
+.lookup-agent-source.is-ready::before { background: #51bd69; }
+
+.lookup-agent-toolbar .lookup-agent-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-color: transparent;
+  color: var(--text-muted);
+  font-size: 19px;
+}
+
+.lookup-agent-toolbar .lookup-agent-close:hover {
+  border-color: rgba(255, 92, 92, 0.35);
+  color: #ff5c5c;
+}
+
+.lookup-agent-status {
+  position: absolute;
+  top: 88px;
+  left: 14px;
+  right: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font: 13px/1.4 var(--font-stack);
+}
+
+.lookup-surface-external .dict-popup {
+  width: calc(100vw - 28px) !important;
+  max-width: none !important;
+  box-sizing: border-box;
+}
+
+@media (max-width: 430px) {
+  .lookup-agent-tools { grid-template-columns: minmax(115px, 1fr) auto minmax(110px, 1fr); }
+  .lookup-agent-source { display: none; }
+  .lookup-agent-region span:last-child { display: none; }
+}

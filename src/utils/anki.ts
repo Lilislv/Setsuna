@@ -2,9 +2,27 @@
     value: T;
     expiresAt: number;
 };
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+import { invoke } from '@tauri-apps/api/core';
+
+type AnkiDroidBridge = {
+    isAvailable: () => string;
+    requestPermission: () => string;
+    getDecks: () => string;
+    getModels: () => string;
+    getModelFields: (modelName: string) => string;
+    addNote: (noteJson: string) => string;
+};
+
+declare global {
+    interface Window {
+        SetsunaAnkiDroid?: AnkiDroidBridge;
+    }
+}
 
 const ANKI_URL = 'http://127.0.0.1:8765';
 const META_TTL_MS = 60_000;
+const STATUS_TTL_MS = 15_000;
 
 const cache = {
     decks: null as CacheEntry<string[]> | null,
@@ -22,20 +40,67 @@ const isFresh = <T>(entry: CacheEntry<T> | null): entry is CacheEntry<T> => {
     return !!entry && Date.now() < entry.expiresAt;
 };
 
+const wordStatusCache = new Map<string, CacheEntry<'green' | 'red' | 'blue'>>();
+
+const getAnkiDroidBridge = (): AnkiDroidBridge | null => {
+    if (typeof window === "undefined") return null;
+    return window.SetsunaAnkiDroid || null;
+};
+
+const parseBridgeResult = <T>(raw: string): T => {
+    const parsed = JSON.parse(raw || "{}");
+    if (!parsed.ok) {
+        throw new Error(parsed.error || "AnkiDroid bridge error");
+    }
+    return parsed.value as T;
+};
+
+export const getAnkiBackend = () => {
+    return getAnkiDroidBridge() ? "ankidroid" : "ankiconnect";
+};
+
+export const getAnkiDroidStatus = async () => {
+    const bridge = getAnkiDroidBridge();
+    if (!bridge) return null;
+    return parseBridgeResult<{
+        available: boolean;
+        packageName: string | null;
+        permissionGranted: boolean;
+        specVersion: number;
+    }>(bridge.isAvailable());
+};
+
+export const requestAnkiDroidPermission = async () => {
+    const bridge = getAnkiDroidBridge();
+    if (!bridge) return null;
+    return parseBridgeResult<{ requested: boolean; permissionGranted: boolean }>(bridge.requestPermission());
+};
+
 export const invokeAnki = async (action: string, params: any = {}) => {
+    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+        return invoke<any>('anki_request', { action, params });
+    }
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 4000);
     try {
-        const response = await fetch(ANKI_URL, {
+        const request = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window ? tauriFetch : globalThis.fetch;
+        const response = await request(ANKI_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action, version: 6, params }),
+            signal: controller.signal,
         });
 
+        if (!response.ok) throw new Error(`AnkiConnect HTTP ${response.status}`);
         const json = await response.json();
         if (json.error) throw new Error(json.error);
         return json.result;
     } catch (e) {
         console.error('AnkiConnect error:', e);
         throw e;
+    } finally {
+        window.clearTimeout(timeout);
     }
 };
 
@@ -47,9 +112,26 @@ export const clearAnkiMetaCache = () => {
     inflight.decks = null;
     inflight.models = null;
     inflight.fieldsByModel.clear();
+    wordStatusCache.clear();
+};
+
+export const browseAnkiCards = async (deckName: string, fieldName: string, word: string) => {
+    if (getAnkiDroidBridge()) {
+        throw new Error("AnkiDroid does not support opening the desktop card browser");
+    }
+    if (!fieldName || fieldName === "none" || !word) return [];
+    const deckQuery = deckName ? `deck:"${escapeAnkiQuery(deckName)}" ` : "";
+    return invokeAnki("guiBrowse", {
+        query: `${deckQuery}"${fieldName}:${escapeAnkiQuery(word)}"`,
+    });
 };
 
 export const getDecks = async (forceRefresh = false): Promise<string[]> => {
+    const bridge = getAnkiDroidBridge();
+    if (bridge) {
+        return parseBridgeResult<string[]>(bridge.getDecks());
+    }
+
     if (!forceRefresh && isFresh(cache.decks)) {
         return cache.decks.value;
     }
@@ -75,6 +157,11 @@ export const getDecks = async (forceRefresh = false): Promise<string[]> => {
 };
 
 export const getModels = async (forceRefresh = false): Promise<string[]> => {
+    const bridge = getAnkiDroidBridge();
+    if (bridge) {
+        return parseBridgeResult<string[]>(bridge.getModels());
+    }
+
     if (!forceRefresh && isFresh(cache.models)) {
         return cache.models.value;
     }
@@ -104,6 +191,11 @@ export const getModelFields = async (
     forceRefresh = false
 ): Promise<string[]> => {
     if (!modelName) return [];
+
+    const bridge = getAnkiDroidBridge();
+    if (bridge) {
+        return parseBridgeResult<string[]>(bridge.getModelFields(modelName));
+    }
 
     const cached = cache.fieldsByModel.get(modelName) || null;
     if (!forceRefresh && isFresh(cached)) {
@@ -282,6 +374,11 @@ const shouldUseLapisFuriganaField = (fieldName: string | undefined): boolean => 
     return /furigana/i.test(fieldName);
 };
 
+const shouldUseSentenceFuriganaField = (fieldName: string | undefined): boolean => {
+    if (!fieldName) return false;
+    return /furigana|sentencefurigana/i.test(fieldName);
+};
+
 type AnkiCheckPair = {
     word: string;
     reading?: string | null;
@@ -309,7 +406,12 @@ export const addNote = async (settings: any, noteData: any) => {
         fields[settings.ankiFieldMeaning] = noteData.meaning || '';
     }
     if (settings.ankiFieldSentence && settings.ankiFieldSentence !== 'none') {
-        fields[settings.ankiFieldSentence] = noteData.sentence || '';
+        fields[settings.ankiFieldSentence] = shouldUseSentenceFuriganaField(settings.ankiFieldSentence)
+            ? (noteData.sentenceFurigana || noteData.sentence || '')
+            : (noteData.sentence || '');
+    }
+    if (settings.ankiFieldSentenceFurigana && settings.ankiFieldSentenceFurigana !== 'none') {
+        fields[settings.ankiFieldSentenceFurigana] = noteData.sentenceFurigana || noteData.sentence || '';
     }
     if (settings.ankiFieldDict && settings.ankiFieldDict !== 'none') {
         fields[settings.ankiFieldDict] = noteData.dictionary || '';
@@ -330,11 +432,24 @@ export const addNote = async (settings: any, noteData: any) => {
         },
     };
 
-    if (noteData.audioUrl && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
+    const safeWord = String(rawWord || "clip").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 48);
+    if (noteData.audioPath && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
+        const filename = noteData.audioFilename || `setsuna_player_${safeWord}_${Date.now()}${noteData.audioMediaType === 'video' ? '.mp4' : '.mp3'}`;
+        try {
+            await invokeAnki('storeMediaFile', {
+                filename,
+                path: noteData.audioPath,
+                deleteExisting: true,
+            });
+            fields[settings.ankiFieldAudio] = `${fields[settings.ankiFieldAudio] || ""} [sound:${filename}]`.trim();
+        } catch (error: any) {
+            return { error: error.message };
+        }
+    } else if (noteData.audioUrl && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
         note.audio = [
             {
                 url: noteData.audioUrl,
-                filename: `txthk_${rawWord}_${Date.now()}.mp3`,
+                filename: `txthk_${safeWord}_${Date.now()}.mp3`,
                 skipHash: '7e2c2f954ef6051373ba916f000168dc',
                 fields: [settings.ankiFieldAudio],
             },
@@ -355,10 +470,51 @@ export const addNote = async (settings: any, noteData: any) => {
         ];
     }
 
+    const bridge = getAnkiDroidBridge();
+    if (bridge) {
+        try {
+            const payload = {
+                deckName: note.deckName,
+                modelName: note.modelName,
+                fields,
+                tags: note.tags || [],
+                screenshotField:
+                    noteData.screenshot &&
+                    settings.ankiFieldScreenshot &&
+                    settings.ankiFieldScreenshot !== "none"
+                        ? settings.ankiFieldScreenshot
+                        : "",
+                screenshotBase64: noteData.screenshot || "",
+            };
+            const result = parseBridgeResult<{ result: number | null }>(
+                bridge.addNote(JSON.stringify(payload)),
+            );
+            wordStatusCache.clear();
+            return { result: result.result };
+        } catch (error: any) {
+            return { error: error.message || String(error) };
+        }
+    }
+
     try {
         const result = await invokeAnki('addNote', { note });
+        wordStatusCache.clear();
         return { result };
     } catch (error: any) {
+        if (note.audio?.length) {
+            const audioError = error?.message || String(error);
+            delete note.audio;
+            try {
+                const result = await invokeAnki('addNote', { note });
+                wordStatusCache.clear();
+                return {
+                    result,
+                    warning: `Audio was skipped because AnkiConnect could not download it: ${audioError}`,
+                };
+            } catch (retryError: any) {
+                return { error: retryError.message || String(retryError) };
+            }
+        }
         return { error: error.message };
     }
 };
@@ -377,17 +533,30 @@ export const checkWordsStatusMulti = async (
         : (pairsMaybe || []);
 
     const statuses: Record<string, 'green' | 'red' | 'blue'> = {};
+    const now = Date.now();
+    const unresolvedPairs: AnkiCheckPair[] = [];
 
     pairs.forEach((pair) => {
-        statuses[makePairKey(pair.word, pair.reading)] = 'green';
+        const pairKey = makePairKey(pair.word, pair.reading);
+        const cached = wordStatusCache.get(`${deckName}|${fieldName}|${readingField || ''}|${pairKey}`);
+        if (cached && cached.expiresAt > now) {
+            statuses[pairKey] = cached.value;
+        } else {
+            statuses[pairKey] = 'green';
+            unresolvedPairs.push(pair);
+        }
     });
 
-    if (!deckName || !fieldName || pairs.length === 0) {
+    if (getAnkiDroidBridge()) {
+        return statuses;
+    }
+
+    if (!deckName || !fieldName || unresolvedPairs.length === 0) {
         return statuses;
     }
 
     try {
-        const uniqueWords = Array.from(new Set(pairs.map((pair) => pair.word).filter(Boolean)));
+        const uniqueWords = Array.from(new Set(unresolvedPairs.map((pair) => pair.word).filter(Boolean)));
 
         if (uniqueWords.length === 0) return statuses;
 
@@ -395,22 +564,30 @@ export const checkWordsStatusMulti = async (
             .map((word) => `"${fieldName}:${escapeAnkiQuery(word)}"`)
             .join(' OR ');
 
-        const sameResult = await invokeAnki('findNotes', {
-            query: `deck:"${escapeAnkiQuery(deckName)}" (${queryByWords})`,
+        const findResults = await invokeAnki('multi', {
+            actions: [
+                { action: 'findNotes', params: { query: `deck:"${escapeAnkiQuery(deckName)}" (${queryByWords})` } },
+                { action: 'findNotes', params: { query: `-deck:"${escapeAnkiQuery(deckName)}" (${queryByWords})` } },
+            ],
         });
+        const unwrapMultiResult = (value: any) => value && typeof value === 'object' && !Array.isArray(value) && 'result' in value
+            ? value.result
+            : value;
+        const sameResult = unwrapMultiResult(findResults?.[0]) || [];
+        const otherResult = unwrapMultiResult(findResults?.[1]) || [];
 
-        const otherResult = await invokeAnki('findNotes', {
-            query: `-deck:"${escapeAnkiQuery(deckName)}" (${queryByWords})`,
-        });
+        const noteGroups = [otherResult, sameResult].filter((ids) => Array.isArray(ids) && ids.length > 0);
+        const infoResults = noteGroups.length > 0
+            ? await invokeAnki('multi', {
+                actions: noteGroups.map((ids) => ({ action: 'notesInfo', params: { notes: ids } })),
+            })
+            : [];
+        let infoIndex = 0;
 
-        const applyMatches = async (
-            noteIds: number[],
+        const applyMatches = (
+            notesInfo: any[],
             status: 'red' | 'blue',
         ) => {
-            if (!Array.isArray(noteIds) || noteIds.length === 0) return;
-
-            const notesInfo = await invokeAnki('notesInfo', { notes: noteIds });
-
             if (!Array.isArray(notesInfo)) return;
 
             notesInfo.forEach((info: any) => {
@@ -419,7 +596,7 @@ export const checkWordsStatusMulti = async (
                     ? normalizeFieldValue(info.fields?.[readingField]?.value)
                     : "";
 
-                pairs.forEach((pair) => {
+                unresolvedPairs.forEach((pair) => {
                     if (pair.word !== noteWord) return;
 
                     const key = makePairKey(pair.word, pair.reading);
@@ -435,8 +612,23 @@ export const checkWordsStatusMulti = async (
             });
         };
 
-        await applyMatches(otherResult, 'blue');
-        await applyMatches(sameResult, 'red');
+        if (otherResult.length > 0) applyMatches(unwrapMultiResult(infoResults?.[infoIndex++]) || [], 'blue');
+        if (sameResult.length > 0) applyMatches(unwrapMultiResult(infoResults?.[infoIndex++]) || [], 'red');
+
+        unresolvedPairs.forEach((pair) => {
+            const pairKey = makePairKey(pair.word, pair.reading);
+            wordStatusCache.set(`${deckName}|${fieldName}|${readingField || ''}|${pairKey}`, {
+                value: statuses[pairKey],
+                expiresAt: Date.now() + STATUS_TTL_MS,
+            });
+        });
+        if (wordStatusCache.size > 2000) {
+            for (const [key, entry] of wordStatusCache) {
+                if (entry.expiresAt <= Date.now() || wordStatusCache.size > 1500) {
+                    wordStatusCache.delete(key);
+                }
+            }
+        }
 
         return statuses;
     } catch (e) {

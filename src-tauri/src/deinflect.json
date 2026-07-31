@@ -2485,6 +2485,18 @@
   },
   {
     "reason": {
+      "ru": "Вежливое длительное действие",
+      "en": "Polite ongoing state"
+    },
+    "desc": {
+      "ru": "Формальное окончание ~ております. Сводится к обычному ~ている перед дальнейшей деинфлексией.",
+      "en": "Formal ~te orimasu. Converts to regular ~te iru before further deinflection."
+    },
+    "in": "おります",
+    "out": "いる"
+  },
+  {
+    "reason": {
       "ru": "Длительное действие",
       "en": "Ongoing state"
     },

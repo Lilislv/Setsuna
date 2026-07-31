@@ -6,10 +6,21 @@
     "linux"
   ],
   "windows": [
-    "main"
+    "main",
+    "tab_*",
+    "jl_mode",
+    "jl_lookup",
+    "lookup_*"
   ],
   "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-set-always-on-top",
     "window-state:default",
+    "process:default",
+    "updater:default",
     "http:default",
     "fs:default"
   ]

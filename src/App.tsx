@@ -1,21 +1,114 @@
-﻿import { useState, useEffect, useCallback, useRef } from "react";
+﻿import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { readText } from '@tauri-apps/plugin-clipboard-manager';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { emit, emitTo, listen, UnlistenFn } from '@tauri-apps/api/event';
+import { check, Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import TextContainer from "./components/TextContainer";
 import StatsPanel from "./components/StatsPanel";
 import SettingsModal, { AppSettings, WsConfig } from "./components/SettingsModal";
 import { removeGarbageTags } from "./utils/textCleaner";
-import Lookuper, { LookupData } from "./components/Lookuper";
+import { DictEntry, LookupData } from "./components/Lookuper";
+import LookupSurface from "./features/lookup/LookupSurface";
 import "./App.css";
 
 import { calculateStats, getSmartTitle } from "./utils/helpers";
-import { IconSearch } from "./components/Icons";
-import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, Tab, BrowserTab } from "./utils/constants";
-import { ConfirmDialogModal, ImportProgressModal, ExportModal } from "./components/AppModals";
-import { SearchBar, TopBar, BrowserSidebar } from "./components/AppLayout";
+import { IconBookTab, IconPin, IconPlayerTab, IconSearch } from "./components/Icons";
+import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, Tab, BrowserTab, themes, PlayerMiningClip, ReadingSpeedSample } from "./utils/constants";
+import { getTranslator } from "./utils/i18n";
+import { ConfirmDialogModal, ImportProgressModal, ExportModal, NoticeModal } from "./components/AppModals";
+import { SearchBar, TopBar, BrowserSidebar, MobileLayout } from "./components/AppLayout";
 import SetupWizard from "./components/SetupWizard";
+import HomeScreen from "./components/HomeScreen";
+import PlayerSkeleton from "./components/PlayerSkeleton";
+import WorkspaceShell from "./components/WorkspaceShell";
+import {
+    discordActivityTypeForMode,
+    applyTabOrder,
+    extractHookPayload,
+    formatDiscordMode,
+    formatDiscordStats,
+    MAX_LINES_PER_TAB,
+    normalizeIncomingHookText,
+    trimRuntimeLine,
+    normalizeJapaneseFontStack,
+    normalizeLookupText,
+    normalizeWebSocketUrl,
+    readStoredTabOrder,
+    TAB_ORDER_STORAGE_KEY,
+    trimTabForRuntime,
+} from "./utils/appRuntime";
+
+type CaptureWindowInfo = {
+    id?: number;
+    title: string;
+    app_name: string;
+    process_name: string;
+    path: string;
+    pid?: number;
+    width: number;
+    height: number;
+    is_focused?: boolean;
+    is_recent?: boolean;
+    icon?: string | null;
+    sourceType?: 'local' | 'remote';
+    remoteUrl?: string;
+    remoteToken?: string;
+};
+
+type UpdateDialogState =
+    | { kind: 'available'; update: Update; progress?: number; message?: string }
+    | { kind: 'none'; message: string }
+    | { kind: 'error'; message: string };
+
+const stripLegacyOverlaySettings = <T extends Record<string, any>>(settings: T): T => {
+    for (const key of Object.keys(settings)) {
+        if (key.startsWith('jl') && key.includes('Overlay')) {
+            delete settings[key];
+        }
+    }
+    return settings;
+};
+
+const readStoredSettings = (): AppSettings => {
+    try {
+        const saved = localStorage.getItem('txthk-settings');
+        if (!saved) return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS });
+
+        const value = JSON.parse(saved);
+        const overrides = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+        return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS, ...overrides });
+    } catch (error) {
+        console.warn('Failed to read saved settings; defaults will be used', error);
+        return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS });
+    }
+};
+
+const WORKSPACE_UPDATED_AT_STORAGE_KEY = "txthk-workspace-updated-at";
+
+const normalizeStoredTabs = (value: unknown, defaultName: string): Tab[] => {
+    if (!Array.isArray(value)) return [];
+    return value
+        .filter((tab): tab is Tab => Boolean(tab && typeof tab === 'object' && Number.isFinite(tab.id)))
+        .map((tab) => trimTabForRuntime({
+            ...tab,
+            name: typeof tab.name === 'string' ? tab.name : defaultName,
+            lines: Array.isArray(tab.lines) ? tab.lines : [],
+            stats: {
+                ...defaultStats,
+                ...(tab.stats && typeof tab.stats === 'object' ? tab.stats : {}),
+            },
+        }));
+};
+
+const createStableTextSyncToken = () => {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const FLOW_CLICK_LOOKUP_MIGRATION_KEY = "setsuna-flow-click-lookup-v1";
 
 export default function App() {
     const [isFirstRunWizardOpen, setIsFirstRunWizardOpen] = useState(() => {
@@ -28,8 +121,7 @@ export default function App() {
     }, []);
 
     const [settings, setSettings] = useState<AppSettings>(() => {
-        const saved = localStorage.getItem('txthk-settings');
-        const parsed = saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+        const parsed = readStoredSettings();
 
         if (typeof parsed.hookProcesses === 'string') {
             parsed.hookProcesses = (parsed.hookProcesses as string)
@@ -48,28 +140,145 @@ export default function App() {
             }];
         }
 
+        if (!parsed.discordClientId?.trim()) {
+            parsed.discordClientId = DEFAULT_SETTINGS.discordClientId;
+        }
+
+        if (!parsed.textSyncServerToken?.trim()) {
+            parsed.textSyncServerToken = createStableTextSyncToken();
+        }
+        if (!parsed.textSyncDeviceId?.trim()) {
+            parsed.textSyncDeviceId = createStableTextSyncToken();
+        }
+        if (localStorage.getItem(FLOW_CLICK_LOOKUP_MIGRATION_KEY) !== "true") {
+            if (!parsed.jlModeLookupTrigger || parsed.jlModeLookupTrigger === "hover") {
+                parsed.jlModeLookupTrigger = "click";
+            }
+            localStorage.setItem(FLOW_CLICK_LOOKUP_MIGRATION_KEY, "true");
+        }
+        if (!parsed.accountDeviceName?.trim()) {
+            parsed.accountDeviceName = "";
+        }
+
         return parsed;
     });
+
+    useEffect(() => {
+        if (settings.accountDeviceName?.trim()) return;
+        invoke<string>("get_windows_device_name")
+            .then((name) => {
+                const clean = String(name || "").trim();
+                if (clean && clean !== settings.accountDeviceName) {
+                    setSettings((prev) => ({ ...prev, accountDeviceName: clean }));
+                }
+            })
+            .catch(() => {});
+    }, []);
+
+    useEffect(() => {
+        const apiBaseUrl = settings.accountApiBaseUrl?.trim();
+        const token = settings.accountAccessToken?.trim();
+        if (!apiBaseUrl || !token) return;
+
+        const heartbeat = () => {
+            void invoke("account_register_device", {
+                apiBaseUrl,
+                token,
+                deviceId: settings.textSyncDeviceId?.trim() || settings.textSyncServerToken?.trim() || "setsuna",
+                deviceName: settings.accountDeviceName?.trim() || "Setsuna",
+            }).catch(() => {});
+        };
+
+        heartbeat();
+        const interval = window.setInterval(heartbeat, 45_000);
+        return () => window.clearInterval(interval);
+    }, [
+        settings.accountApiBaseUrl,
+        settings.accountAccessToken,
+        settings.accountDeviceName,
+        settings.textSyncDeviceId,
+        settings.textSyncServerToken,
+    ]);
+
+    const t = getTranslator(settings.appLanguage || 'ru');
+    const [isMobileLayout, setIsMobileLayout] = useState(() => window.innerWidth <= 760);
+
+    useEffect(() => {
+        const updateMobileLayout = () => {
+            setIsMobileLayout(window.innerWidth <= 760 || window.matchMedia('(pointer: coarse)').matches && window.innerWidth <= 900);
+        };
+        updateMobileLayout();
+        window.addEventListener('resize', updateMobileLayout);
+        window.addEventListener('orientationchange', updateMobileLayout);
+        return () => {
+            window.removeEventListener('resize', updateMobileLayout);
+            window.removeEventListener('orientationchange', updateMobileLayout);
+        };
+    }, []);
+
+    useEffect(() => {
+        const root = document.documentElement;
+        const themeName = settings.theme in themes ? settings.theme : DEFAULT_SETTINGS.theme;
+        const activeTheme = themes[themeName];
+
+        Object.entries(activeTheme).forEach(([name, value]) => {
+            root.style.setProperty(name, value);
+        });
+
+        root.style.setProperty('--txt-font-size', `${settings.fontSize || DEFAULT_SETTINGS.fontSize}px`);
+        root.style.setProperty('--txt-font-family', normalizeJapaneseFontStack(settings.fontFamily || DEFAULT_SETTINGS.fontFamily));
+
+        root.style.setProperty('--accent', activeTheme['--accent-blue']);
+        root.style.setProperty('--accent-bg', themeName === 'light' ? 'rgba(0, 102, 204, 0.12)' : 'rgba(79, 166, 255, 0.14)');
+        root.style.setProperty('--bg-secondary', activeTheme['--bg-panel']);
+        root.style.setProperty('--border-color', activeTheme['--border-main']);
+        root.style.setProperty('--button-bg', activeTheme['--bg-side']);
+
+        root.dataset.theme = themeName;
+        document.body.dataset.theme = themeName;
+    }, [settings.theme, settings.fontSize, settings.fontFamily]);
 
     const [tabs, setTabs] = useState<Tab[]>(() => {
         const savedTabs = localStorage.getItem('txthk-tabs');
         if (savedTabs) {
             try {
-                return JSON.parse(savedTabs);
+                const sanitizedTabs = savedTabs.includes('"html"')
+                    ? savedTabs
+                        .replace(/,"html":"(?:\\.|[^"\\])*"/g, "")
+                        .replace(/"html":"(?:\\.|[^"\\])*",?/g, "")
+                    : savedTabs;
+                if (sanitizedTabs !== savedTabs) {
+                    localStorage.setItem('txthk-tabs', sanitizedTabs);
+                }
+                const parsed = JSON.parse(sanitizedTabs);
+                const restored = normalizeStoredTabs(parsed, t('tabs.defaultName'));
+                if (restored.length > 0) {
+                    return applyTabOrder(restored, readStoredTabOrder());
+                }
             } catch {}
         }
-        return [{ id: 1, name: "Окно 1", lines: [], stats: defaultStats }];
+        return [{ id: 1, name: t('tabs.defaultName'), lines: [], stats: defaultStats }];
     });
 
     const [activeTabId, setActiveTabId] = useState(() => {
         const savedActive = localStorage.getItem('txthk-active-tab');
-        return savedActive ? parseInt(savedActive) : 1;
+        const parsed = savedActive ? Number.parseInt(savedActive, 10) : Number.NaN;
+        const fallback = tabs.find((tab) => !tab.archived)?.id ?? tabs[0]?.id ?? 1;
+        return Number.isFinite(parsed) && tabs.some((tab) => tab.id === parsed && !tab.archived) ? parsed : fallback;
     });
+    const [activeWorkspace, setActiveWorkspace] = useState<"hub" | "texthooker" | "epub" | "player">("hub");
+    const resolvedWorkspace = activeWorkspace === "texthooker" || activeWorkspace === "epub" || activeWorkspace === "player"
+        ? activeWorkspace
+        : "hub";
 
     const activeTabIdRef = useRef(activeTabId);
     const nextTabId = useRef(Math.max(...tabs.map((t) => t.id), 0) + 1);
 
     const mainContentRef = useRef<HTMLElement>(null);
+    const discordSessionStartRef = useRef(Date.now());
+    const discordLastPayloadRef = useRef("");
+    const discordFailureCountRef = useRef(0);
+    const discordDisabledUntilRef = useRef(0);
 
     const [isSearchOpen, setIsSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
@@ -82,15 +291,30 @@ export default function App() {
     const [isExportModalOpen, setIsExportModalOpen] = useState(false);
     const [exportTabsSelection, setExportTabsSelection] = useState<number[]>([]);
     const [exportFileName, setExportFileName] = useState("txthk_export");
+    const [isCaptureSourcePickerOpen, setIsCaptureSourcePickerOpen] = useState(false);
+    const [captureSources, setCaptureSources] = useState<CaptureWindowInfo[]>([]);
+    const [captureSourceSearch, setCaptureSourceSearch] = useState("");
+    const [isCaptureSourceLoading, setIsCaptureSourceLoading] = useState(false);
 
     const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
+    const [notice, setNotice] = useState<{ title?: string; message: string } | null>(null);
+
+    useEffect(() => {
+        const nativeAlert = window.alert;
+        window.alert = (message?: any) => {
+            setNotice({ title: "Setsuna", message: String(message ?? "") });
+        };
+        return () => {
+            window.alert = nativeAlert;
+        };
+    }, []);
 
     useEffect(() => {
         const handleSelection = () => {
             const selection = window.getSelection();
 
             if (selection && selection.toString().trim().length > 0) {
-                const text = selection.toString().trim();
+                const text = normalizeLookupText(selection.toString());
 
                 if (/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(text) || text.length < 30) {
                     const range = selection.getRangeAt(0);
@@ -115,8 +339,9 @@ export default function App() {
             const container = document.getElementById('native-browser-container');
             const rect = container?.getBoundingClientRect();
 
-            if (rect && text) {
-                setFloatingBtn({ x: rect.left + x, y: rect.top + y, text });
+            const cleanText = normalizeLookupText(text);
+            if (rect && cleanText) {
+                setFloatingBtn({ x: rect.left + x, y: rect.top + y, text: cleanText });
             }
         }).then((f) => (unlistenSel = f));
 
@@ -128,20 +353,165 @@ export default function App() {
         };
     }, []);
 
-    useEffect(() => {
-        localStorage.setItem('txthk-tabs', JSON.stringify(tabs));
+    const tabsPersistKey = useMemo(() => {
+        return JSON.stringify(tabs.map((tab) => trimTabForRuntime(tab)));
     }, [tabs]);
 
+    const tabOrderPersistKey = useMemo(() => JSON.stringify(tabs.map((tab) => tab.id)), [tabs]);
+    const workspacePersistenceRef = useRef({
+        tabs: tabsPersistKey,
+        order: tabOrderPersistKey,
+        activeTabId,
+    });
+    const workspaceHydratedRef = useRef(false);
+    const workspaceFileWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+    workspacePersistenceRef.current = {
+        tabs: tabsPersistKey,
+        order: tabOrderPersistKey,
+        activeTabId,
+    };
+
+    const queueWorkspaceFileSave = useCallback((content: string) => {
+        workspaceFileWriteChainRef.current = workspaceFileWriteChainRef.current
+            .catch(() => {})
+            .then(() => invoke<void>('save_workspace_state', { content }))
+            .catch((error) => {
+                console.warn('Failed to save file-backed workspace', error);
+            });
+    }, []);
+
+    const persistWorkspaceNow = useCallback(() => {
+        if (!workspaceHydratedRef.current) return;
+        const snapshot = workspacePersistenceRef.current;
+        const updatedAt = Date.now();
+        try {
+            localStorage.setItem('txthk-tabs', snapshot.tabs);
+            localStorage.setItem(TAB_ORDER_STORAGE_KEY, snapshot.order);
+            localStorage.setItem('txthk-active-tab', snapshot.activeTabId.toString());
+            localStorage.setItem(WORKSPACE_UPDATED_AT_STORAGE_KEY, updatedAt.toString());
+        } catch (error) {
+            console.warn('Failed to persist workspace', error);
+        }
+        queueWorkspaceFileSave(`{"version":1,"updatedAt":${updatedAt},"activeTabId":${snapshot.activeTabId},"tabs":${snapshot.tabs}}`);
+    }, [queueWorkspaceFileSave]);
+
     useEffect(() => {
-        localStorage.setItem('txthk-active-tab', activeTabId.toString());
+        let disposed = false;
+        let restoredFromFile = false;
+        invoke<string | null>('load_workspace_state')
+            .then((content) => {
+                if (disposed || !content) return;
+                const parsed = JSON.parse(content) as {
+                    version?: number;
+                    updatedAt?: number;
+                    activeTabId?: number;
+                    tabs?: unknown;
+                };
+                if (parsed.version !== 1) return;
+                const localUpdatedAt = Number.parseInt(localStorage.getItem(WORKSPACE_UPDATED_AT_STORAGE_KEY) || '0', 10) || 0;
+                const fileUpdatedAt = Number(parsed.updatedAt) || 0;
+                if (localUpdatedAt > fileUpdatedAt) return;
+
+                const restoredTabs = normalizeStoredTabs(parsed.tabs, t('tabs.defaultName'));
+                if (restoredTabs.length === 0) return;
+                const restoredActiveId = Number(parsed.activeTabId);
+                const nextActiveId = Number.isFinite(restoredActiveId)
+                    && restoredTabs.some((tab) => tab.id === restoredActiveId && !tab.archived)
+                    ? restoredActiveId
+                    : restoredTabs.find((tab) => !tab.archived)?.id ?? restoredTabs[0].id;
+
+                restoredFromFile = true;
+                setTabs(restoredTabs);
+                setActiveTabId(nextActiveId);
+                activeTabIdRef.current = nextActiveId;
+                nextTabId.current = Math.max(...restoredTabs.map((tab) => tab.id), 0) + 1;
+            })
+            .catch((error) => {
+                console.warn('Failed to load file-backed workspace', error);
+            })
+            .finally(() => {
+                if (disposed) return;
+                workspaceHydratedRef.current = true;
+                if (!restoredFromFile) {
+                    window.setTimeout(persistWorkspaceNow, 0);
+                }
+            });
+        return () => {
+            disposed = true;
+        };
+    }, [persistWorkspaceNow]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(TAB_ORDER_STORAGE_KEY, tabOrderPersistKey);
+        } catch (error) {
+            console.warn("Failed to persist tab order", error);
+        }
+    }, [tabOrderPersistKey]);
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            persistWorkspaceNow();
+        }, 3000);
+        return () => window.clearTimeout(timer);
+    }, [tabsPersistKey, persistWorkspaceNow]);
+
+    useEffect(() => {
+        // Tab creation/removal and active-tab changes must reach storage together.
+        persistWorkspaceNow();
     }, [activeTabId]);
+
+    useEffect(() => {
+        const flush = () => persistWorkspaceNow();
+        const flushWhenHidden = () => {
+            if (document.visibilityState === 'hidden') flush();
+        };
+        window.addEventListener('beforeunload', flush);
+        window.addEventListener('pagehide', flush);
+        document.addEventListener('visibilitychange', flushWhenHidden);
+        return () => {
+            window.removeEventListener('beforeunload', flush);
+            window.removeEventListener('pagehide', flush);
+            document.removeEventListener('visibilitychange', flushWhenHidden);
+            flush();
+        };
+    }, [persistWorkspaceNow]);
+
+    useEffect(() => {
+        if (tabs.some((tab) => tab.id === activeTabId && !tab.archived)) return;
+        const fallback = tabs.find((tab) => !tab.archived)?.id ?? tabs[0]?.id;
+        if (fallback === undefined) return;
+        setActiveTabId(fallback);
+        activeTabIdRef.current = fallback;
+    }, [tabs, activeTabId]);
 
     const [isPaused, setIsPaused] = useState(true);
     const isPausedRef = useRef(isPaused);
+    const lastReadingActivityRef = useRef(Date.now());
+    const recentIncomingTextRef = useRef<Map<string, number>>(new Map());
 
     useEffect(() => {
         isPausedRef.current = isPaused;
+        if (!isPaused) lastReadingActivityRef.current = Date.now();
+        invoke('set_flow_timer_state', { paused: isPaused }).catch(() => {});
     }, [isPaused]);
+
+    useEffect(() => {
+        let disposed = false;
+        const syncFlowTimer = () => {
+            invoke<boolean>('get_flow_timer_state')
+                .then((paused) => {
+                    if (!disposed && paused !== isPausedRef.current) setIsPaused(paused);
+                })
+                .catch(() => {});
+        };
+        syncFlowTimer();
+        const interval = window.setInterval(syncFlowTimer, 250);
+        return () => {
+            disposed = true;
+            window.clearInterval(interval);
+        };
+    }, []);
 
     const switchTab = useCallback((id: number) => {
         setActiveTabId(id);
@@ -151,10 +521,18 @@ export default function App() {
         setIsSearchOpen(false);
     }, []);
 
+    const openSettingsPanel = useCallback((section?: string | null) => {
+        setSettingsInitialSection(section || null);
+        setIsSettingsOpen(true);
+    }, []);
+
     const [editingTabId, setEditingTabId] = useState<number | null>(null);
     const [isFlashing, setIsFlashing] = useState(false);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+    const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
     const [lookupStack, setLookupStack] = useState<LookupData[]>([]);
+    const cambridgeLookupCacheRef = useRef<Map<string, { expiresAt: number; entries: DictEntry[] }>>(new Map());
+    const [playerMiningClip, setPlayerMiningClip] = useState<PlayerMiningClip | null>(null);
     const [jsonImportProgress, setJsonImportProgress] = useState<{ current: number; total: number } | null>(null);
     const [dictImportProgress, setDictImportProgress] = useState<{
         dict_name: string;
@@ -175,45 +553,360 @@ export default function App() {
     const isResizingRef = useRef(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isAppLoaded, setIsAppLoaded] = useState(false);
+    const [updateDialog, setUpdateDialog] = useState<UpdateDialogState | null>(null);
+    const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+    const isCheckingUpdateRef = useRef(false);
 
     const activeTab = tabs.find((t) => t.id === activeTabId);
+    const textHookerTabs = useMemo(
+        () => tabs.filter((tab) => !tab.mode || tab.mode === "text"),
+        [tabs]
+    );
+    const isBrowserBlockedByOverlay = isSettingsOpen
+        || isExportModalOpen
+        || isCaptureSourcePickerOpen
+        || Boolean(confirmDialog)
+        || Boolean(notice)
+        || Boolean(updateDialog)
+        || Boolean(jsonImportProgress)
+        || Boolean(dictImportProgress);
+    const filteredCaptureSources = captureSources.filter((source) => {
+        const query = captureSourceSearch.trim().toLowerCase();
+        if (!query) return true;
+        return [
+            source.title,
+            source.app_name,
+            source.process_name,
+            source.path,
+            source.pid?.toString() || "",
+        ].some((value) => value.toLowerCase().includes(query));
+    });
 
     useEffect(() => {
-        if (!isAppLoaded || !mainContentRef.current) return;
+        if (!isAppLoaded) return;
 
-        const container = mainContentRef.current;
-        let prevScrollHeight = 0;
-        let stableCount = 0;
+        const sendPresence = async () => {
+            if (Date.now() < discordDisabledUntilRef.current) return;
 
-        const interval = setInterval(() => {
-            if (!container) return;
-
-            container.scrollTop = container.scrollHeight + 10000;
-
-            if (container.scrollHeight === prevScrollHeight) {
-                stableCount++;
-            } else {
-                stableCount = 0;
-                prevScrollHeight = container.scrollHeight;
+            if (!settings.discordEnabled || !settings.discordClientId?.trim() || !activeTab) {
+                if (discordLastPayloadRef.current) {
+                    discordLastPayloadRef.current = "";
+                    await invoke("clear_discord_presence").catch(() => {});
+                }
+                return;
             }
 
-            if (stableCount > 5) clearInterval(interval);
-        }, 25);
-
-        const timeout = setTimeout(() => clearInterval(interval), 1500);
-
-        return () => {
-            clearInterval(interval);
-            clearTimeout(timeout);
+            const modeText = formatDiscordMode(activeTab.mode, settings);
+            const tabName = settings.discordShowTab && activeTab.name ? `: ${activeTab.name}` : "";
+            const details = `${modeText}${tabName}`;
+            const stateBase = formatDiscordStats(activeTab, settings);
+            const state = isPaused && (settings.discordShowPaused ?? true)
+                ? `${formatDiscordStats(activeTab, settings)} / ${settings.appLanguage === "en" ? "Paused" : "Пауза"}`
+                : stateBase;
+            const smallImage = settings.discordSmallImage?.trim() || activeTab.mode || "";
+            const payload = {
+                enabled: true,
+                clientId: settings.discordClientId.trim(),
+                details,
+                state,
+                activityType: discordActivityTypeForMode(activeTab.mode, settings),
+                startTimestampMs: settings.discordShowTimer ? discordSessionStartRef.current : null,
+                largeImage: settings.discordLargeImage || "",
+                largeText: "Setsuna",
+                smallImage,
+                smallText: modeText,
+                buttonLabel: settings.discordShowButtons ? settings.discordButtonLabel : "",
+                buttonUrl: settings.discordShowButtons ? settings.discordButtonUrl : "",
+                secondButtonLabel: settings.discordShowButtons ? settings.discordSecondButtonLabel : "",
+                secondButtonUrl: settings.discordShowButtons ? settings.discordSecondButtonUrl : "",
+            };
+            const payloadKey = JSON.stringify(payload);
+            if (payloadKey === discordLastPayloadRef.current) return;
+            discordLastPayloadRef.current = payloadKey;
+            await invoke("update_discord_presence", { payload }).then(() => {
+                discordFailureCountRef.current = 0;
+            }).catch((error) => {
+                console.warn("Discord Rich Presence update failed", error);
+                discordFailureCountRef.current += 1;
+                discordLastPayloadRef.current = "";
+                if (discordFailureCountRef.current >= 3) {
+                    discordDisabledUntilRef.current = Date.now() + 60_000;
+                    invoke("clear_discord_presence").catch(() => {});
+                }
+            });
         };
-    }, [activeTabId, isAppLoaded]);
+
+        sendPresence();
+        const interval = window.setInterval(sendPresence, 15000);
+        return () => window.clearInterval(interval);
+    }, [
+        isAppLoaded,
+        activeTab?.id,
+        activeTab?.name,
+        activeTab?.mode,
+        activeTab?.epub?.progress,
+        activeTab?.stats?.chars,
+        activeTab?.stats?.words,
+        activeTab?.stats?.sentences,
+        isPaused,
+        settings.discordEnabled,
+        settings.discordClientId,
+        settings.discordShowTab,
+        settings.discordShowStats,
+        settings.discordShowChars,
+        settings.discordShowWords,
+        settings.discordShowSentences,
+        settings.discordShowProgress,
+        settings.discordShowPaused,
+        settings.discordShowTimer,
+        settings.discordShowButtons,
+        settings.discordTextActivityType,
+        settings.discordTextStatus,
+        settings.discordCustomTextStatus,
+        settings.discordLargeImage,
+        settings.discordSmallImage,
+        settings.discordButtonLabel,
+        settings.discordButtonUrl,
+        settings.discordSecondButtonLabel,
+        settings.discordSecondButtonUrl,
+        settings.appLanguage,
+    ]);
+
+    const checkForUpdates = useCallback(async (manual = false) => {
+        if (isCheckingUpdateRef.current) return;
+        isCheckingUpdateRef.current = true;
+        setIsCheckingUpdate(true);
+        try {
+            const update = await check();
+            if (!update) {
+                if (manual) {
+                    setUpdateDialog({
+                        kind: 'none',
+                        message: settings.appLanguage === 'en'
+                            ? 'You are already on the latest version.'
+                            : 'У тебя уже последняя версия.',
+                    });
+                }
+                return;
+            }
+
+            setUpdateDialog({ kind: 'available', update });
+        } catch (error) {
+            if (manual) {
+                setUpdateDialog({
+                    kind: 'error',
+                    message: String(error),
+                });
+            } else {
+                console.warn('Update check failed', error);
+            }
+        } finally {
+            isCheckingUpdateRef.current = false;
+            setIsCheckingUpdate(false);
+        }
+    }, [settings.appLanguage]);
+
+    const installUpdate = useCallback(async () => {
+        if (!updateDialog || updateDialog.kind !== 'available') return;
+        const currentUpdate = updateDialog.update;
+        let downloaded = 0;
+        let totalBytes = 0;
+
+        setUpdateDialog({
+            kind: 'available',
+            update: currentUpdate,
+            progress: 0,
+            message: settings.appLanguage === 'en' ? 'Downloading update...' : 'Скачиваю обновление...',
+        });
+
+        try {
+            await currentUpdate.downloadAndInstall((event) => {
+                if (event.event === 'Started') {
+                    downloaded = 0;
+                    totalBytes = event.data.contentLength || 0;
+                    setUpdateDialog({
+                        kind: 'available',
+                        update: currentUpdate,
+                        progress: 0,
+                        message: settings.appLanguage === 'en' ? 'Downloading update...' : 'Скачиваю обновление...',
+                    });
+                } else if (event.event === 'Progress') {
+                    downloaded += event.data.chunkLength;
+                    const percent = totalBytes > 0 ? Math.min(100, Math.round((downloaded / totalBytes) * 100)) : undefined;
+                    setUpdateDialog({
+                        kind: 'available',
+                        update: currentUpdate,
+                        progress: percent,
+                        message: percent !== undefined
+                            ? `${settings.appLanguage === 'en' ? 'Downloading' : 'Скачивание'} ${percent}%`
+                            : settings.appLanguage === 'en' ? 'Downloading update...' : 'Скачиваю обновление...',
+                    });
+                } else if (event.event === 'Finished') {
+                    setUpdateDialog({
+                        kind: 'available',
+                        update: currentUpdate,
+                        progress: 100,
+                        message: settings.appLanguage === 'en' ? 'Installing update...' : 'Устанавливаю обновление...',
+                    });
+                }
+            });
+            await relaunch();
+        } catch (error) {
+            setUpdateDialog({
+                kind: 'error',
+                message: String(error),
+            });
+        }
+    }, [settings.appLanguage, updateDialog]);
+
+    useEffect(() => {
+        if (!isAppLoaded || settings.updateAutoCheck === false) return;
+        const timer = window.setTimeout(() => {
+            checkForUpdates(false);
+        }, 2500);
+        return () => window.clearTimeout(timer);
+    }, [checkForUpdates, isAppLoaded, settings.updateAutoCheck]);
+
+    const refreshCaptureSources = useCallback(async () => {
+        setIsCaptureSourceLoading(true);
+        try {
+            const [localWindows, localProcesses] = await Promise.all([
+                invoke<CaptureWindowInfo[]>("get_capture_windows").catch(() => []),
+                invoke<any[]>("get_running_processes").catch(() => []),
+            ]);
+            let remoteSources: CaptureWindowInfo[] = [];
+
+            if (settings.remoteCaptureAgentUrl?.trim() && settings.remoteCaptureAgentToken?.trim()) {
+                try {
+                    const remote = await invoke<CaptureWindowInfo[]>("list_remote_capture_sources", {
+                        url: settings.remoteCaptureAgentUrl.trim(),
+                        token: settings.remoteCaptureAgentToken.trim(),
+                    });
+                    remoteSources = remote.map((source) => ({
+                        ...source,
+                        sourceType: 'remote',
+                        remoteUrl: settings.remoteCaptureAgentUrl?.trim(),
+                        remoteToken: settings.remoteCaptureAgentToken?.trim(),
+                    }));
+                } catch (error) {
+                    console.error("Failed to load remote capture windows", error);
+                }
+            }
+
+            const localByKey = new Map<string, CaptureWindowInfo>();
+            (Array.isArray(localWindows) ? localWindows : []).forEach((source) => {
+                const key = source.path || `${source.process_name || source.app_name || source.title}-${source.pid || source.id || ""}`;
+                localByKey.set(key, { ...source, sourceType: 'local' });
+            });
+            (Array.isArray(localProcesses) ? localProcesses : []).forEach((proc) => {
+                const key = proc.path || `${proc.name}-${proc.pid || ""}`;
+                if (!localByKey.has(key)) {
+                    localByKey.set(key, {
+                        title: proc.path || proc.name,
+                        app_name: proc.name,
+                        process_name: proc.name,
+                        path: proc.path || "",
+                        pid: proc.pid,
+                        width: 0,
+                        height: 0,
+                        icon: proc.icon || null,
+                        sourceType: 'local',
+                    });
+                }
+            });
+
+            setCaptureSources([
+                ...remoteSources,
+                ...Array.from(localByKey.values()),
+            ]);
+        } catch (error) {
+            console.error("Failed to load capture windows", error);
+            setCaptureSources([]);
+        } finally {
+            setIsCaptureSourceLoading(false);
+        }
+    }, [settings.remoteCaptureAgentUrl, settings.remoteCaptureAgentToken]);
+
+    const openCaptureSourcePicker = useCallback(() => {
+        setCaptureSourceSearch("");
+        setIsCaptureSourcePickerOpen(true);
+        refreshCaptureSources();
+    }, [refreshCaptureSources]);
+
+    const openJlModeWindow = useCallback(() => {
+        const getLastJlLine = () => {
+            const active = tabs.find((tab) => tab.id === activeTabIdRef.current);
+            const latestLine = active?.lines?.length ? active.lines[active.lines.length - 1] : '';
+            const currentLine = removeGarbageTags(latestLine || '').trim();
+            if (currentLine) return currentLine;
+            return (localStorage.getItem('setsuna-jl-mode-last-line') || '').trim();
+        };
+
+        const resendLastLine = () => {
+            const lastLine = getLastJlLine();
+            if (lastLine.trim()) {
+                localStorage.setItem('setsuna-jl-mode-last-line', lastLine);
+                invoke("set_jl_mode_line", { text: lastLine }).catch(() => {});
+                emit('jl_mode_line', lastLine).catch(() => {});
+                emitTo('jl_mode', 'jl_mode_line', lastLine).catch(() => {});
+            }
+        };
+
+        const lastLine = getLastJlLine();
+        if (lastLine.trim()) {
+            localStorage.setItem('setsuna-jl-mode-last-line', lastLine);
+        }
+        invoke("open_jl_mode_window", { initialText: lastLine })
+            .then(() => {
+                resendLastLine();
+                window.setTimeout(resendLastLine, 200);
+                window.setTimeout(resendLastLine, 800);
+                window.setTimeout(resendLastLine, 1600);
+            })
+            .catch((err) => {
+                setNotice({ title: "Setsuna Flow", message: String(err) });
+            });
+    }, [tabs]);
+
+    const bindCaptureSourceToActiveTab = useCallback((source: CaptureWindowInfo) => {
+        setTabs((prev) =>
+            prev.map((tab) =>
+                tab.id === activeTabIdRef.current
+                    ? {
+                          ...tab,
+                          captureSource: {
+                              name: source.process_name || source.app_name || source.title,
+                              active: true,
+                              icon: source.icon || undefined,
+                              path: source.path || undefined,
+                              pid: source.pid,
+                              sourceType: source.sourceType || 'local',
+                              remoteUrl: source.remoteUrl,
+                              remoteToken: source.remoteToken,
+                          },
+                      }
+                    : tab
+            )
+        );
+        setIsCaptureSourcePickerOpen(false);
+    }, []);
+
+    const clearCaptureSourceForActiveTab = useCallback(() => {
+        setTabs((prev) =>
+            prev.map((tab) =>
+                tab.id === activeTabIdRef.current ? { ...tab, captureSource: null } : tab
+            )
+        );
+        setIsCaptureSourcePickerOpen(false);
+    }, []);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             const key = e.key.toLowerCase();
+            const code = e.code;
             const isCtrl = e.ctrlKey || e.metaKey;
 
-            if (isCtrl && (key === 'f' || key === 'а')) {
+            if (isCtrl && (code === 'KeyF' || key === 'f' || key === 'а')) {
                 e.preventDefault();
                 e.stopPropagation();
                 setIsSearchOpen(true);
@@ -223,7 +916,7 @@ export default function App() {
                 setSearchQuery("");
                 setSearchResults([]);
                 setCurrentSearchIdx(-1);
-            } else if (isCtrl && (key === 'z' || key === 'я')) {
+            } else if (isCtrl && (code === 'KeyZ' || key === 'z' || key === 'я')) {
                 if (isSettingsOpen) return;
 
                 e.preventDefault();
@@ -314,7 +1007,7 @@ export default function App() {
         return [{
             id: `tab_${Date.now()}`,
             url: settings.searchEngine || "https://duckduckgo.com/?q=",
-            title: "Поиск",
+            title: t('browser.defaultTitle'),
         }];
     });
 
@@ -328,26 +1021,147 @@ export default function App() {
 
     const activeBrowserIdxRef = useRef(activeBrowserIdx);
     const isUrlFocusedRef = useRef(isUrlFocused);
+    const browserSyncFrameRef = useRef<number | null>(null);
+    const lastBrowserCommandRef = useRef("");
+    const diagnosticsTabsRef = useRef(tabs);
+    const diagnosticsSettingsRef = useRef(settings);
+    const diagnosticsBrowserTabsRef = useRef(browserTabs);
+    const diagnosticsLookupStackRef = useRef(lookupStack);
+    const diagnosticsActiveTabIdRef = useRef(activeTabId);
+    const diagnosticsActiveBrowserIdxRef = useRef(activeBrowserIdx);
+    type BrowserAction = "show" | "navigate" | "resize" | "hide" | "hide_all" | "close";
 
     useEffect(() => {
         activeBrowserIdxRef.current = activeBrowserIdx;
     }, [activeBrowserIdx]);
 
     useEffect(() => {
+        if (browserTabs.length === 0) return;
+        if (activeBrowserIdx >= 0 && activeBrowserIdx < browserTabs.length) return;
+
+        const safeIdx = Math.max(0, Math.min(activeBrowserIdx, browserTabs.length - 1));
+        setActiveBrowserIdx(safeIdx);
+        setUrlInput(browserTabs[safeIdx]?.url || "");
+    }, [activeBrowserIdx, browserTabs]);
+
+    useEffect(() => {
         isUrlFocusedRef.current = isUrlFocused;
     }, [isUrlFocused]);
 
     useEffect(() => {
-        localStorage.setItem('txthk-browser-tabs', JSON.stringify(browserTabs));
+        try {
+            localStorage.setItem('txthk-browser-tabs', JSON.stringify(browserTabs));
+        } catch (error) {
+            console.warn('Failed to persist browser tabs', error);
+        }
     }, [browserTabs]);
 
     useEffect(() => {
-        localStorage.setItem('txthk-active-browser-idx', activeBrowserIdx.toString());
+        try {
+            localStorage.setItem('txthk-active-browser-idx', activeBrowserIdx.toString());
+        } catch (error) {
+            console.warn('Failed to persist active browser tab', error);
+        }
     }, [activeBrowserIdx]);
 
     useEffect(() => {
-        localStorage.setItem('txthk-settings', JSON.stringify(settings));
+        try {
+            localStorage.setItem('txthk-settings', JSON.stringify(stripLegacyOverlaySettings({ ...settings })));
+        } catch (error) {
+            console.warn('Failed to persist settings', error);
+        }
     }, [settings]);
+
+    useEffect(() => {
+        diagnosticsTabsRef.current = tabs;
+    }, [tabs]);
+
+    useEffect(() => {
+        diagnosticsSettingsRef.current = settings;
+    }, [settings]);
+
+    useEffect(() => {
+        diagnosticsBrowserTabsRef.current = browserTabs;
+    }, [browserTabs]);
+
+    useEffect(() => {
+        diagnosticsLookupStackRef.current = lookupStack;
+    }, [lookupStack]);
+
+    useEffect(() => {
+        diagnosticsActiveTabIdRef.current = activeTabId;
+    }, [activeTabId]);
+
+    useEffect(() => {
+        diagnosticsActiveBrowserIdxRef.current = activeBrowserIdx;
+    }, [activeBrowserIdx]);
+
+    useEffect(() => {
+        const storageSize = (key: string) => {
+            try {
+                return localStorage.getItem(key)?.length || 0;
+            } catch {
+                return -1;
+            }
+        };
+
+        const collect = () => {
+            const currentTabs = diagnosticsTabsRef.current || [];
+            const currentSettings = diagnosticsSettingsRef.current;
+            const currentBrowserTabs = diagnosticsBrowserTabsRef.current || [];
+            const currentLookupStack = diagnosticsLookupStackRef.current || [];
+            const currentActiveTab =
+                currentTabs.find((tab) => tab.id === diagnosticsActiveTabIdRef.current) || null;
+            const perfMemory = (performance as any).memory;
+
+            const payload = {
+                appLoaded: isAppLoaded,
+                tabs: currentTabs.length,
+                activeTabId: diagnosticsActiveTabIdRef.current,
+                activeTabName: currentActiveTab?.name || "",
+                activeTabMode: currentActiveTab?.mode || "text",
+                activeTabLines: currentActiveTab?.mode === 'epub'
+                    ? currentActiveTab?.epub?.lines?.length || 0
+                    : currentActiveTab?.lines?.length || 0,
+                totalLines: currentTabs.reduce((sum, tab) => sum + (tab.mode === 'epub' ? (tab.epub?.lines?.length || 0) : (tab.lines?.length || 0)), 0),
+                totalChars: currentTabs.reduce(
+                    (sum, tab) => {
+                        const lines = tab.mode === 'epub' ? (tab.epub?.lines || []) : (tab.lines || []);
+                        return sum + lines.reduce((lineSum, line) => lineSum + line.length, 0);
+                    },
+                    0
+                ),
+                lookupStack: currentLookupStack.length,
+                browserTabs: currentBrowserTabs.length,
+                activeBrowserIdx: diagnosticsActiveBrowserIdxRef.current,
+                helperSpaceReserved: isHelperSpaceReserved,
+                textOrientation: currentSettings.textOrientation,
+                furiganaMode: currentSettings.furiganaMode,
+                useClipboard: currentSettings.useClipboard,
+                websocketCount: currentSettings.websockets?.length || 0,
+                activeWebsocketCount: currentSettings.websockets?.filter((ws: WsConfig) => ws.active).length || 0,
+                localStorage: {
+                    tabs: storageSize("txthk-tabs"),
+                    settings: storageSize("txthk-settings"),
+                    browserTabs: storageSize("txthk-browser-tabs"),
+                    furigana: storageSize("furigana"),
+                },
+                jsHeap: perfMemory
+                    ? {
+                          used: perfMemory.usedJSHeapSize,
+                          total: perfMemory.totalJSHeapSize,
+                          limit: perfMemory.jsHeapSizeLimit,
+                      }
+                    : null,
+            };
+
+            invoke("log_frontend_diagnostics", { payload }).catch(() => {});
+        };
+
+        const timer = window.setInterval(collect, 10000);
+        window.setTimeout(collect, 1500);
+        return () => window.clearInterval(timer);
+    }, [isAppLoaded, isHelperSpaceReserved]);
 
     useEffect(() => {
         localStorage.setItem("txthk-browser-width", reservedWidth.toString());
@@ -427,7 +1241,7 @@ export default function App() {
                             changed = true;
 
                             const fallbackTitle =
-                                tab.title.startsWith("🔍 ") || tab.title === "Новая вкладка"
+                                tab.title.startsWith("🔍 ") || tab.title === t('browser.newTab')
                                     ? ""
                                     : tab.title;
 
@@ -460,7 +1274,7 @@ export default function App() {
             if (unlisten) unlisten();
             clearInterval(interval);
         };
-    }, [isHelperSpaceReserved]);
+    }, [isHelperSpaceReserved, t]);
 
     useEffect(() => {
         syncDictionaries();
@@ -493,25 +1307,55 @@ export default function App() {
         } catch {}
     }, []);
 
-    const runDictImport = useCallback(async (filePath: string) => {
-        setDictImportProgress({
-            dict_name: "Ожидание...",
-            total_dicts: 1,
-            current_file: 0,
-            total_files: 1,
-            words_added: 0,
-            status: "Подготовка файла к чтению...",
-        });
-
-        try {
-            await invoke("import_dictionary", { path: filePath });
-            await syncDictionaries();
-        } catch (e) {
-            alert("Ошибка импорта: " + e);
+    const dictImportPromiseRef = useRef<Promise<boolean> | null>(null);
+    const runDictImport = useCallback(async (filePath: string | string[]) => {
+        const paths = Array.isArray(filePath) ? filePath : [filePath];
+        if (paths.length === 0) return false;
+        if (dictImportPromiseRef.current) {
+            return dictImportPromiseRef.current;
         }
-
-        setDictImportProgress(null);
+        const task = (async () => {
+            setDictImportProgress({
+                dict_name: t('app.importWaiting'),
+                total_dicts: paths.length,
+                current_file: 0,
+                total_files: 1,
+                words_added: 0,
+                status: t('app.importPreparing'),
+            });
+            try {
+                await invoke("import_dictionaries", { paths });
+                await syncDictionaries();
+                return true;
+            } catch (e) {
+                alert(t('app.importError', { error: String(e) }));
+                return false;
+            } finally {
+                setDictImportProgress(null);
+            }
+        })();
+        dictImportPromiseRef.current = task;
+        try {
+            return await task;
+        } finally {
+            if (dictImportPromiseRef.current === task) dictImportPromiseRef.current = null;
+        }
     }, [syncDictionaries]);
+
+    const importEpubPath = useCallback(async (filePath: string, targetTabId?: number) => {
+        void filePath;
+        void targetTabId;
+        alert(settings.appLanguage === "en"
+            ? "EPUB reader is temporarily disabled while the core browser and lookup are being stabilized."
+            : "EPUB-читалка временно отключена, пока стабилизируем браузер и lookup.");
+    }, [settings.appLanguage, switchTab]);
+
+    const epubReloadingRef = useRef<Set<number>>(new Set());
+    useEffect(() => {
+        if (!activeTab || activeTab.mode !== 'epub') return;
+        if (epubReloadingRef.current.has(activeTab.id)) return;
+        epubReloadingRef.current.add(activeTab.id);
+    }, [activeTab?.id, activeTab?.mode, activeTab?.epub?.path, activeTab?.epub?.chapters?.length, importEpubPath]);
 
     const handleImportYomitanFromWizard = useCallback(async () => {
         try {
@@ -547,45 +1391,152 @@ export default function App() {
             if (dictionaryFiles.length === 0) {
                 alert(
                     settingsFiles.length > 0
-                        ? 'Ты выбрал только yomitan-settings.json. Для словарей нужен ещё файл Export Dictionary Collection: обычно yomitan-dictionaries.json.'
-                        : 'Не найден файл словарей. Выбери yomitan-dictionaries.json или .zip словаря.'
+                        ? t('app.yomitanOnlySettings')
+                        : t('app.yomitanNoDictionary')
                 );
                 return;
             }
 
-            for (const file of dictionaryFiles) {
-                await runDictImport(file);
-            }
-
-            await syncDictionaries();
+            const imported = await runDictImport(dictionaryFiles);
+            if (!imported) return;
 
             if (settingsFiles.length > 0) {
-                alert('Словари импортированы. yomitan-settings.json выбран тоже, но сейчас он не обязателен: настройки Yomitan пока не переносятся автоматически.');
+                alert(t('app.yomitanImportedWithSettings'));
             } else {
-                alert('Словари Yomitan импортированы.');
+                alert(t('app.yomitanImported'));
             }
         } catch (e) {
-            alert('Ошибка выбора/импорта файлов Yomitan: ' + e);
+            alert(t('app.yomitanImportError', { error: String(e) }));
         }
     }, [runDictImport, syncDictionaries]);
+
+    const importDroppedTextFiles = useCallback(async (paths: string[]) => {
+        const importedTabs: Tab[] = [];
+
+        for (const path of paths) {
+            const rawBytes = await invoke<number[]>("read_file_bytes", { path });
+            const bytes = new Uint8Array(rawBytes);
+            let content = "";
+
+            if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+                content = new TextDecoder("utf-16le").decode(bytes.subarray(2));
+            } else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+                const swapped = new Uint8Array(bytes.length - 2);
+                for (let i = 2; i + 1 < bytes.length; i += 2) {
+                    swapped[i - 2] = bytes[i + 1];
+                    swapped[i - 1] = bytes[i];
+                }
+                content = new TextDecoder("utf-16le").decode(swapped);
+            } else {
+                try {
+                    content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+                } catch {
+                    content = new TextDecoder("shift-jis").decode(bytes);
+                }
+            }
+
+            const lines: string[] = [];
+            let stats = { ...defaultStats };
+            const sourceLines = content.replace(/^\uFEFF/, "").split(/\r?\n/);
+
+            for (let index = 0; index < sourceLines.length; index += 1) {
+                let line = sourceLines[index]
+                    .replace(/\[(?:%?[A-Za-z][A-Za-z0-9_-]*)(?:\s+[^\]\r\n]*)?\]/g, "")
+                    .trim();
+                if (!line) continue;
+
+                if (settings.replacements?.length) {
+                    for (const rule of settings.replacements) {
+                        if (!rule.active || !rule.pattern) continue;
+                        try {
+                            line = rule.isRegex
+                                ? line.replace(new RegExp(rule.pattern, "g"), rule.replacement)
+                                : line.split(rule.pattern).join(rule.replacement);
+                        } catch {}
+                    }
+                }
+
+                line = trimRuntimeLine(normalizeIncomingHookText(line, false).trim());
+                if (!line) continue;
+                lines.push(line);
+                const lineStats = calculateStats(line, settings.appLanguage);
+                stats = {
+                    chars: stats.chars + lineStats.chars,
+                    words: stats.words + lineStats.words,
+                    sentences: stats.sentences + lineStats.sentences,
+                    time: 0,
+                };
+
+                if (index > 0 && index % 1000 === 0) {
+                    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+                }
+            }
+
+            if (lines.length === 0) continue;
+            const id = nextTabId.current++;
+            const filename = path.split(/[\\/]/).pop() || `Text ${id}`;
+            const name = filename.replace(/\.txt$/i, "");
+            importedTabs.push({
+                id,
+                name,
+                lines: lines.slice(-MAX_LINES_PER_TAB),
+                stats,
+                status: "reading",
+                speedSamples: [],
+                mode: "text",
+            });
+        }
+
+        if (importedTabs.length > 0) {
+            setTabs((previous) => [...previous, ...importedTabs]);
+            switchTab(importedTabs[0].id);
+        }
+    }, [setTabs, settings.appLanguage, settings.replacements, switchTab]);
 
 
     useEffect(() => {
         let unlistenProgress: UnlistenFn;
         let unlistenDrag: UnlistenFn;
+        let disposed = false;
 
         listen('import_progress', (e: any) => {
             setDictImportProgress(e.payload);
-        }).then((f) => (unlistenProgress = f));
+        }).then((f) => {
+            if (disposed) f();
+            else unlistenProgress = f;
+        });
 
         listen('tauri://drag-drop', async (event: any) => {
             const paths = event.payload?.paths as string[];
             if (!paths || paths.length === 0) return;
 
+            const textPaths = paths.filter((path) => path.toLowerCase().endsWith('.txt'));
+            if (textPaths.length > 0) {
+                try {
+                    await importDroppedTextFiles(textPaths);
+                } catch (error) {
+                    alert(settings.appLanguage === "en"
+                        ? `Text import failed: ${String(error)}`
+                        : `Ошибка импорта текста: ${String(error)}`);
+                }
+                return;
+            }
+
+            const dictionaryPaths = paths.filter((path) => {
+                const lower = path.toLowerCase();
+                return lower.endsWith('.zip') || lower.endsWith('.jsonl') || lower.endsWith('.jsonl.gz') || lower.endsWith('.tar.xz') || lower.endsWith('.txz') || lower.endsWith('.ifo') || lower.endsWith('.idx') || lower.endsWith('.idx.gz') || lower.endsWith('.dict') || lower.endsWith('.dict.dz') || lower.endsWith('.csv') || lower.endsWith('.tsv') || lower.endsWith('.dsl');
+            });
+            if (dictionaryPaths.length > 0) {
+                await runDictImport(dictionaryPaths);
+                return;
+            }
+
             const file = paths[0];
             const lowerFile = file.toLowerCase();
 
-            if (lowerFile.endsWith('.json')) {
+            if (lowerFile.endsWith('.epub')) {
+                await importEpubPath(file);
+            } else if (lowerFile.endsWith('.json')) {
                 try {
                     const content = await invoke<string>("load_sync_file", { path: file });
                     const parsed = JSON.parse(content);
@@ -618,8 +1569,10 @@ export default function App() {
                                 if (text) {
                                     const parts = text.split('\n').filter((l: string) => l.trim() !== "");
                                     for (const p of parts) {
-                                        importedLines.push(p);
-                                        const s = calculateStats(p, settings.appLanguage);
+                                        if (importedLines.length >= MAX_LINES_PER_TAB) importedLines.shift();
+                                        const line = trimRuntimeLine(p.trim());
+                                        importedLines.push(line);
+                                        const s = calculateStats(line, settings.appLanguage);
                                         totalChars += s.chars;
                                         totalWords += s.words;
                                         totalSents += s.sentences;
@@ -634,7 +1587,7 @@ export default function App() {
                                 setTimeout(processChunk, 10);
                             } else {
                                 const newId = nextTabId.current++;
-                                let name = file.split(/[/\\]/).pop()?.replace('.json', '') || "Импорт";
+                                let name = file.split(/[/\\]/).pop()?.replace('.json', '') || t('topbar.import');
                                 if (name.length > 20) name = name.substring(0, 20) + '...';
 
                                 setTabs((prev) => [
@@ -661,16 +1614,18 @@ export default function App() {
                 } catch {
                     setJsonImportProgress(null);
                 }
-            } else if (lowerFile.endsWith('.zip')) {
-                runDictImport(file);
             }
-        }).then((f) => (unlistenDrag = f));
+        }).then((f) => {
+            if (disposed) f();
+            else unlistenDrag = f;
+        });
 
         return () => {
+            disposed = true;
             if (unlistenProgress) unlistenProgress();
             if (unlistenDrag) unlistenDrag();
         };
-    }, [runDictImport, switchTab, setTabs, settings.appLanguage]);
+    }, [runDictImport, importDroppedTextFiles, importEpubPath, switchTab, setTabs, settings.appLanguage]);
 
     useEffect(() => {
         const loadCloudSync = async () => {
@@ -718,25 +1673,46 @@ export default function App() {
 
         if (!isPaused) {
             interval = setInterval(() => {
+                if (settings.autoPauseOnIdle) {
+                    const idleMs = Math.max(1, settings.autoPauseIdleMinutes || 5) * 60_000;
+                    if (Date.now() - lastReadingActivityRef.current >= idleMs) {
+                        setIsPaused(true);
+                        return;
+                    }
+                }
+
                 setTabs((prev) =>
-                    prev.map((t) =>
-                        t.id === activeTabId
-                            ? { ...t, stats: { ...t.stats, time: t.stats.time + 1 } }
-                            : t
-                    )
+                    prev.map((t) => {
+                        if (t.id !== activeTabId) return t;
+                        const nextStats = { ...t.stats, time: t.stats.time + 1 };
+                        const shouldSample = nextStats.time > 0 && nextStats.time % 15 === 0;
+                        const speedSamples = shouldSample
+                            ? [
+                                  ...((t.speedSamples || []).slice(-239)),
+                                  {
+                                      at: Date.now(),
+                                      chars: nextStats.chars,
+                                      words: nextStats.words,
+                                      sentences: nextStats.sentences,
+                                      time: nextStats.time,
+                                  } satisfies ReadingSpeedSample,
+                              ]
+                            : t.speedSamples;
+                        return { ...t, stats: nextStats, speedSamples };
+                    })
                 );
             }, 1000);
         }
 
         return () => clearInterval(interval);
-    }, [isPaused, activeTabId, setTabs]);
+    }, [isPaused, activeTabId, setTabs, settings.autoPauseOnIdle, settings.autoPauseIdleMinutes]);
 
     const triggerFlash = useCallback(() => {
         setIsFlashing(false);
         setTimeout(() => setIsFlashing(true), 10);
     }, []);
 
-    const handleNewText = useCallback((rawText: string, bypassPause: boolean = false) => {
+    const handleNewText = useCallback((rawText: string, bypassPause: boolean = false, publishToTextSync: boolean = true, suppliedFurigana?: unknown) => {
         let cleanText = settings.enableTextCleaner !== false ? removeGarbageTags(rawText) : rawText;
         if (!cleanText) return;
 
@@ -755,9 +1731,48 @@ export default function App() {
             }
         }
 
-        if (settings.removeWhitespace) cleanText = cleanText.replace(/\s+/g, '');
-        cleanText = cleanText.trim();
+        cleanText = normalizeIncomingHookText(cleanText, !!settings.removeWhitespace);
+        cleanText = trimRuntimeLine(cleanText.trim());
         if (!cleanText) return;
+
+        const hasSuppliedFurigana = suppliedFurigana !== undefined
+            && suppliedFurigana !== null
+            && (!Array.isArray(suppliedFurigana) || suppliedFurigana.length > 0);
+        const enrichExistingLine = () => {
+            if (!hasSuppliedFurigana) return;
+            const currentTabId = activeTabIdRef.current;
+            setTabs((prev) => prev.map((tab) => {
+                if (tab.id !== currentTabId) return tab;
+                let matchingIndex = -1;
+                for (let index = tab.lines.length - 1; index >= 0; index -= 1) {
+                    if (removeGarbageTags(tab.lines[index]).trim() === cleanText) {
+                        matchingIndex = index;
+                        break;
+                    }
+                }
+                if (matchingIndex < 0) return tab;
+                const lineFurigana = Array.isArray(tab.lineFurigana)
+                    ? [...tab.lineFurigana]
+                    : tab.lines.map(() => null);
+                lineFurigana[matchingIndex] = suppliedFurigana;
+                return { ...tab, lineFurigana };
+            }));
+        };
+
+        const now = Date.now();
+        const recentAt = recentIncomingTextRef.current.get(cleanText);
+        if (recentAt && now - recentAt < 800) {
+            enrichExistingLine();
+            return;
+        }
+        recentIncomingTextRef.current.set(cleanText, now);
+        if (recentIncomingTextRef.current.size > 80) {
+            for (const [text, seenAt] of recentIncomingTextRef.current) {
+                if (now - seenAt > 5000 || recentIncomingTextRef.current.size > 80) {
+                    recentIncomingTextRef.current.delete(text);
+                }
+            }
+        }
 
         if (settings.requireJapanese && !/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(cleanText)) {
             return;
@@ -767,6 +1782,17 @@ export default function App() {
             triggerFlash();
             return;
         }
+
+        lastReadingActivityRef.current = Date.now();
+        try {
+            localStorage.setItem('setsuna-jl-mode-last-line', cleanText);
+        } catch (error) {
+            console.warn('Failed to persist the latest Flow line', error);
+        }
+        invoke("set_jl_mode_line", { text: cleanText }).catch(() => {});
+        emit('jl_mode_line', cleanText).catch(() => {});
+        emitTo('jl_mode', 'jl_mode_line', cleanText).catch(() => {});
+        void publishToTextSync;
 
         const newStats = calculateStats(cleanText, settings.appLanguage);
         const currentTabId = activeTabIdRef.current;
@@ -779,12 +1805,27 @@ export default function App() {
                         t.lines.length > 0 &&
                         removeGarbageTags(t.lines[t.lines.length - 1]).trim() === cleanText
                     ) {
-                        return t;
+                        if (!hasSuppliedFurigana) return t;
+                        const lineFurigana = Array.isArray(t.lineFurigana)
+                            ? [...t.lineFurigana]
+                            : t.lines.map(() => null);
+                        lineFurigana[t.lines.length - 1] = suppliedFurigana;
+                        return { ...t, lineFurigana };
                     }
+
+                    const nextLines = [...t.lines, cleanText];
+                    const previousFurigana = Array.isArray(t.lineFurigana)
+                        ? t.lineFurigana
+                        : t.lines.map(() => null);
+                    const nextFurigana = [...previousFurigana, suppliedFurigana ?? null];
+                    const trimCount = Math.max(0, nextLines.length - MAX_LINES_PER_TAB);
+                    const lines = trimCount ? nextLines.slice(trimCount) : nextLines;
+                    const lineFurigana = trimCount ? nextFurigana.slice(trimCount) : nextFurigana;
 
                     return {
                         ...t,
-                        lines: [...t.lines, cleanText],
+                        lines,
+                        lineFurigana,
                         stats: {
                             chars: t.stats.chars + newStats.chars,
                             words: t.stats.words + newStats.words,
@@ -804,6 +1845,7 @@ export default function App() {
         settings.enableTextCleaner,
         settings.ignoreDuplicates,
         settings.appLanguage,
+        settings.textSyncServerEnabled,
     ]);
 
     useEffect(() => {
@@ -875,12 +1917,12 @@ export default function App() {
 
     const clearAll = () => {
         setConfirmDialog({
-            title: 'Очистка вкладки',
-            message: 'Очистить текущую вкладку от всего текста?',
+            title: t('app.clearTabTitle'),
+            message: t('app.clearTabMessage'),
             onConfirm: () => {
                 setTabs((prev) =>
                     prev.map((t) =>
-                        t.id === activeTabIdRef.current ? { ...t, lines: [], stats: defaultStats } : t
+                        t.id === activeTabIdRef.current ? { ...t, lines: [], stats: defaultStats, speedSamples: [] } : t
                     )
                 );
             },
@@ -889,8 +1931,8 @@ export default function App() {
 
     const handleResetSettings = () => {
         setConfirmDialog({
-            title: 'Сброс настроек',
-            message: 'Сбросить все настройки внешнего вида на стандартные? Ваши словари и вкладки не удалятся.',
+            title: t('app.resetTitle'),
+            message: t('app.resetMessage'),
             onConfirm: () => {
                 setSettings({
                     ...DEFAULT_SETTINGS,
@@ -904,20 +1946,77 @@ export default function App() {
 
     const addNewTab = () => {
         const newId = nextTabId.current++;
-        setTabs((prev) => [...prev, { id: newId, name: `Окно ${newId}`, lines: [], stats: defaultStats }]);
+        setTabs((prev) => [...prev, { id: newId, name: t('tabs.newName', { id: newId }), lines: [], stats: defaultStats, speedSamples: [] }]);
         switchTab(newId);
+    };
+
+    const openTextHookerWorkspace = () => {
+        const current = tabs.find((tab) => tab.id === activeTabIdRef.current);
+        const currentIsTextHooker = Boolean(current && (!current.mode || current.mode === "text"));
+        if (!currentIsTextHooker) {
+            const existing = tabs.find((tab) => !tab.archived && (!tab.mode || tab.mode === "text"));
+            if (existing) {
+                switchTab(existing.id);
+            } else {
+                const newId = nextTabId.current++;
+                setTabs((prev) => [...prev, {
+                    id: newId,
+                    name: t('tabs.newName', { id: newId }),
+                    lines: [],
+                    stats: defaultStats,
+                    speedSamples: [],
+                    mode: "text",
+                }]);
+                switchTab(newId);
+            }
+        }
+        setActiveWorkspace("texthooker");
+    };
+
+    const openEpubWorkspace = () => setActiveWorkspace("epub");
+    const openPlayerWorkspace = () => setActiveWorkspace("player");
+
+    const closeTabById = (id: number) => {
+        const target = tabs.find((tab) => tab.id === id);
+        if (!target) return;
+        const visibleTextTabs = tabs.filter((tab) => !tab.archived && (!tab.mode || tab.mode === 'text'));
+        if (!target.archived && (!target.mode || target.mode === 'text') && visibleTextTabs.length <= 1) return;
+
+        const targetIndex = tabs.findIndex((tab) => tab.id === id);
+        const newTabs = tabs.filter((tab) => tab.id !== id);
+        setTabs(newTabs);
+
+        if (activeTabId === id) {
+            const candidates = newTabs.filter((tab) => !tab.archived && (!tab.mode || tab.mode === 'text'));
+            const next = candidates.find((tab) => tabs.indexOf(tab) >= targetIndex) || candidates[candidates.length - 1];
+            if (next) switchTab(next.id);
+        }
     };
 
     const closeTab = (e: React.MouseEvent, id: number) => {
         e.stopPropagation();
-        if (tabs.length === 1) return;
+        closeTabById(id);
+    };
 
-        const newTabs = tabs.filter((t) => t.id !== id);
-        setTabs(newTabs);
-
-        if (activeTabId === id) {
-            switchTab(newTabs[0].id);
+    const archiveTab = (e: React.MouseEvent, id: number) => {
+        e.stopPropagation();
+        const visibleTabs = tabs.filter((tab) => !tab.archived);
+        if (visibleTabs.length <= 1) return;
+        setTabs((prev) => prev.map((tab) => tab.id === id ? { ...tab, archived: true } : tab));
+        if (activeTabIdRef.current === id) {
+            const next = visibleTabs.find((tab) => tab.id !== id) || visibleTabs[0];
+            if (next) switchTab(next.id);
         }
+    };
+
+    const cycleTabStatus = (e: React.MouseEvent, id: number) => {
+        e.stopPropagation();
+        const order: NonNullable<Tab["status"]>[] = ["planned", "reading", "paused", "completed"];
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== id) return tab;
+            const currentIndex = Math.max(0, order.indexOf(tab.status || "planned"));
+            return { ...tab, status: order[(currentIndex + 1) % order.length] };
+        }));
     };
 
     const getActiveBrowserTabSafe = () => {
@@ -932,17 +2031,29 @@ export default function App() {
 
         const rect = container.getBoundingClientRect();
         if (rect.width < 10 || rect.height < 10) return null;
+        const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+        const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+        const left = Math.max(0, Math.min(rect.left, viewportWidth));
+        const top = Math.max(0, Math.min(rect.top, viewportHeight));
+        const right = Math.max(left, Math.min(rect.right, viewportWidth));
+        const bottom = Math.max(top, Math.min(rect.bottom, viewportHeight));
 
         return {
-            xOffset: Math.round(rect.left),
-            yOffset: Math.round(rect.top),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
+            xOffset: Math.round(left),
+            yOffset: Math.round(top),
+            width: Math.round(right - left),
+            height: Math.round(bottom - top),
         };
     };
 
     const manageBrowserTab = useCallback(
-        async (action: string, tabId: string, url: string = "") => {
+        async (action: BrowserAction, tabId: string, url: string = "") => {
+            if (isMobileLayout) return;
+            if (!tabId && action !== "hide_all") return;
+            if (isBrowserBlockedByOverlay && action !== "hide_all" && action !== "hide" && action !== "close") {
+                return;
+            }
+
             const rect = getBrowserContainerRect();
 
             const payload = {
@@ -955,15 +2066,38 @@ export default function App() {
                 height: rect?.height ?? Math.max(200, window.innerHeight - 52),
             };
 
+            const commandKey = JSON.stringify(payload);
+            if ((action === "resize" || action === "show") && commandKey === lastBrowserCommandRef.current) {
+                return;
+            }
+            lastBrowserCommandRef.current = commandKey;
+
             try {
                 await invoke("manage_browser", payload);
             } catch (e) {
-                console.error("Ошибка управления браузером:", e);
-                alert(`Ошибка браузера: ${e}`);
+                console.error("Browser control error:", e);
+                alert(getTranslator(settings.appLanguage || 'ru')('app.browserError', { error: String(e) }));
             }
         },
-        [reservedWidth]
+        [isMobileLayout, isBrowserBlockedByOverlay, reservedWidth, settings.appLanguage]
     );
+
+    const hideAllBrowserWindows = useCallback(() => {
+        manageBrowserTab("hide_all", "");
+    }, [manageBrowserTab]);
+
+    useEffect(() => {
+        if (isBrowserBlockedByOverlay) {
+            hideAllBrowserWindows();
+            return;
+        }
+
+        if (!isHelperSpaceReserved) return;
+        const activeBrowserTab = getActiveBrowserTabSafe();
+        if (!activeBrowserTab) return;
+        window.setTimeout(() => manageBrowserTab("show", activeBrowserTab.id, activeBrowserTab.url), 80);
+        window.setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 220);
+    }, [isBrowserBlockedByOverlay, isHelperSpaceReserved, hideAllBrowserWindows, manageBrowserTab]);
 
     const syncBrowserBoundsLocal = useCallback(() => {
         if (!isHelperSpaceReserved) return;
@@ -973,6 +2107,33 @@ export default function App() {
 
         manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url);
     }, [isHelperSpaceReserved, manageBrowserTab]);
+
+    const scheduleBrowserBoundsSync = useCallback((delay = 0) => {
+        if (browserSyncFrameRef.current !== null) {
+            cancelAnimationFrame(browserSyncFrameRef.current);
+        }
+
+        const run = () => {
+            browserSyncFrameRef.current = requestAnimationFrame(() => {
+                browserSyncFrameRef.current = null;
+                syncBrowserBoundsLocal();
+            });
+        };
+
+        if (delay > 0) {
+            window.setTimeout(run, delay);
+        } else {
+            run();
+        }
+    }, [syncBrowserBoundsLocal]);
+
+    useEffect(() => {
+        return () => {
+            if (browserSyncFrameRef.current !== null) {
+                cancelAnimationFrame(browserSyncFrameRef.current);
+            }
+        };
+    }, []);
 
     useEffect(() => {
         const handleMouseMove = (e: MouseEvent) => {
@@ -991,9 +2152,8 @@ export default function App() {
             document.body.style.cursor = "default";
             document.body.style.userSelect = "auto";
 
-            setTimeout(() => {
-                syncBrowserBoundsLocal();
-            }, 30);
+            scheduleBrowserBoundsSync();
+            scheduleBrowserBoundsSync(180);
         };
 
         document.addEventListener("mousemove", handleMouseMove);
@@ -1003,18 +2163,14 @@ export default function App() {
             document.removeEventListener("mousemove", handleMouseMove);
             document.removeEventListener("mouseup", handleMouseUp);
         };
-    }, [syncBrowserBoundsLocal]);
+    }, [scheduleBrowserBoundsSync]);
 
     useEffect(() => {
-        const onResize = () => {
-            setTimeout(() => {
-                syncBrowserBoundsLocal();
-            }, 30);
-        };
+        const onResize = () => scheduleBrowserBoundsSync();
 
         window.addEventListener("resize", onResize);
         return () => window.removeEventListener("resize", onResize);
-    }, [syncBrowserBoundsLocal]);
+    }, [scheduleBrowserBoundsSync]);
 
     useEffect(() => {
         if (!isHelperSpaceReserved) return;
@@ -1022,12 +2178,47 @@ export default function App() {
         const activeBrowserTab = getActiveBrowserTabSafe();
         if (!activeBrowserTab) return;
 
-        const t = setTimeout(() => {
-            manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url);
-        }, 60);
+        const timers = [
+            window.setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 40),
+            window.setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 180),
+            window.setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 420),
+        ];
 
-        return () => clearTimeout(t);
+        return () => timers.forEach(window.clearTimeout);
     }, [isHelperSpaceReserved, reservedWidth, showBrowserUI, activeBrowserIdx, browserTabs, manageBrowserTab]);
+
+    useEffect(() => {
+        if (isHelperSpaceReserved) return;
+        hideAllBrowserWindows();
+    }, [isHelperSpaceReserved, hideAllBrowserWindows]);
+
+    useEffect(() => {
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === "hidden") {
+                hideAllBrowserWindows();
+                return;
+            }
+
+            if (!isHelperSpaceReserved) {
+                hideAllBrowserWindows();
+                return;
+            }
+
+            const activeBrowserTab = getActiveBrowserTabSafe();
+            if (!activeBrowserTab) return;
+
+            setTimeout(() => manageBrowserTab("show", activeBrowserTab.id, activeBrowserTab.url), 60);
+            setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 360);
+        };
+
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+        window.addEventListener("focus", handleVisibilityChange);
+
+        return () => {
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+            window.removeEventListener("focus", handleVisibilityChange);
+        };
+    }, [isHelperSpaceReserved, hideAllBrowserWindows, manageBrowserTab]);
 
     const handleAiHelperClick = () => {
         const activeBrowserTab = getActiveBrowserTabSafe();
@@ -1035,7 +2226,7 @@ export default function App() {
 
         if (isHelperSpaceReserved) {
             setIsHelperSpaceReserved(false);
-            manageBrowserTab("hide", activeBrowserTab.id, activeBrowserTab.url);
+            hideAllBrowserWindows();
             return;
         }
 
@@ -1044,6 +2235,9 @@ export default function App() {
         setTimeout(() => {
             manageBrowserTab("show", activeBrowserTab.id, activeBrowserTab.url);
         }, 80);
+        setTimeout(() => {
+            manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url);
+        }, 380);
     };
 
     const submitUrlLocal = () => {
@@ -1067,7 +2261,7 @@ export default function App() {
         newTabs[safeIdx] = {
             ...newTabs[safeIdx],
             url: finalUrl,
-            title: getSmartTitle(finalUrl, "Сайт"),
+            title: getSmartTitle(finalUrl, t('browser.siteTitle')),
         };
 
         setBrowserTabs(newTabs);
@@ -1082,7 +2276,7 @@ export default function App() {
         const newTab = {
 			id: `tab_${Date.now()}`,
 			url: engine,
-			title: "Новая вкладка",
+			title: t('browser.newTab'),
 			favicon: "",
 		};
 
@@ -1097,6 +2291,9 @@ export default function App() {
             setTimeout(() => {
                 manageBrowserTab("show", newTab.id, newTab.url);
             }, 40);
+            setTimeout(() => {
+                manageBrowserTab("resize", newTab.id, newTab.url);
+            }, 360);
         }
     };
 
@@ -1129,6 +2326,9 @@ export default function App() {
             setTimeout(() => {
                 manageBrowserTab("show", newTabs[safeNextIdx].id, newTabs[safeNextIdx].url);
             }, 40);
+            setTimeout(() => {
+                manageBrowserTab("resize", newTabs[safeNextIdx].id, newTabs[safeNextIdx].url);
+            }, 360);
         }
     };
 
@@ -1148,6 +2348,9 @@ export default function App() {
             setTimeout(() => {
                 manageBrowserTab("show", newTab.id, newTab.url);
             }, 20);
+            setTimeout(() => {
+                manageBrowserTab("resize", newTab.id, newTab.url);
+            }, 360);
         }
     };
 
@@ -1229,8 +2432,10 @@ export default function App() {
                             if (text) {
                                 const parts = text.split('\n').filter((l: string) => l.trim() !== "");
                                 for (const p of parts) {
-                                    importedLines.push(p);
-                                    const s = calculateStats(p, settings.appLanguage);
+                                    if (importedLines.length >= MAX_LINES_PER_TAB) importedLines.shift();
+                                    const line = trimRuntimeLine(p.trim());
+                                    importedLines.push(line);
+                                    const s = calculateStats(line, settings.appLanguage);
                                     totalChars += s.chars;
                                     totalWords += s.words;
                                     totalSents += s.sentences;
@@ -1269,16 +2474,79 @@ export default function App() {
 
                     processChunk();
                 } else {
-                    alert("Неверный формат файла. Ожидался JSON от Texthooker.");
+                    alert(t('app.invalidImportFile'));
                 }
             } catch {
-                alert("Ошибка при чтении файла.");
+                alert(t('app.fileReadError'));
                 setJsonImportProgress(null);
             }
         };
 
         reader.readAsText(file);
         e.target.value = '';
+    };
+
+    const handleOpenImport = async () => {
+        const selected = await open({
+            multiple: false,
+            directory: false,
+            filters: [
+                { name: "Setsuna text", extensions: ["json"] },
+                { name: "JSON", extensions: ["json"] },
+            ],
+        });
+        if (!selected || typeof selected !== "string") return;
+
+        const lower = selected.toLowerCase();
+        if (lower.endsWith(".epub")) {
+            await importEpubPath(selected);
+            return;
+        }
+
+        if (!lower.endsWith(".json")) return;
+        try {
+            const content = await invoke<string>("load_sync_file", { path: selected });
+            const parsed = JSON.parse(content);
+            if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].lines !== undefined) {
+                let currentId = nextTabId.current;
+                const newTabs = parsed.map((tab: any) => ({ ...tab, id: currentId++ }));
+                nextTabId.current = currentId;
+                setTabs((prev) => [...prev, ...newTabs]);
+                switchTab(newTabs[0].id);
+                return;
+            }
+
+            if (parsed && parsed["bannou-texthooker-lineData"]) {
+                const rawLines = parsed["bannou-texthooker-lineData"];
+                const importedLines = rawLines
+                    .flatMap((line: any) => String(line?.text || "").split("\n"))
+                    .map((line: string) => line.trim())
+                    .filter(Boolean);
+                let totalChars = 0;
+                let totalWords = 0;
+                let totalSents = 0;
+                importedLines.forEach((line: string) => {
+                    const stats = calculateStats(line, settings.appLanguage);
+                    totalChars += stats.chars;
+                    totalWords += stats.words;
+                    totalSents += stats.sentences;
+                });
+                const newId = nextTabId.current++;
+                let name = selected.split(/[/\\]/).pop()?.replace(/\.json$/i, "") || t("topbar.import");
+                if (name.length > 20) name = name.substring(0, 20) + "...";
+                setTabs((prev) => [...prev, {
+                    id: newId,
+                    name,
+                    lines: importedLines,
+                    stats: { chars: totalChars, words: totalWords, sentences: totalSents, time: parsed["bannou-texthooker-timeValue"] || 0 },
+                }]);
+                switchTab(newId);
+            } else {
+                alert(t("app.invalidImportFile"));
+            }
+        } catch {
+            alert(t("app.fileReadError"));
+        }
     };
 
     const lastClipboardText = useRef("");
@@ -1315,6 +2583,9 @@ export default function App() {
     const [wsConnecting, setWsConnecting] = useState<Record<string, boolean>>({});
     const [wsIntents, setWsIntents] = useState<Record<string, boolean>>({});
     const wsRefs = useRef<Record<string, WebSocket>>({});
+    const wsUrlsRef = useRef<Record<string, string>>({});
+    const wsNextRetryAtRef = useRef<Record<string, number>>({});
+    const wsFailureCountRef = useRef<Record<string, number>>({});
 
     const wsIntentsRef = useRef(wsIntents);
 
@@ -1325,30 +2596,51 @@ export default function App() {
     useEffect(() => {
         setWsIntents((prev) => {
             const next = { ...prev };
-            (settings.websockets || []).forEach((ws) => {
-                if (next[ws.id] === undefined) next[ws.id] = true;
+            const activeSockets = (settings.websockets || []).filter((ws) => ws.active);
+            const activeIds = new Set(activeSockets.map((ws) => ws.id));
+            const primaryId = settings.primaryWebSocketId && activeIds.has(settings.primaryWebSocketId)
+                ? settings.primaryWebSocketId
+                : activeSockets[0]?.id;
+
+            Object.keys(next).forEach((id) => {
+                if (!activeIds.has(id)) next[id] = false;
+            });
+
+            activeSockets.forEach((ws) => {
+                if (next[ws.id] === undefined) {
+                    next[ws.id] = Boolean(settings.websocketAutoConnect && ws.id === primaryId);
+                }
             });
             return next;
         });
-    }, [settings.websockets]);
+    }, [settings.primaryWebSocketId, settings.websocketAutoConnect, settings.websockets]);
 
     const connectWs = useCallback((wsConfig: WsConfig) => {
         if (!wsConfig.url) return;
+        const normalizedUrl = normalizeWebSocketUrl(wsConfig.url);
 
         try {
             setWsConnecting((prev) => ({ ...prev, [wsConfig.id]: true }));
-            const ws = new WebSocket(wsConfig.url);
+            const ws = new WebSocket(normalizedUrl);
             wsRefs.current[wsConfig.id] = ws;
+            wsUrlsRef.current[wsConfig.id] = normalizedUrl;
 
             ws.onopen = () => {
+                wsFailureCountRef.current[wsConfig.id] = 0;
+                wsNextRetryAtRef.current[wsConfig.id] = 0;
                 setWsConnecting((prev) => ({ ...prev, [wsConfig.id]: false }));
                 setWsStatuses((prev) => ({ ...prev, [wsConfig.id]: true }));
             };
 
             ws.onclose = () => {
+                const failures = (wsFailureCountRef.current[wsConfig.id] || 0) + 1;
+                wsFailureCountRef.current[wsConfig.id] = failures;
+                const retryDelay = Math.min(60_000, failures <= 1 ? 5_000 : 5_000 * Math.pow(2, failures - 1));
+                wsNextRetryAtRef.current[wsConfig.id] = Date.now() + retryDelay;
                 setWsConnecting((prev) => ({ ...prev, [wsConfig.id]: false }));
                 setWsStatuses((prev) => ({ ...prev, [wsConfig.id]: false }));
                 delete wsRefs.current[wsConfig.id];
+                delete wsUrlsRef.current[wsConfig.id];
             };
 
             ws.onerror = () => {
@@ -1358,26 +2650,29 @@ export default function App() {
 
             ws.onmessage = (e) => {
                 if (typeof e.data === 'string') {
-                    try {
-                        const parsed = JSON.parse(e.data);
-                        handleNewText(parsed.text || parsed.message || e.data, false);
-                    } catch {
-                        handleNewText(e.data, false);
-                    }
+                    const payload = extractHookPayload(e.data);
+                    if (payload.text) handleNewText(payload.text, false, true, payload.furigana);
                 }
             };
-        } catch {}
+        } catch {
+            const failures = (wsFailureCountRef.current[wsConfig.id] || 0) + 1;
+            wsFailureCountRef.current[wsConfig.id] = failures;
+            wsNextRetryAtRef.current[wsConfig.id] = Date.now() + Math.min(60_000, 5_000 * Math.pow(2, failures - 1));
+            setWsConnecting((prev) => ({ ...prev, [wsConfig.id]: false }));
+        }
     }, [handleNewText]);
 
     useEffect(() => {
-        const interval = setInterval(() => {
-            const activeSockets = settings.websockets || [];
+        const syncWebSockets = () => {
+            const activeSockets = (settings.websockets || []).filter((ws) => ws.active);
 
             Object.keys(wsRefs.current).forEach((id) => {
                 const exists = activeSockets.find((w) => w.id === id);
-                if (!exists || !wsIntentsRef.current[id]) {
+                const normalizedUrl = exists ? normalizeWebSocketUrl(exists.url) : "";
+                if (!exists || !wsIntentsRef.current[id] || wsUrlsRef.current[id] !== normalizedUrl) {
                     wsRefs.current[id].close();
                     delete wsRefs.current[id];
+                    delete wsUrlsRef.current[id];
 
                     setWsStatuses((prev) => {
                         const n = { ...prev };
@@ -1394,18 +2689,429 @@ export default function App() {
             });
 
             activeSockets.forEach((wsConfig) => {
-                if (wsIntentsRef.current[wsConfig.id] && !wsRefs.current[wsConfig.id]) {
+                const retryAt = wsNextRetryAtRef.current[wsConfig.id] || 0;
+                if (wsIntentsRef.current[wsConfig.id] && !wsRefs.current[wsConfig.id] && Date.now() >= retryAt) {
                     connectWs(wsConfig);
                 }
             });
-        }, 3000);
+        };
+
+        syncWebSockets();
+        const interval = setInterval(syncWebSockets, 3000);
 
         return () => clearInterval(interval);
     }, [settings.websockets, connectWs]);
 
     const toggleWs = (id: string) => {
-        setWsIntents((prev) => ({ ...prev, [id]: !prev[id] }));
+        setWsIntents((prev) => {
+            const nextValue = !prev[id];
+            if (nextValue) {
+                wsFailureCountRef.current[id] = 0;
+                wsNextRetryAtRef.current[id] = 0;
+            } else if (wsRefs.current[id]) {
+                wsRefs.current[id].close();
+                delete wsRefs.current[id];
+                delete wsUrlsRef.current[id];
+            }
+            return { ...prev, [id]: nextValue };
+        });
     };
+
+    useEffect(() => {
+        return () => {
+            Object.values(wsRefs.current).forEach((ws) => ws.close());
+            wsRefs.current = {};
+            wsUrlsRef.current = {};
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!settings.textSyncServerEnabled) {
+            invoke("stop_text_sync_server").catch(() => {});
+            return;
+        }
+
+        invoke("start_text_sync_server", {
+            port: settings.textSyncServerPort || 48732,
+            token: settings.textSyncServerToken || undefined,
+        }).catch((error) => {
+            console.warn("Text sync server start failed", error);
+        });
+
+        return () => {
+            invoke("stop_text_sync_server").catch(() => {});
+        };
+    }, [settings.textSyncServerEnabled, settings.textSyncServerPort, settings.textSyncServerToken]);
+
+    const textSyncRemoteSeqRef = useRef(0);
+    const textSyncRemoteKeyRef = useRef("");
+    const textSyncRemoteBusyRef = useRef(false);
+    const textSyncLastPublishedStateRef = useRef("");
+    const textSyncLastAppliedRemoteStateRef = useRef("");
+
+    const applyTextSyncStatePayload = useCallback((payload: any) => {
+        if (payload?.version !== 1 || !Array.isArray(payload.tabs)) return false;
+        const remoteTabs = payload.tabs
+            .map((tab: any) => trimTabForRuntime(tab))
+            .filter((tab: any) => typeof tab?.id === "number" && Array.isArray(tab?.lines));
+        if (remoteTabs.length === 0) return false;
+
+        const remoteActive = remoteTabs.some((tab: Tab) => tab.id === payload.activeTabId)
+            ? payload.activeTabId
+            : remoteTabs[0].id;
+        const remoteTabsKey = JSON.stringify(remoteTabs);
+        const remoteStateKey = JSON.stringify({
+            version: 1,
+            activeTabId: remoteActive,
+            isPaused: Boolean(payload.isPaused),
+            tabsKey: remoteTabsKey,
+        });
+
+        textSyncLastAppliedRemoteStateRef.current = remoteStateKey;
+        textSyncLastPublishedStateRef.current = remoteStateKey;
+        setTabs(remoteTabs);
+        setActiveTabId(remoteActive);
+        activeTabIdRef.current = remoteActive;
+        setIsPaused(Boolean(payload.isPaused));
+        nextTabId.current = Math.max(...remoteTabs.map((tab: Tab) => tab.id), 0) + 1;
+        return true;
+    }, []);
+
+    const textSyncRuntimeTabs = useMemo(() => {
+        return tabs.map((tab) => trimTabForRuntime(tab));
+    }, [tabs]);
+
+    const textSyncStatePayload = useMemo(() => {
+        return {
+            version: 1,
+            activeTabId,
+            isPaused,
+            tabs: textSyncRuntimeTabs,
+        };
+    }, [activeTabId, isPaused, textSyncRuntimeTabs]);
+
+    const textSyncStateKey = useMemo(() => JSON.stringify({
+        version: 1,
+        activeTabId,
+        isPaused,
+        tabsKey: tabsPersistKey,
+    }), [activeTabId, isPaused, tabsPersistKey]);
+
+    useEffect(() => {
+        if (!settings.textSyncServerEnabled) return;
+        if (textSyncStateKey === textSyncLastAppliedRemoteStateRef.current) return;
+        if (textSyncStateKey === textSyncLastPublishedStateRef.current) return;
+
+        const timer = window.setTimeout(() => {
+            if (textSyncStateKey === textSyncLastAppliedRemoteStateRef.current) return;
+            textSyncLastPublishedStateRef.current = textSyncStateKey;
+            invoke("publish_text_sync_event", {
+                kind: "state",
+                payload: textSyncStatePayload,
+            }).catch((error) => {
+                console.warn("Text sync state publish failed", error);
+                textSyncLastPublishedStateRef.current = "";
+            });
+        }, 120);
+
+        return () => window.clearTimeout(timer);
+    }, [settings.textSyncServerEnabled, textSyncStateKey, textSyncStatePayload]);
+
+    useEffect(() => {
+        const url = settings.textSyncRemoteUrl?.trim() || "";
+        const token = settings.textSyncRemoteToken?.trim() || "";
+        if (!settings.textSyncRemoteEnabled || !url || !token) return;
+        if (textSyncStateKey === textSyncLastAppliedRemoteStateRef.current) return;
+
+        const timer = window.setTimeout(() => {
+            if (textSyncStateKey === textSyncLastAppliedRemoteStateRef.current) return;
+            invoke("push_remote_text_sync_event", {
+                url,
+                token,
+                kind: "state",
+                payload: textSyncStatePayload,
+            }).catch((error) => {
+                console.warn("Text sync remote state push failed", error);
+            });
+        }, 180);
+
+        return () => window.clearTimeout(timer);
+    }, [
+        settings.textSyncRemoteEnabled,
+        settings.textSyncRemoteUrl,
+        settings.textSyncRemoteToken,
+        textSyncStateKey,
+        textSyncStatePayload,
+    ]);
+
+    useEffect(() => {
+        const url = settings.textSyncCloudUrl?.trim() || "";
+        const deviceId = settings.textSyncDeviceId?.trim() || settings.textSyncServerToken?.trim() || "setsuna";
+        if (!settings.textSyncCloudEnabled || !url) return;
+        if (textSyncStateKey === textSyncLastAppliedRemoteStateRef.current) return;
+
+        const timer = window.setTimeout(() => {
+            if (textSyncStateKey === textSyncLastAppliedRemoteStateRef.current) return;
+            invoke("push_text_sync_cloud_state", { url, deviceId, stateKey: textSyncStateKey, payload: textSyncStatePayload }).catch((error) => {
+                console.warn("Text sync cloud push failed", error);
+            });
+        }, 350);
+
+        return () => window.clearTimeout(timer);
+    }, [
+        settings.textSyncCloudEnabled,
+        settings.textSyncCloudUrl,
+        settings.textSyncDeviceId,
+        settings.textSyncServerToken,
+        textSyncStateKey,
+        textSyncStatePayload,
+    ]);
+
+    const textSyncCloudBusyRef = useRef(false);
+    const textSyncCloudLastRemoteKeyRef = useRef("");
+
+    useEffect(() => {
+        const url = settings.textSyncCloudUrl?.trim() || "";
+        const deviceId = settings.textSyncDeviceId?.trim() || settings.textSyncServerToken?.trim() || "setsuna";
+        if (!settings.textSyncCloudEnabled || !url) return;
+
+        const poll = async () => {
+            if (textSyncCloudBusyRef.current) return;
+            textSyncCloudBusyRef.current = true;
+            try {
+                const relay = await invoke<any>("pull_text_sync_cloud_state", { url });
+                const remoteDevice = String(relay?.deviceId || "");
+                const remoteKey = String(relay?.stateKey || "");
+                if (!remoteKey || remoteDevice === deviceId || remoteKey === textSyncCloudLastRemoteKeyRef.current) return;
+                textSyncCloudLastRemoteKeyRef.current = remoteKey;
+                applyTextSyncStatePayload(relay.payload);
+            } catch (error) {
+                console.warn("Text sync cloud pull failed", error);
+            } finally {
+                textSyncCloudBusyRef.current = false;
+            }
+        };
+
+        poll();
+        const interval = window.setInterval(poll, 1200);
+        return () => window.clearInterval(interval);
+    }, [
+        settings.textSyncCloudEnabled,
+        settings.textSyncCloudUrl,
+        settings.textSyncDeviceId,
+        settings.textSyncServerToken,
+        applyTextSyncStatePayload,
+    ]);
+
+    useEffect(() => {
+        const url = settings.textSyncRemoteUrl?.trim() || "";
+        const token = settings.textSyncRemoteToken?.trim() || "";
+        const enabled = Boolean(settings.textSyncRemoteEnabled && url && token);
+        const remoteKey = `${url}|${token}`;
+
+        if (textSyncRemoteKeyRef.current !== remoteKey) {
+            textSyncRemoteKeyRef.current = remoteKey;
+            textSyncRemoteSeqRef.current = 0;
+        }
+
+        if (!enabled) return;
+
+        const poll = async () => {
+            if (textSyncRemoteBusyRef.current) return;
+            textSyncRemoteBusyRef.current = true;
+            try {
+                const result = await invoke<{
+                    ok: boolean;
+                    seq: number;
+                    lines: { seq: number; text: string; atMs: number; kind?: string; payload?: any }[];
+                }>(
+                    "poll_remote_text_sync",
+                    { url, token, since: textSyncRemoteSeqRef.current }
+                );
+                if (typeof result.seq === "number") {
+                    textSyncRemoteSeqRef.current = Math.max(textSyncRemoteSeqRef.current, result.seq);
+                }
+                for (const line of result.lines || []) {
+                    textSyncRemoteSeqRef.current = Math.max(textSyncRemoteSeqRef.current, line.seq || 0);
+                    if (line?.kind === "state" && line.payload?.version === 1 && Array.isArray(line.payload.tabs)) {
+                        applyTextSyncStatePayload(line.payload);
+                        continue;
+                    }
+
+                    if ((!line?.kind || line.kind === "line") && line?.text) {
+                        handleNewText(line.text, false, false);
+                    }
+                }
+            } catch (error) {
+                console.warn("Remote text sync poll failed", error);
+            } finally {
+                textSyncRemoteBusyRef.current = false;
+            }
+        };
+
+        poll();
+        const interval = window.setInterval(poll, 350);
+        return () => window.clearInterval(interval);
+    }, [
+        settings.textSyncRemoteEnabled,
+        settings.textSyncRemoteUrl,
+        settings.textSyncRemoteToken,
+        applyTextSyncStatePayload,
+        handleNewText,
+    ]);
+
+    useEffect(() => {
+        let unlisten: UnlistenFn | undefined;
+        listen("text_sync_remote_event", (event: any) => {
+            const payload = event?.payload;
+            if (payload?.kind === "state") {
+                applyTextSyncStatePayload(payload.payload);
+            } else if ((!payload?.kind || payload.kind === "line") && payload?.text) {
+                handleNewText(payload.text, false, false);
+            }
+        }).then((fn) => {
+            unlisten = fn;
+        }).catch((error) => {
+            console.warn("Text sync event listener failed", error);
+        });
+
+        return () => {
+            if (unlisten) unlisten();
+        };
+    }, [applyTextSyncStatePayload, handleNewText]);
+
+    const replaceLookupStack = useCallback((data: LookupData) => {
+        setLookupStack([data]);
+    }, []);
+
+    const appendLookupStack = useCallback((data: LookupData) => {
+        setLookupStack((prev) => [...prev, data]);
+    }, []);
+
+    const replaceLookupStackAt = useCallback((index: number, data: LookupData) => {
+        setLookupStack((prev) => [...prev.slice(0, index + 1), data]);
+    }, []);
+
+    const sliceLookupStack = useCallback((index: number) => {
+        setLookupStack((prev) => prev.slice(0, index + 1));
+    }, []);
+
+    const lookupCambridgeForManualSearch = useCallback(async (word: string): Promise<DictEntry[]> => {
+        if (!settings.cambridgeApiEnabled || !settings.cambridgeApiKey?.trim()) return [];
+        if (!/^[A-Za-z][A-Za-z'’-]*(?: [A-Za-z][A-Za-z'’-]*)?$/.test(word.trim())) return [];
+
+        const normalizedWord = word.trim().replace(/’/g, "'").toLowerCase();
+        const dictionaryCode = settings.cambridgeApiDictionary || "english-russian";
+        const baseUrl = settings.cambridgeApiBaseUrl || "https://dictionary.cambridge.org/api/v1";
+        const cacheKey = `${baseUrl}|${dictionaryCode}|${normalizedWord}`;
+        const cached = cambridgeLookupCacheRef.current.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) return cached.entries;
+
+        try {
+            const entries = await invoke<DictEntry[]>("lookup_cambridge_api", {
+                word: normalizedWord,
+                config: {
+                    enabled: true,
+                    apiKey: settings.cambridgeApiKey,
+                    dictionaryCode,
+                    baseUrl,
+                },
+            });
+            const safeEntries = entries || [];
+            cambridgeLookupCacheRef.current.set(cacheKey, {
+                expiresAt: Date.now() + 12 * 60 * 60 * 1000,
+                entries: safeEntries,
+            });
+            return safeEntries;
+        } catch {
+            cambridgeLookupCacheRef.current.set(cacheKey, {
+                expiresAt: Date.now() + 5 * 60 * 1000,
+                entries: [],
+            });
+            return [];
+        }
+    }, [settings.cambridgeApiEnabled, settings.cambridgeApiKey, settings.cambridgeApiDictionary, settings.cambridgeApiBaseUrl]);
+
+    const runLookupAt = useCallback((text: string, x: number, y: number, lookupMeta?: Partial<LookupData>) => {
+        const lookupText = normalizeLookupText(text);
+        if (!lookupText) return;
+        invoke('lookup_word', { word: lookupText }).then(async (entries: any) => {
+            const localEntries = entries || [];
+            const apiEntries = (settings.cambridgeApiOnlyWhenNoLocal ?? true) && localEntries.length > 0
+                ? []
+                : await lookupCambridgeForManualSearch(lookupText);
+            const allEntries = [...localEntries, ...apiEntries];
+            if (allEntries.length > 0) {
+                setLookupStack([{
+                    rect: new DOMRect(x, y, 0, 0),
+                    entries: allEntries,
+                    word: lookupText,
+                    sentence: lookupText,
+                    ...lookupMeta,
+                }]);
+            }
+        }).catch(async () => {
+            const apiEntries = await lookupCambridgeForManualSearch(lookupText);
+            if (apiEntries.length > 0) {
+                setLookupStack([{
+                    rect: new DOMRect(x, y, 0, 0),
+                    entries: apiEntries,
+                    word: lookupText,
+                    sentence: lookupText,
+                    ...lookupMeta,
+                }]);
+            }
+        });
+    }, [lookupCambridgeForManualSearch, settings.cambridgeApiOnlyWhenNoLocal]);
+
+    const runSentenceTokenLookup = useCallback((word: string, sentence: string, cursor?: number) => {
+        const requestedWord = normalizeLookupText(word);
+        if (!requestedWord) return;
+        const rect = new DOMRect(window.innerWidth / 2, Math.max(110, window.innerHeight * 0.3), 0, 0);
+
+        void (async () => {
+            let resolvedWord = requestedWord;
+            let localEntries: DictEntry[] = [];
+
+            if (Number.isFinite(cursor) && sentence) {
+                try {
+                    const result = await invoke<{
+                        entries: DictEntry[];
+                        match_start: number;
+                        match_len: number;
+                        word: string;
+                    }>('scan_cursor', { sentence, cursor });
+                    resolvedWord = normalizeLookupText(result.word) || requestedWord;
+                    localEntries = Array.isArray(result.entries) ? result.entries : [];
+                } catch {
+                    // Direct lookup below remains useful for punctuation and incomplete text.
+                }
+            }
+
+            if (localEntries.length === 0) {
+                try {
+                    const entries = await invoke<DictEntry[]>('lookup_word', { word: requestedWord });
+                    localEntries = Array.isArray(entries) ? entries : [];
+                    resolvedWord = requestedWord;
+                } catch {
+                    localEntries = [];
+                }
+            }
+
+            const apiEntries = (settings.cambridgeApiOnlyWhenNoLocal ?? true) && localEntries.length > 0
+                ? []
+                : await lookupCambridgeForManualSearch(resolvedWord);
+            const entries = [...localEntries, ...apiEntries];
+            if (entries.length === 0) return;
+
+            setLookupStack([{
+                rect,
+                entries,
+                word: resolvedWord,
+                sentence: sentence || resolvedWord,
+            }]);
+        })();
+    }, [lookupCambridgeForManualSearch, settings.cambridgeApiOnlyWhenNoLocal]);
 
     if (!isAppLoaded) {
         return <div style={{ backgroundColor: 'var(--bg-main)', width: '100vw', height: '100vh' }} />;
@@ -1423,28 +3129,21 @@ export default function App() {
             onClick={() => setLookupStack([])}
         >
             <SetupWizard
-                isOpen={isFirstRunWizardOpen}
+                isOpen={!isMobileLayout && isFirstRunWizardOpen}
                 onClose={closeFirstRunWizard}
                 onImportYomitan={handleImportYomitanFromWizard}
                 installedDictionariesCount={settings.dictionaries?.length || 0}
                 ankiDeck={settings.ankiDeck}
                 ankiModel={settings.ankiModel}
+                settings={settings}
+                onSettingsPatch={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
                 onAnkiDeckChange={(deck) => setSettings((prev) => ({ ...prev, ankiDeck: deck }))}
             />
             {floatingBtn && (
                 <button
                     onClick={(e) => {
                         e.stopPropagation();
-                        invoke('lookup_word', { word: floatingBtn.text }).then((entries: any) => {
-                            if (entries && entries.length > 0) {
-                                setLookupStack([{
-                                    rect: new DOMRect(floatingBtn.x, floatingBtn.y, 0, 0),
-                                    entries,
-                                    word: floatingBtn.text,
-                                    sentence: floatingBtn.text,
-                                }]);
-                            }
-                        });
+                        runLookupAt(floatingBtn.text, floatingBtn.x, floatingBtn.y);
                         setFloatingBtn(null);
                         window.getSelection()?.removeAllRanges();
                     }}
@@ -1485,6 +3184,7 @@ export default function App() {
                 resultsLength={searchResults.length}
                 currentIdx={currentSearchIdx}
                 inputRef={searchInputRef}
+                language={settings.appLanguage}
             />
 
             {isFlashing && (
@@ -1505,8 +3205,9 @@ export default function App() {
                 </div>
             )}
 
-            <ImportProgressModal jsonProgress={jsonImportProgress} dictProgress={dictImportProgress} />
-            <ConfirmDialogModal dialog={confirmDialog} setDialog={setConfirmDialog} />
+            <ImportProgressModal jsonProgress={jsonImportProgress} dictProgress={dictImportProgress} language={settings.appLanguage} />
+            <ConfirmDialogModal dialog={confirmDialog} setDialog={setConfirmDialog} language={settings.appLanguage} />
+            <NoticeModal notice={notice} setNotice={setNotice} language={settings.appLanguage} />
 
             <ExportModal
                 isOpen={isExportModalOpen}
@@ -1517,11 +3218,286 @@ export default function App() {
                 selection={exportTabsSelection}
                 setSelection={setExportTabsSelection}
                 onExport={executeExport}
+                language={settings.appLanguage}
             />
+
+            {updateDialog && (
+                <div
+                    onClick={() => updateDialog.kind !== 'available' && setUpdateDialog(null)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0, 0, 0, 0.55)',
+                        zIndex: 13000,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '24px',
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            width: 'min(420px, 92vw)',
+                            background: 'var(--bg-panel)',
+                            border: '1px solid var(--border-main)',
+                            borderRadius: '8px',
+                            boxShadow: '0 24px 80px rgba(0,0,0,0.45)',
+                            padding: '20px',
+                            color: 'var(--text-main)',
+                        }}
+                    >
+                        <div style={{ fontWeight: 800, marginBottom: 10 }}>
+                            {updateDialog.kind === 'available'
+                                ? (settings.appLanguage === 'en' ? 'Update available' : 'Есть обновление')
+                                : updateDialog.kind === 'error'
+                                    ? (settings.appLanguage === 'en' ? 'Update check failed' : 'Ошибка обновления')
+                                    : (settings.appLanguage === 'en' ? 'No updates' : 'Обновлений нет')}
+                        </div>
+                        {updateDialog.kind === 'available' ? (
+                            <>
+                                <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.5, marginBottom: 14 }}>
+                                    {settings.appLanguage === 'en' ? 'A new Setsuna build is ready.' : 'Новая сборка Setsuna готова к установке.'}
+                                    {updateDialog.update.version ? ` ${settings.appLanguage === 'en' ? 'Version' : 'Версия'} ${updateDialog.update.version}.` : ''}
+                                </div>
+                                {updateDialog.message && <div style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 10 }}>{updateDialog.message}</div>}
+                                {updateDialog.progress !== undefined && (
+                                    <div style={{ height: 6, background: 'var(--bg-side)', borderRadius: 999, overflow: 'hidden', marginBottom: 14 }}>
+                                        <div style={{ width: `${updateDialog.progress}%`, height: '100%', background: 'var(--accent-blue)' }} />
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                                    <button className="btn-secondary" onClick={() => setUpdateDialog(null)} style={{ padding: '8px 12px' }}>
+                                        {settings.appLanguage === 'en' ? 'Later' : 'Позже'}
+                                    </button>
+                                    <button className="btn-primary" onClick={installUpdate} style={{ padding: '8px 12px' }}>
+                                        {settings.appLanguage === 'en' ? 'Install and restart' : 'Установить и перезапустить'}
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.5, marginBottom: 14 }}>
+                                    {updateDialog.message}
+                                </div>
+                                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                    <button className="btn-primary" onClick={() => setUpdateDialog(null)} style={{ padding: '8px 12px' }}>
+                                        OK
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {isCaptureSourcePickerOpen && (
+                <div
+                    onClick={() => setIsCaptureSourcePickerOpen(false)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0, 0, 0, 0.55)',
+                        zIndex: 12000,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '24px',
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            width: 'min(760px, 96vw)',
+                            maxHeight: '82vh',
+                            background: 'var(--bg-panel)',
+                            border: '1px solid var(--border-main)',
+                            borderRadius: '8px',
+                            boxShadow: '0 20px 60px rgba(0,0,0,0.45)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                        }}
+                    >
+                        <div
+                            style={{
+                                padding: '16px 18px',
+                                borderBottom: '1px solid var(--border-main)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '12px',
+                            }}
+                        >
+                            <IconPin />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ color: 'var(--text-main)', fontWeight: 700 }}>
+                                    {t('capture.bindTitle', { tab: activeTab?.name || '' })}
+                                </div>
+                                <div
+                                    style={{
+                                        color: 'var(--text-muted)',
+                                        fontSize: '12px',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap',
+                                    }}
+                                >
+                                    {activeTab?.captureSource?.name
+                                        ? t('capture.current', { source: activeTab.captureSource.name })
+                                        : t('capture.notBound')}
+                                </div>
+                            </div>
+                            <button className="modal-btn" onClick={refreshCaptureSources} style={{ background: 'var(--bg-side)', color: 'var(--text-main)', border: '1px solid var(--border-main)', borderRadius: '6px', padding: '8px 12px', cursor: 'pointer', font: 'inherit', fontSize: '12px' }}>
+                                {isCaptureSourceLoading ? t('common.loading') : t('common.refresh')}
+                            </button>
+                            <button className="modal-btn" onClick={() => setIsCaptureSourcePickerOpen(false)} style={{ background: 'var(--bg-side)', color: 'var(--text-main)', border: '1px solid var(--border-main)', borderRadius: '6px', padding: '8px 12px', cursor: 'pointer', font: 'inherit', fontSize: '12px' }}>
+                                {t('common.close')}
+                            </button>
+                        </div>
+
+                        <div style={{ padding: '14px 18px 10px' }}>
+                            <input
+                                value={captureSourceSearch}
+                                onChange={(e) => setCaptureSourceSearch(e.target.value)}
+                                placeholder={t('capture.searchPlaceholder')}
+                                style={{
+                                    width: '100%',
+                                    background: 'var(--bg-main)',
+                                    color: 'var(--text-main)',
+                                    border: '1px solid var(--border-main)',
+                                    borderRadius: '6px',
+                                    padding: '10px 12px',
+                                    outline: 'none',
+                                }}
+                            />
+                        </div>
+
+                        <div style={{ padding: '0 18px 16px', overflowY: 'auto' }}>
+                            {activeTab?.captureSource?.name && (
+                                <button
+                                    onClick={clearCaptureSourceForActiveTab}
+                                    className="modal-btn"
+                                    style={{ width: '100%', marginBottom: '10px', justifyContent: 'center', background: 'var(--bg-side)', color: 'var(--text-main)', border: '1px solid var(--border-main)', borderRadius: '6px', padding: '8px 12px', cursor: 'pointer', font: 'inherit', fontSize: '12px' }}
+                                >
+                                    {t('capture.useGlobal')}
+                                </button>
+                            )}
+
+                            {filteredCaptureSources.length === 0 ? (
+                                <div style={{ color: 'var(--text-muted)', padding: '20px 4px' }}>
+                                    {isCaptureSourceLoading ? t('common.loading') : t('capture.empty')}
+                                </div>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                    {filteredCaptureSources.map((source, index) => {
+                                        const focused = Boolean(source.is_focused);
+                                        const recent = Boolean(source.is_recent);
+                                        const isRemote = source.sourceType === 'remote';
+                                        const iconSrc = source.icon
+                                            ? (source.icon.startsWith('data:') ? source.icon : `data:image/png;base64,${source.icon}`)
+                                            : "";
+                                        const hasWindow = Boolean(source.width || source.height);
+                                        const primaryLabel = hasWindow && source.title
+                                            ? source.title
+                                            : source.process_name || source.app_name || source.title || source.path;
+                                        const secondaryLabel = hasWindow && source.title
+                                            ? [source.process_name || source.app_name, source.path].filter(Boolean).join(' · ')
+                                            : source.title || source.path;
+                                        return (
+                                        <div
+                                            key={`${source.pid || 'nopid'}-${source.title}-${index}`}
+                                            onClick={() => bindCaptureSourceToActiveTab(source)}
+                                            role="button"
+                                            tabIndex={0}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') bindCaptureSourceToActiveTab(source);
+                                            }}
+                                            style={{
+                                                width: '100%',
+                                                textAlign: 'left',
+                                                background: 'var(--bg-side)',
+                                                color: 'var(--text-main)',
+                                                border: '1px solid var(--border-main)',
+                                                borderRadius: '8px',
+                                                padding: '10px 12px',
+                                                display: 'grid',
+                                                gridTemplateColumns: '32px 1fr auto',
+                                                gap: '10px',
+                                                alignItems: 'center',
+                                                cursor: 'pointer',
+                                                appearance: 'none',
+                                                font: 'inherit',
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    width: '28px',
+                                                    height: '28px',
+                                                    borderRadius: '6px',
+                                                    background: 'var(--bg-main)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    overflow: 'hidden',
+                                                }}
+                                            >
+                                                {iconSrc ? (
+                                                    <img
+                                                        src={iconSrc}
+                                                        alt=""
+                                                        style={{ width: '20px', height: '20px' }}
+                                                    />
+                                                ) : (
+                                                    <IconPin />
+                                                )}
+                                            </div>
+                                            <div style={{ minWidth: 0 }}>
+                                                <div
+                                                    style={{
+                                                        fontWeight: 700,
+                                                        overflow: 'hidden',
+                                                        textOverflow: 'ellipsis',
+                                                        whiteSpace: 'nowrap',
+                                                    }}
+                                                >
+                                                    {primaryLabel}
+                                                </div>
+                                                <div
+                                                    style={{
+                                                        color: 'var(--text-muted)',
+                                                        fontSize: '12px',
+                                                        overflow: 'hidden',
+                                                        textOverflow: 'ellipsis',
+                                                        whiteSpace: 'nowrap',
+                                                    }}
+                                                >
+                                                    {secondaryLabel}
+                                                </div>
+                                            </div>
+                                            <div
+                                                style={{
+                                                    color: focused || recent || isRemote ? 'var(--accent-blue)' : 'var(--text-muted)',
+                                                    fontSize: '12px',
+                                                    whiteSpace: 'nowrap',
+                                                }}
+                                            >
+                                                {isRemote ? 'LAN · ' : ''}
+                                                {source.pid ? `PID ${source.pid}` : ''}
+                                                {focused ? ` · ${t('capture.focused')}` : ''}
+                                                {!focused && recent ? ` · ${t('capture.recent')}` : ''}
+                                            </div>
+                                        </div>
+                                    )})}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <input
                 type="file"
-                accept=".json"
+                accept=".json,.epub"
                 ref={fileInputRef}
                 style={{ display: 'none' }}
                 onChange={handleImportJson}
@@ -1539,45 +3515,142 @@ export default function App() {
                     transition: isResizingRef.current ? 'none' : 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                 }}
             >
+                {resolvedWorkspace === "hub" ? (
+                    <HomeScreen
+                        language={settings.appLanguage}
+                        wsConnected={Object.values(wsStatuses).some(Boolean)}
+                        onTextHooker={openTextHookerWorkspace}
+                        onEpub={openEpubWorkspace}
+                        onPlayer={openPlayerWorkspace}
+                        onAnki={() => openSettingsPanel('anki-cards')}
+                        onSettings={() => openSettingsPanel()}
+                    />
+                ) : resolvedWorkspace === "epub" ? (
+                    <WorkspaceShell
+                        title={settings.appLanguage === "en" ? "EPUB Reader" : "EPUB-ридер"}
+                        icon={<IconBookTab />}
+                        accent="reader"
+                        onHome={() => setActiveWorkspace("hub")}
+                        onSettings={() => openSettingsPanel('epub-reader')}
+                    >
+                        <div className="mode-empty-state">
+                            <span className="mode-empty-icon"><IconBookTab /></span>
+                            <strong>{settings.appLanguage === "en" ? "EPUB Reader" : "EPUB-ридер"}</strong>
+                            <span>{settings.appLanguage === "en" ? "The reader workspace is ready for the next implementation step." : "Рабочее пространство ридера готово к следующему этапу реализации."}</span>
+                        </div>
+                    </WorkspaceShell>
+                ) : resolvedWorkspace === "player" ? (
+                    <WorkspaceShell
+                        title={settings.appLanguage === "en" ? "Anime Player" : "Аниме-плеер"}
+                        icon={<IconPlayerTab />}
+                        accent="player"
+                        onHome={() => setActiveWorkspace("hub")}
+                        onSettings={() => openSettingsPanel('player-main')}
+                    >
+                        <PlayerSkeleton
+                            language={settings.appLanguage}
+                            settings={settings}
+                            onClipReady={setPlayerMiningClip}
+                        />
+                    </WorkspaceShell>
+                ) : isMobileLayout ? (
+                    <MobileLayout
+                        tabs={textHookerTabs}
+                        activeTab={activeTab}
+                        activeTabId={activeTabId}
+                        switchTab={switchTab}
+                        addNewTab={addNewTab}
+                        closeTab={closeTabById}
+                        settings={settings}
+                        isPaused={isPaused}
+                        setIsPaused={setIsPaused}
+                        deleteLine={deleteLine}
+                        editLine={editLine}
+                        searchQuery={searchQuery}
+                        searchResults={searchResults}
+                        currentSearchIdx={currentSearchIdx}
+                        searchTrigger={searchTrigger}
+                        onSubmitText={(text: string) => handleNewText(text, true)}
+                        onLookupText={(text: string) => runLookupAt(text, window.innerWidth / 2, Math.max(120, window.innerHeight * 0.35))}
+                        onLookupSentenceToken={runSentenceTokenLookup}
+                        updateSettings={setSettings}
+                        setTabs={setTabs}
+                        syncDictionaries={syncDictionaries}
+                        openImport={handleOpenImport}
+                        clearAll={clearAll}
+                        openSettings={() => openSettingsPanel()}
+                        wsStatuses={wsStatuses}
+                        wsConnecting={wsConnecting}
+                        wsIntents={wsIntents}
+                        toggleWs={toggleWs}
+                        lookupOpen={lookupStack.length > 0}
+                    />
+                ) : (
+                <>
                 <TopBar
-                    tabs={tabs}
+                    tabs={textHookerTabs}
                     activeTabId={activeTabId}
                     switchTab={switchTab}
                     editingTabId={editingTabId}
                     setEditingTabId={setEditingTabId}
                     setTabs={setTabs}
                     closeTab={closeTab}
+                    archiveTab={archiveTab}
+                    openArchiveSettings={() => openSettingsPanel('archive-main')}
+                    cycleTabStatus={cycleTabStatus}
                     addNewTab={addNewTab}
                     settings={{ ...settings, websockets: settings.websockets?.filter((w) => w.active) }}
                     wsStatuses={wsStatuses}
                     wsConnecting={wsConnecting}
                     wsIntents={wsIntents}
                     toggleWs={toggleWs}
+                    textSyncServerEnabled={settings.textSyncServerEnabled}
+                    textSyncRemoteEnabled={settings.textSyncRemoteEnabled}
+                    textSyncRemoteConfigured={Boolean(settings.textSyncRemoteUrl?.trim() && settings.textSyncRemoteToken?.trim())}
+                    textSyncCloudEnabled={settings.textSyncCloudEnabled}
+                    textSyncCloudConfigured={Boolean(settings.textSyncCloudUrl?.trim())}
+                    toggleTextSyncRemote={() => {
+                        if (settings.textSyncCloudUrl?.trim()) {
+                            setSettings({ ...settings, textSyncCloudEnabled: !settings.textSyncCloudEnabled });
+                        } else if (settings.textSyncRemoteUrl?.trim() && settings.textSyncRemoteToken?.trim()) {
+                            setSettings({ ...settings, textSyncRemoteEnabled: !settings.textSyncRemoteEnabled });
+                        } else {
+                            openSettingsPanel('sync-main');
+                        }
+                    }}
+                    openTextSyncSettings={() => openSettingsPanel('sync-main')}
                     useClipboard={settings.useClipboard}
                     toggleClipboard={() => setSettings({ ...settings, useClipboard: !settings.useClipboard })}
                     openSearch={() => {
                         setIsSearchOpen(true);
                         setTimeout(() => searchInputRef.current?.focus(), 100);
                     }}
-                    openImport={() => fileInputRef.current?.click()}
+                    openImport={handleOpenImport}
                     openExport={openExportModal}
                     toggleBrowser={handleAiHelperClick}
                     isBrowserOpen={isHelperSpaceReserved}
+                    activeTab={activeTab}
+                    openCaptureSourcePicker={openCaptureSourcePicker}
+                    openJlModeWindow={openJlModeWindow}
                     clearAll={clearAll}
-                    openSettings={() => setIsSettingsOpen(true)}
+                    openHome={() => setActiveWorkspace("hub")}
+                    openSettings={() => openSettingsPanel()}
                 />
 
                 <main ref={mainContentRef} className="main-content" style={{ flex: 1, overflowY: 'auto' }}>
                     <TextContainer
                         lines={activeTab?.lines || EMPTY_LINES}
+                        lineFurigana={activeTab?.lineFurigana || []}
                         onDelete={deleteLine}
                         onEdit={editLine}
-                        furiganaMode={settings?.furiganaMode || 'none'}
+                        furiganaMode="none"
                         autoScrollOffset={settings?.autoScrollOffset ?? 80}
                         searchQuery={searchQuery}
                         activeSearchLineIdx={searchResults[currentSearchIdx]?.lineIdx ?? -1}
                         searchTrigger={searchTrigger}
                         panelPosition={settings.panelPosition}
+                        language={settings.appLanguage}
+                        textOrientation={settings.textOrientation}
                     />
                 </main>
 
@@ -1585,38 +3658,60 @@ export default function App() {
                     isPaused={isPaused}
                     onTogglePause={() => setIsPaused(!isPaused)}
                     stats={activeTab?.stats || defaultStats}
+                    speedSamples={activeTab?.speedSamples || []}
                     position={settings.panelPosition}
                     speedMetric={settings.speedMetric}
                     speedTimeframe={settings.speedTimeframe}
+                    language={settings.appLanguage}
+                    textOrientation={settings.textOrientation}
                 />
+                </>
+                )}
 
                 <SettingsModal
                     isOpen={isSettingsOpen}
-                    onClose={() => setIsSettingsOpen(false)}
+                    onClose={() => {
+                        setIsSettingsOpen(false);
+                        setSettingsInitialSection(null);
+                    }}
                     settings={settings}
                     onSettingsChange={setSettings}
-                    tabs={tabs}
+                    tabs={textHookerTabs}
                     setTabs={setTabs}
                     syncDictionaries={syncDictionaries}
                     runDictImport={runDictImport}
                     onResetSettings={handleResetSettings}
                     onClearLookup={() => setLookupStack([])}
+                    onCheckForUpdates={checkForUpdates}
+                    updateChecking={isCheckingUpdate}
+                    onOpenArchivedTab={(id) => {
+                        setTabs((prev) => prev.map((tab) => tab.id === id ? { ...tab, archived: false } : tab));
+                        switchTab(id);
+                        setActiveWorkspace("texthooker");
+                        setIsSettingsOpen(false);
+                        setSettingsInitialSection(null);
+                    }}
+                    initialSection={settingsInitialSection}
                 />
 
-                <Lookuper
-                    stack={lookupStack}
-                    onAppend={(data) => setLookupStack((prev) => [...prev, data])}
-                    onReplace={(data) => setLookupStack([data])}
-                    onReplaceAt={(index, data) =>
-                        setLookupStack((prev) => [...prev.slice(0, index + 1), data])
-                    }
-                    onSlice={(index) => setLookupStack((prev) => prev.slice(0, index + 1))}
-                    settings={settings}
-                />
+                {resolvedWorkspace !== "hub" && (
+                    <LookupSurface
+                        mode="internal"
+                        stack={lookupStack}
+                        onAppend={appendLookupStack}
+                        onReplace={replaceLookupStack}
+                        onReplaceAt={replaceLookupStackAt}
+                        onSlice={sliceLookupStack}
+                        settings={settings}
+                        playerClip={playerMiningClip}
+                        captureSource={resolvedWorkspace === "texthooker" ? (activeTab?.captureSource || null) : null}
+                        ankiDeck={settings.ankiDeckMode === 'contextual' && resolvedWorkspace === "texthooker" ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
+                    />
+                )}
             </div>
 
             <BrowserSidebar
-                isOpen={isHelperSpaceReserved}
+                isOpen={resolvedWorkspace === "texthooker" && !isMobileLayout && isHelperSpaceReserved}
                 reservedWidth={reservedWidth}
                 isResizing={isResizingRef.current}
                 onMouseDownResize={(e: any) => {
@@ -1637,6 +3732,7 @@ export default function App() {
                 setUrlInput={setUrlInput}
                 submitUrl={submitUrlLocal}
                 setIsUrlFocused={setIsUrlFocused}
+                language={settings.appLanguage}
             />
         </div>
     );

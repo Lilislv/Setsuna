@@ -2,7 +2,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
-const host = process.env.TAURI_DEV_HOST;
+const devHost = process.env.TAURI_DEV_HOST || "";
+const host = devHost ? "0.0.0.0" : "127.0.0.1";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -16,17 +17,28 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
-    hmr: host
+    host,
+    hmr: devHost
       ? {
           protocol: "ws",
-          host,
+          host: devHost,
           port: 1421,
         }
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        jl: "jl-window.html",
+        jlPopup: "jl-popup.html",
+        lookup: "lookup-window.html",
+        captureRegion: "capture-region.html",
+      },
     },
   },
 }));

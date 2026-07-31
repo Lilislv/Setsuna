@@ -41,20 +41,30 @@
     return { chars, words, sentences };
 };
 
+const GENERIC_BROWSER_TITLES = new Set([
+    "browser",
+    "site",
+    "new tab",
+    "blank",
+    "about:blank",
+    "txthk browser",
+    "браузер",
+    "сайт",
+    "новая вкладка",
+]);
+
 export const getSmartTitle = (url: string, currentTitle: string = "") => {
     const cleanTitle = (currentTitle || "").trim();
 
     try {
         const u = new URL(url);
         const domain = u.hostname.replace(/^www\./, '');
+        const lowerTitle = cleanTitle.toLowerCase();
 
         if (
             cleanTitle &&
             !/^https?:\/\//i.test(cleanTitle) &&
-            cleanTitle !== "Браузер" &&
-            cleanTitle !== "Сайт" &&
-            cleanTitle !== "Новая вкладка" &&
-            cleanTitle !== "txthk Browser" &&
+            !GENERIC_BROWSER_TITLES.has(lowerTitle) &&
             cleanTitle.length > 1
         ) {
             return cleanTitle;
@@ -68,7 +78,7 @@ export const getSmartTitle = (url: string, currentTitle: string = "") => {
         ) {
             const query = u.searchParams.get('q') || u.searchParams.get('text');
             if (query) return `🔍 ${decodeURIComponent(query)}`;
-            return 'Поиск';
+            return 'Search';
         }
 
         if (domain.includes('jisho.org')) {
@@ -93,8 +103,11 @@ export const getSmartTitle = (url: string, currentTitle: string = "") => {
             return decodeURIComponent(pathPart);
         }
 
-        return domain || 'Сайт';
+        return domain || 'Site';
     } catch {
-        return cleanTitle || "Сайт";
+        if (cleanTitle && !GENERIC_BROWSER_TITLES.has(cleanTitle.toLowerCase())) {
+            return cleanTitle;
+        }
+        return "Site";
     }
 };

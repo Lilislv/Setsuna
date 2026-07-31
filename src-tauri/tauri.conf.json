@@ -1,31 +1,70 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "setsuna",
-  "version": "0.1.0",
+  "productName": "Setsuna",
+  "version": "0.5.0",
   "identifier": "com.serichka.setsuna",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev:tauri",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Setsuna",
-        "width": 800,
-        "height": 600
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1100,
+        "minHeight": 680
       }
     ],
     "security": {
       "csp": null
+    },
+    "withGlobalTauri": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlEQkFBMzUxNjJBNzE3MjQKUldRa0Y2ZGlVYU82blgzcHRDRFhJdnQ2RjZEdGdBWUpDZjFTVWdzZmZkSTVQazJJOHk5R0tQNUYK",
+      "endpoints": [
+        "https://github.com/Lilislv/Setsuna/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "targets": [
+      "nsis"
+    ],
+    "resources": [
+      "bin/*"
+    ],
     "icon": [
       "icons/favicon.ico"
-    ]
+    ],
+    "publisher": "Lilislv",
+    "copyright": "Copyright © 2026 Lilislv",
+    "category": "Education",
+    "shortDescription": "Japanese reading assistant",
+    "longDescription": "Setsuna is a desktop app for reading Japanese text with lookup, Anki integration, reading statistics and Yomitan dictionary import.",
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/favicon.ico",
+        "headerImage": "icons/setsuna-installer-header.bmp",
+        "sidebarImage": "icons/setsuna-installer-sidebar.bmp",
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "Russian"
+        ],
+        "displayLanguageSelector": true
+      }
+    }
   }
 }

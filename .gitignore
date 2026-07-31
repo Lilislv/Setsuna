@@ -30,3 +30,26 @@ Thumbs.db
 *.wsuo
 src-tauri/debug_screenshot.*
 src-tauri/2
+.tauri/
+.env
+.env.local
+.env.*.local
+
+# Local development artifacts and generated Android build output
+.codex-*
+.claude/
+*.log
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/.idea/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/build/
+src-tauri/gen/android/buildSrc/.gradle/
+src-tauri/gen/android/buildSrc/.kotlin/
+src-tauri/gen/android/buildSrc/build/
+src-tauri/gen/android/local.properties
+src-tauri/morph-cache/
+
+# External reference projects kept locally for development
+yomitan-master/
+JL-master/
+ebook-reader-main/

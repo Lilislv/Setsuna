@@ -1,0 +1,63 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+
+.capture-region-root {
+  position: fixed;
+  inset: 0;
+  cursor: crosshair;
+  background: rgba(0, 0, 0, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(77, 163, 255, 0.65);
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+
+.capture-region-hint {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(24, 24, 24, 0.94);
+  color: #f2f2f2;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.capture-region-hint kbd {
+  margin-left: 10px;
+  padding: 1px 5px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  color: #b9b9b9;
+  font: inherit;
+}
+
+.capture-region-selection {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #4da3ff;
+  background: rgba(77, 163, 255, 0.08);
+  box-shadow: 0 0 0 99999px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.capture-region-selection span {
+  position: absolute;
+  right: 0;
+  bottom: -24px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: #4da3ff;
+  color: #101010;
+  font-size: 11px;
+  font-weight: 700;
+}

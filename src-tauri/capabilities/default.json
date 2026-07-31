@@ -3,21 +3,31 @@
   "identifier": "default",
   "description": "Capability for the main window",
   "windows": [
-    "main"
+    "main",
+    "tab_*",
+    "jl_mode",
+    "lookup_*"
   ],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-set-always-on-top",
     "opener:default",
     "clipboard-manager:default",
     "clipboard-manager:allow-read-text",
     "dialog:default",
     "fs:default",
+    "process:default",
+    "updater:default",
     {
       "identifier": "http:default",
       "allow": [
         { "url": "https://jsonblob.com/*" },
         { "url": "https://oauth2.googleapis.com/*" },
-        { "url": "https://www.googleapis.com/*" }
+        { "url": "https://www.googleapis.com/*" },
+        { "url": "http://127.0.0.1:8765/*" }
       ]
     }
   ]

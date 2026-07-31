@@ -1,8 +1,8 @@
 [package]
-name = "txthk"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+name = "Setsuna"
+version = "0.5.0"
+description = "Desktop app for reading Japanese text"
+authors = ["Seri418"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,7 +11,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "txthk_lib"
+name = "setsuna_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -22,6 +22,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 zip = "0.6"
+flate2 = "1.0"
+xz2 = "0.1"
+tar = "0.4"
 tauri = { version = "2.0.0", features = [] }
 tauri-plugin-opener = "2.0.0"
 tauri-plugin-clipboard-manager = "2.0.0"
@@ -29,14 +32,21 @@ tauri-plugin-dialog = "2.0.0"
 tauri-plugin-http = "2"
 tauri-plugin-fs = "2"
 reqwest = "0.13.2"
-tokio = { version = "1.51.1", features = ["fs"] }
-screenshots = "0.8.10"
+tokio = { version = "1.51.1", features = ["fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
 sysinfo = "0.38.4"
 base64 = "0.22.1"
-xcap = "0.9.4"
 image = "0.25.10"
-winapi = { version = "0.3.9", features = ["shellapi", "winuser", "wingdi"] }
+winapi = { version = "0.3.9", features = ["shellapi", "winuser", "wingdi", "psapi", "processthreadsapi", "winbase", "memoryapi", "handleapi"] }
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
+tauri-plugin-global-shortcut = "2"
+screenshots = "0.8.10"
+xcap = "0.9.4"
+discord-rich-presence = "1.1.0"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility"] }

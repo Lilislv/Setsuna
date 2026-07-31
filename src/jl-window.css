@@ -1,0 +1,108 @@
+:root {
+  color-scheme: dark;
+  --jl-bg-rgb: 5, 5, 5;
+  --jl-opacity: 0.72;
+  --jl-border: #5f5f5f;
+  --jl-text: #f4f4f4;
+  --jl-font: "Noto Serif JP", "Yu Mincho", "Meiryo", serif;
+  --jl-font-size: 42px;
+  --jl-padding: 18px;
+}
+
+* { box-sizing: border-box; letter-spacing: 0; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+button { font: inherit; }
+
+.jl-shell {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  color: var(--jl-text);
+  background: rgba(var(--jl-bg-rgb), var(--jl-opacity));
+  border: 1px solid var(--jl-border);
+  border-radius: 6px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.42);
+}
+
+.jl-titlebar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 34px;
+  display: grid;
+  grid-template-columns: auto minmax(28px, 1fr) auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 7px 0 10px;
+  background: transparent;
+  border-bottom: 1px solid transparent;
+  cursor: move;
+  user-select: none;
+  z-index: 4;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.jl-titlebar:hover { background: rgba(0, 0, 0, 0.42); border-bottom-color: rgba(255, 255, 255, 0.1); }
+.jl-titlebar > * { opacity: 0; transform: translateY(-3px); transition: opacity 120ms ease, transform 120ms ease; }
+.jl-titlebar:hover > * { opacity: 1; transform: translateY(0); }
+.jl-identity { height: 100%; display: flex; align-items: center; gap: 8px; min-width: 0; font-family: "Segoe UI", sans-serif; cursor: move; }
+.jl-identity > * { pointer-events: none; }
+.jl-drag-handle { align-self: stretch; min-width: 28px; cursor: move; }
+.jl-mark { color: #4fa6ff; font-size: 12px; font-weight: 800; }
+.jl-counter { color: rgba(255, 255, 255, 0.58); font-size: 11px; font-variant-numeric: tabular-nums; }
+.jl-frozen { color: #f0bf5a; font-size: 11px; font-weight: 650; }
+
+.jl-controls { display: flex; align-items: center; gap: 5px; pointer-events: none; }
+.jl-titlebar:hover .jl-controls { pointer-events: auto; }
+.jl-control-group { display: inline-flex; align-items: center; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 5px; overflow: hidden; }
+.jl-control-group button { border-radius: 0; }
+.jl-control-group button + button { border-left-color: rgba(255, 255, 255, 0.1); }
+.jl-controls button {
+  min-width: 27px;
+  height: 25px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.78);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font: 600 12px/1 "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+.jl-controls .jl-timer-button { gap: 5px; min-width: 68px; padding: 0 9px; color: #8cdd96; border-color: rgba(76, 175, 80, 0.35); background: rgba(76, 175, 80, 0.1); }
+.jl-controls .jl-timer-button.active { color: #ffd071; border-color: rgba(240, 191, 90, 0.42); background: rgba(240, 191, 90, 0.12); }
+.jl-controls button:hover:not(:disabled), .jl-controls button.active { color: #fff; border-color: rgba(79, 166, 255, 0.42); background: rgba(79, 166, 255, 0.14); }
+.jl-controls button.danger:hover { color: #ff7777; border-color: rgba(255, 80, 80, 0.45); background: rgba(255, 80, 80, 0.12); }
+.jl-controls button:disabled { opacity: 0.28; cursor: default; }
+
+.jl-text {
+  position: absolute;
+  inset: var(--jl-padding);
+  overflow: auto;
+  color: var(--jl-text);
+  font-family: var(--jl-font);
+  font-size: var(--jl-font-size);
+  font-kerning: normal;
+  font-synthesis: none;
+  line-height: 1.42;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.92);
+  user-select: text;
+  cursor: text;
+  scrollbar-width: thin;
+}
+.jl-text.empty { color: rgba(255, 255, 255, 0.52); font: 500 17px/1.5 "Segoe UI", sans-serif; }
+.jl-text::selection { color: #fff; background: #287fd0; }
+
+.jl-resize { position: absolute; z-index: 12; }
+.jl-resize.north { top: 0; left: 10px; right: 10px; height: 5px; cursor: n-resize; }
+.jl-resize.east { top: 10px; right: 0; bottom: 10px; width: 5px; cursor: e-resize; }
+.jl-resize.south { left: 10px; right: 10px; bottom: 0; height: 5px; cursor: s-resize; }
+.jl-resize.west { top: 10px; left: 0; bottom: 10px; width: 5px; cursor: w-resize; }
+.jl-resize.northwest, .jl-resize.northeast, .jl-resize.southwest, .jl-resize.southeast { width: 10px; height: 10px; }
+.jl-resize.northwest { top: 0; left: 0; cursor: nw-resize; }
+.jl-resize.northeast { top: 0; right: 0; cursor: ne-resize; }
+.jl-resize.southwest { bottom: 0; left: 0; cursor: sw-resize; }
+.jl-resize.southeast { right: 0; bottom: 0; cursor: se-resize; }

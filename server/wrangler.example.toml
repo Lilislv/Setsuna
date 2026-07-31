@@ -1,0 +1,12 @@
+name = "setsuna-account-api"
+main = "setsuna-account-worker.js"
+compatibility_date = "2026-06-17"
+
+routes = [
+  { pattern = "setsunalookup.ru/api/*", zone_name = "setsunalookup.ru" }
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "setsuna-account"
+database_id = "replace-with-cloudflare-d1-id"
