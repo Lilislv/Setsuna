@@ -285,7 +285,7 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
         : (isHovered || isEditing ? 'var(--hover-bg)' : 'transparent');
 
     return (
-        <div className="text-line-wrapper" data-raw-text={line} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} style={{ display: 'block', width: 'fit-content', maxWidth: '100%', marginBottom: '14px', padding: '6px 10px', borderRadius: '8px', backgroundColor: bgColor, transition: 'background-color 0.2s', position: 'relative' }}>
+        <div className="text-line-wrapper" data-raw-text={line} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', marginBottom: '14px', padding: '6px 10px', borderRadius: '8px', backgroundColor: bgColor, transition: 'background-color 0.2s', position: 'relative' }}>
             
             <div 
                 ref={textRef}
@@ -308,7 +308,7 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
                 }}
                 className="text-line" 
                 style={{ 
-                    display: 'inline', fontSize: 'var(--txt-font-size, 26px)', fontFamily: `var(--txt-font-family, 'Noto Serif JP'), ${jpSerifFallback}`,
+                    display: 'block', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', fontSize: 'var(--txt-font-size, 26px)', fontFamily: `var(--txt-font-family, 'Noto Serif JP'), ${jpSerifFallback}`,
                     lineHeight: '1.9', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', color: 'var(--text-main)',
                     fontSynthesis: 'none', fontVariantNumeric: 'tabular-nums', textRendering: 'optimizeLegibility',
                     outline: isEditing ? '2px dashed var(--accent-blue)' : 'none',
@@ -340,7 +340,7 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
                 )}
             </div>
 
-            <span className="text-line-actions" contentEditable={false} style={{ opacity: isHovered || isEditing || isActiveSearchMatch ? 1 : 0, display: 'inline-flex', gap: '6px', transition: 'opacity 0.2s', verticalAlign: 'middle', marginLeft: '10px' }}>
+            <span className="text-line-actions" contentEditable={false} style={{ opacity: isHovered || isEditing || isActiveSearchMatch ? 1 : 0, pointerEvents: isHovered || isEditing || isActiveSearchMatch ? 'auto' : 'none', display: 'inline-flex', alignSelf: 'flex-end', flexShrink: 0, gap: '6px', marginTop: '4px', transition: 'opacity 0.2s' }}>
                 {!isEditing && <button onClick={handleCopy} style={btnStyle} title={t('common.copy')}>{isCopied ? <IconCheck /> : <IconCopy />}</button>}
                 <button 
                     onClick={() => {
