@@ -78,12 +78,7 @@ jobs:
   build-linux:
     permissions:
       contents: write
-    # Runs after the Windows job so both platforms merge into one latest.json
-    # instead of racing to overwrite it.
     needs: build-windows
-    # Pinned rather than "latest" so the glibc the bundles link against only
-    # changes deliberately. 22.04 does not work: xcap pulls in libspa, which
-    # fails to compile against that image's pipewire 0.3.48 headers.
     runs-on: ubuntu-24.04
 
     steps:
