@@ -70,6 +70,8 @@ use windows::Win32::UI::Accessibility::{
 
 mod dictionary_import;
 mod epub_import;
+#[cfg(target_os = "linux")]
+mod hover_lookup;
 mod player_media;
 use dictionary_import::{import_dictionaries, import_dictionary};
 use epub_import::import_epub;
@@ -539,7 +541,7 @@ fn select_hovered_lookup_range(
     _match_start: usize,
     _match_len: usize,
 ) -> Result<(), String> {
-    Err("Text range selection is currently implemented for Windows only".to_string())
+    Err(global_lookup_unavailable_reason("selection"))
 }
 
 pub struct DiagnosticsState {
@@ -6247,10 +6249,47 @@ fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, String> {
     })
 }
 
+/// Names the reason point-based lookup cannot run. Returns an i18n key rather
+/// than prose so the lookup window can render it in the selected language;
+/// Wayland is a hard blocker rather than merely unfinished work, and the two
+/// cases are separate keys so translations can say so.
 #[cfg(not(target_os = "windows"))]
+fn global_lookup_unavailable_reason(feature: &str) -> String {
+    #[cfg(target_os = "linux")]
+    let on_wayland = hover_lookup::is_wayland_session();
+    #[cfg(not(target_os = "linux"))]
+    let on_wayland = false;
+
+    if on_wayland {
+        format!("lookup.error.{feature}Wayland")
+    } else {
+        format!("lookup.error.{feature}Unsupported")
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+async fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, String> {
+    if hover_lookup::is_wayland_session() {
+        return Err(global_lookup_unavailable_reason("hover"));
+    }
+
+    let (x, y) = hover_lookup::pointer_position()?;
+    let hovered = hover_lookup::text_at_point(x, y).await?;
+
+    Ok(GlobalLookupCopyResult {
+        x,
+        y,
+        text: hovered.text,
+        context: hovered.context,
+        cursor: hovered.cursor,
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 #[tauri::command]
 fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, String> {
-    Err("Global hover lookup is currently implemented for Windows only.".to_string())
+    Err(global_lookup_unavailable_reason("hover"))
 }
 
 #[tauri::command]
