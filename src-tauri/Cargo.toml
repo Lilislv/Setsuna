@@ -47,6 +47,11 @@ screenshots = "0.8.10"
 xcap = "0.9.4"
 discord-rich-presence = "1.1.0"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Icon themes on Linux are overwhelmingly SVG (Breeze ships no app PNGs at
+# all), so process icons need a renderer.
+resvg = "0.45"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility"] }
 winapi = { version = "0.3.9", features = ["shellapi", "winuser", "wingdi", "psapi", "processthreadsapi", "winbase", "memoryapi", "handleapi"] }
