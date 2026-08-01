@@ -3,6 +3,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AppSettings } from "./SettingsModal";
 import { PlayerMiningClip } from "../utils/constants";
+import { getTranslator } from "../utils/i18n";
 
 type Cue = {
     id: number;
@@ -113,6 +114,7 @@ const parseSubtitleFile = (text: string, fileName: string) => {
 
 export default function PlayerSkeleton({ language = "ru", settings, onClipReady }: PlayerProps) {
     const isEn = language === "en";
+    const t = getTranslator(language);
     const videoRef = useRef<HTMLVideoElement>(null);
     const [videoSrc, setVideoSrc] = useState("");
     const [videoPath, setVideoPath] = useState("");
@@ -337,7 +339,7 @@ export default function PlayerSkeleton({ language = "ru", settings, onClipReady 
                             <button onClick={() => seekTo(currentTime + 2)} style={controlBtn}>+2s</button>
                             <button onClick={() => setAbStart(currentTime)} style={controlBtn}>A</button>
                             <button onClick={() => setAbEnd(currentTime)} style={controlBtn}>B</button>
-                            <button onClick={() => { setAbStart(null); setAbEnd(null); }} style={controlBtn}>A-B off</button>
+                            <button onClick={() => { setAbStart(null); setAbEnd(null); }} style={controlBtn}>{t("player.abOff")}</button>
                             <button onClick={mineCard} style={controlBtn}>{isEn ? "Mine card" : "Карточка"}</button>
                         </div>
                         <select value={rate} onChange={(e) => changeRate(Number(e.target.value))} style={{ background: "#1b1b1b", color: "rgba(255,255,255,0.82)", border: "1px solid #333", borderRadius: 5, padding: "5px 8px" }}>

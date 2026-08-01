@@ -839,7 +839,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                             {renderAnkiButton()}
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr', gap: '10px', fontSize: `${fSize}px` }}>
-                            <div style={{ color: 'var(--text-muted)' }}>Meaning</div>
+                            <div style={{ color: 'var(--text-muted)' }}>{t("lookup.meaning")}</div>
                             <div style={{ color: 'var(--text-main)', lineHeight: '1.4', wordBreak: 'break-word' }}>
                                 {(group.cleanDictionaries[firstDictName] || []).map((d: any, idx: number) => (
                                     <React.Fragment key={idx}>
@@ -856,7 +856,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                                     </React.Fragment>
                                 ))}
                             </div>
-                            <div style={{ color: 'var(--text-muted)' }}>Readings</div>
+                            <div style={{ color: 'var(--text-muted)' }}>{t("lookup.readings")}</div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                 {(() => {
                                     const readings = (group.reading || "").split(' ').filter(Boolean);
@@ -926,7 +926,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
                         {settings?.lookupShowAudio !== false && (
                             <button 
-                                onClick={(e) => playAudio(group.term, group.reading, e)} title={audioFailed[`${group.term}-${group.reading}`] ? "Аудио недоступно" : "Послушать"}
+                                onClick={(e) => playAudio(group.term, group.reading, e)} title={audioFailed[`${group.term}-${group.reading}`] ? t("lookup.audioUnavailable") : t("lookup.playAudio")}
                                 style={{ 
                                     background: 'transparent', border: 'none', cursor: audioFailed[`${group.term}-${group.reading}`] ? 'default' : 'pointer', 
                                     padding: '4px', opacity: playingAudio === `${group.term}-${group.reading}` ? 1 : 0.6,

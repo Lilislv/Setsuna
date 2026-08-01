@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { IconHome, IconSettings } from "./Icons";
+import { getTranslator, type AppLanguage } from "../utils/i18n";
 import "./WorkspaceShell.css";
 
 type WorkspaceShellProps = {
@@ -9,9 +10,12 @@ type WorkspaceShellProps = {
     onHome: () => void;
     onSettings: () => void;
     children: ReactNode;
+    language?: AppLanguage;
 };
 
-export default function WorkspaceShell({ title, icon, accent, onHome, onSettings, children }: WorkspaceShellProps) {
+export default function WorkspaceShell({ title, icon, accent, onHome, onSettings, children, language = "ru" }: WorkspaceShellProps) {
+    const t = getTranslator(language);
+
     return (
         <section className={`workspace-shell workspace-shell-${accent}`}>
             <header className="workspace-shell-header">
@@ -22,7 +26,7 @@ export default function WorkspaceShell({ title, icon, accent, onHome, onSettings
                     <span className="workspace-shell-mode-icon" aria-hidden="true">{icon}</span>
                     <strong>{title}</strong>
                 </div>
-                <button type="button" className="workspace-shell-button" onClick={onSettings} title="Настройки" aria-label="Открыть настройки">
+                <button type="button" className="workspace-shell-button" onClick={onSettings} title={t("workspace.settings")} aria-label={t("workspace.openSettings")}>
                     <IconSettings />
                 </button>
             </header>
