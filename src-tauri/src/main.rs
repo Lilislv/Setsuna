@@ -7113,7 +7113,34 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+// Inside an AppImage the bundled GTK and mesa libraries frequently disagree
+// with the host GPU driver, and WebKitGTK's DMA-BUF renderer then leaves the
+// webview blank after a resize. Falling back to the older renderer fixes the
+// blank paint but costs real compositing performance, so it is scoped to the
+// AppImage rather than applied to every Linux install. Native packages use the
+// system libraries and do not need it. Set the variable yourself to force
+// either behaviour anywhere.
+#[cfg(target_os = "linux")]
+fn configure_linux_webview_environment() {
+    // WebKitGTK only composites on the GPU on demand, dropping back to CPU
+    // painting for ordinary content. Forcing it on keeps scrolling and resizing
+    // on the GPU, which matters most on HiDPI screens where the CPU path has to
+    // push four times the pixels.
+    if std::env::var_os("WEBKIT_FORCE_COMPOSITING_MODE").is_none() {
+        std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+    }
+
+    let running_from_appimage = std::env::var_os("APPIMAGE").is_some();
+    if running_from_appimage && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 fn main() {
+    // Must happen before any GTK or WebKit initialisation.
+    #[cfg(target_os = "linux")]
+    configure_linux_webview_environment();
+
     install_panic_logger();
 
     let browser_state = BrowserState {

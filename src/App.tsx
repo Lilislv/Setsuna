@@ -241,6 +241,11 @@ export default function App() {
         root.style.setProperty('--border-color', activeTheme['--border-main']);
         root.style.setProperty('--button-bg', activeTheme['--bg-side']);
 
+        // Native form controls (<select> popups, checkboxes, scrollbars) are
+        // painted by the engine, not by our CSS, so they need to be told which
+        // variant to use or they stay light on the dark themes.
+        root.style.colorScheme = themeName === 'light' ? 'light' : 'dark';
+
         root.dataset.theme = themeName;
         document.body.dataset.theme = themeName;
     }, [settings.theme, settings.fontSize, settings.fontFamily]);
