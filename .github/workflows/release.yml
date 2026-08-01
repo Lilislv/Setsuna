@@ -10,6 +10,9 @@ jobs:
     permissions:
       contents: write
     runs-on: windows-latest
+    outputs:
+      display_version: ${{ steps.release_meta.outputs.display_version }}
+      build_number: ${{ steps.release_meta.outputs.build_number }}
 
     steps:
       - name: Checkout
@@ -71,3 +74,81 @@ jobs:
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
           updaterJsonPreferNsis: true
+
+  build-linux:
+    permissions:
+      contents: write
+    # Runs after the Windows job so both platforms merge into one latest.json
+    # instead of racing to overwrite it.
+    needs: build-windows
+    # Pinned rather than "latest" so the glibc the bundles link against only
+    # changes deliberately. 22.04 does not work: xcap pulls in libspa, which
+    # fails to compile against that image's pipewire 0.3.48 headers.
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libdbus-1-dev \
+            libpipewire-0.3-dev \
+            libxcb1-dev \
+            libxcb-randr0-dev \
+            libxcb-shm0-dev \
+            libgbm-dev \
+            libegl1-mesa-dev \
+            libwayland-dev \
+            libdrm-dev \
+            liblzma-dev \
+            clang \
+            libclang-dev \
+            patchelf \
+            xdg-utils \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-libav \
+            libgstreamer1.0-dev \
+            build-essential \
+            file \
+            curl \
+            wget
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build signed Tauri release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --config src-tauri/tauri.release.conf.json
+          tagName: ${{ github.ref_name }}
+          releaseName: Setsuna ${{ needs.build-windows.outputs.display_version }}
+          releaseBody: |
+            Setsuna ${{ needs.build-windows.outputs.display_version }}
+            Internal update build: ${{ needs.build-windows.outputs.build_number }}
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true

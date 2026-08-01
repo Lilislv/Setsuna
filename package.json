@@ -11,6 +11,7 @@
     "tauri": "tauri",
     "desktop:build": "tauri build",
     "desktop:release": "tauri build --config src-tauri/tauri.release.conf.json",
+    "desktop:release:linux": "bash scripts/tauri-release-linux.sh",
     "android:dev:phone": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android-dev-phone.ps1"
   },
   "dependencies": {
