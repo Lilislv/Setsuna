@@ -27,6 +27,32 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Read and verify release metadata
+        id: release_meta
+        shell: pwsh
+        run: |
+          $release = Get-Content src/release-info.json -Raw | ConvertFrom-Json
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($release.buildNumber -notmatch '^\d+$' -or [int64]$release.buildNumber -lt 1) {
+            throw "src/release-info.json buildNumber must be a positive integer"
+          }
+          $expectedUpdaterVersion = "0.0.$($release.buildNumber)"
+          if ($tauriVersion -ne $expectedUpdaterVersion) {
+            throw "Tauri updater version must be $expectedUpdaterVersion for build $($release.buildNumber), got $tauriVersion"
+          }
+          $latestUrl = "https://github.com/Lilislv/Setsuna/releases/latest/download/latest.json"
+          $response = Invoke-WebRequest -Uri $latestUrl -SkipHttpErrorCheck
+          if ($response.StatusCode -eq 200) {
+            $latest = $response.Content | ConvertFrom-Json
+            if ($latest.version -match '^0\.0\.(\d+)$' -and [int64]$release.buildNumber -le [int64]$Matches[1]) {
+              throw "buildNumber $($release.buildNumber) must be greater than published build $($Matches[1])"
+            }
+          } elseif ($response.StatusCode -ne 404) {
+            throw "Unable to verify latest published build: HTTP $($response.StatusCode)"
+          }
+          "display_version=$($release.displayVersion)" >> $env:GITHUB_OUTPUT
+          "build_number=$($release.buildNumber)" >> $env:GITHUB_OUTPUT
+
       - name: Build signed Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -36,8 +62,12 @@ jobs:
         with:
           args: --config src-tauri/tauri.release.conf.json
           tagName: ${{ github.ref_name }}
-          releaseName: Setsuna ${{ github.ref_name }}
+          releaseName: Setsuna ${{ steps.release_meta.outputs.display_version }}
           releaseBody: |
-            Setsuna release build.
+            Setsuna ${{ steps.release_meta.outputs.display_version }}
+            Internal update build: ${{ steps.release_meta.outputs.build_number }}
           releaseDraft: true
           prerelease: false
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true

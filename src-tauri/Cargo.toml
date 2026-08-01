@@ -1,6 +1,6 @@
 [package]
 name = "Setsuna"
-version = "0.5.0"
+version = "0.1.0"
 description = "Desktop app for reading Japanese text"
 authors = ["Seri418"]
 edition = "2021"
@@ -25,7 +25,7 @@ zip = "0.6"
 flate2 = "1.0"
 xz2 = "0.1"
 tar = "0.4"
-tauri = { version = "2.0.0", features = [] }
+tauri = { version = "2.0.0", features = ["tray-icon"] }
 tauri-plugin-opener = "2.0.0"
 tauri-plugin-clipboard-manager = "2.0.0"
 tauri-plugin-dialog = "2.0.0"

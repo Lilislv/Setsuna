@@ -74,6 +74,50 @@ body {
     transition: background-color 0.3s, border-color 0.3s;
 }
 
+/* Optional toolbar actions collapse horizontally so the tabs keep their space. */
+.top-bar .topbar-optional,
+.top-bar .topbar-secondary-ws {
+    max-width: 220px;
+    opacity: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    transform: translateX(0);
+    transition:
+        max-width 260ms cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 160ms ease,
+        padding 260ms cubic-bezier(0.4, 0, 0.2, 1),
+        transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.top-bar.is-compact .topbar-optional,
+.top-bar.is-compact .topbar-secondary-ws {
+    max-width: 0 !important;
+    opacity: 0;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    pointer-events: none;
+    transform: translateX(10px);
+}
+
+.top-bar .header-actions {
+    transition: gap 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.top-bar.is-compact .header-actions {
+    gap: 0;
+}
+
+.top-bar.is-compact .header-actions > .header-btn:not(.topbar-optional):not(.topbar-secondary-ws) {
+    margin-left: 5px;
+}
+
+.topbar-collapse-toggle {
+    flex: 0 0 28px;
+    border-left: 1px solid var(--border-subtle);
+    border-radius: 0;
+    transition: color 160ms ease, background-color 160ms ease, transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 .tabs {
     display: flex;
 }
@@ -120,8 +164,21 @@ body {
     }
 
 .tab-add {
-    padding: 6px 10px;
-    font-weight: bold;
+    box-sizing: border-box;
+    width: 33px;
+    min-width: 33px;
+    height: 33px;
+    flex: 0 0 33px;
+    padding: 0;
+    justify-content: center;
+    gap: 0;
+    font: 500 16px/1 var(--font-stack);
+    appearance: none;
+}
+
+.tab-add span {
+    display: block;
+    transform: translateY(-1px);
 }
 
 .header-actions {

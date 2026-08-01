@@ -20,6 +20,10 @@ use sysinfo::System;
 use tauri::utils::config::Color;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri::menu::{Menu, MenuItem};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_window_state::StateFlags;
@@ -70,6 +74,8 @@ mod player_media;
 use dictionary_import::{import_dictionaries, import_dictionary};
 use epub_import::import_epub;
 use player_media::{extract_player_clip, get_ffmpeg_status};
+
+static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub struct BrowserState {
     pub tabs: Mutex<HashMap<String, tauri::WebviewWindow>>,
@@ -7044,6 +7050,69 @@ mod tests {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn show_main_from_tray(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn hide_windows_to_tray(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    if let Some(window) = app.get_webview_window("jl_mode") {
+        let _ = window.hide();
+    }
+    if let Some(window) = app.get_webview_window("jl_lookup") {
+        let _ = window.hide();
+    }
+    let state = app.state::<BrowserState>();
+    if let Ok(tabs) = state.inner().tabs.try_lock() {
+        for window in tabs.values() {
+            let _ = window.hide();
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn install_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, "tray_show", "Открыть Setsuna", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "tray_quit", "Выйти", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+    let mut tray = TrayIconBuilder::with_id("setsuna-tray")
+        .tooltip("Setsuna")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "tray_show" => show_main_from_tray(app),
+            "tray_quit" => {
+                APP_EXIT_REQUESTED.store(true, Ordering::SeqCst);
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_from_tray(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 fn main() {
     install_panic_logger();
 
@@ -7189,6 +7258,7 @@ fn main() {
 
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
+                install_tray(app)?;
                 prepare_lookup_agent_windows(app.handle())?;
                 prepare_jl_windows(app.handle())?;
                 if let Err(error) = register_lookup_agent_shortcut(app.handle(), "Alt+Q") {
@@ -7234,16 +7304,10 @@ fn main() {
                             }
                         }
 
-                        tauri::WindowEvent::CloseRequested { .. } => {
-                            if let Some(window) = app_handle.get_webview_window("jl_mode") {
-                                let _ = window.close();
-                            }
-                            if let Ok(mut tabs) = state.inner().tabs.try_lock() {
-                                let windows: Vec<_> = tabs.drain().map(|(_, w)| w).collect();
-                                drop(tabs);
-                                for window in windows {
-                                    let _ = window.close();
-                                }
+                        tauri::WindowEvent::CloseRequested { api, .. } => {
+                            if !APP_EXIT_REQUESTED.load(Ordering::SeqCst) {
+                                api.prevent_close();
+                                hide_windows_to_tray(&app_handle);
                             }
                         }
 
@@ -7264,6 +7328,7 @@ fn main() {
                             let is_minimized = main_win_for_events.is_minimized().unwrap_or(false);
 
                             if is_minimized {
+                                let _ = main_win_for_events.hide();
                                 if let Ok(tabs) = state.inner().tabs.try_lock() {
                                     for window in tabs.values() {
                                         let _ = window.hide();

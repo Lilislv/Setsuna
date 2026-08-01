@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
+import releaseInfo from "../release-info.json";
 import { invoke } from "@tauri-apps/api/core";
 import SetupWizard from "./SetupWizard"; 
 
@@ -1689,7 +1690,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
                             <div style={{ background: 'var(--bg-side)', border: '1px solid var(--border-main)', borderRadius: 6, padding: 10 }}>
                                 <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>{settings.appLanguage === 'en' ? 'Current version' : 'Текущая версия'}</div>
-                                <div style={{ color: 'var(--text-main)', fontWeight: 800, marginTop: 4 }}>{appVersion || 'dev'}</div>
+                                <div style={{ color: 'var(--text-main)', fontWeight: 800, marginTop: 4 }}>{releaseInfo.displayVersion}</div>
+                                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 3 }}>
+                                    {settings.appLanguage === 'en' ? 'Internal build' : 'Внутренняя сборка'} {releaseInfo.buildNumber}{appVersion ? ` (${appVersion})` : ''}
+                                </div>
                             </div>
                             <div style={{ background: 'var(--bg-side)', border: '1px solid var(--border-main)', borderRadius: 6, padding: 10 }}>
                                 <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>GitHub latest.json</div>

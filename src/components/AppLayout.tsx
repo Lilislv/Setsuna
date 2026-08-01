@@ -982,6 +982,8 @@ export const TopBar = ({
     const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: number } | null>(null);
     const [tabDecks, setTabDecks] = useState<string[]>([]);
     const tabStripRef = useRef<HTMLDivElement>(null);
+    const [isTopbarCollapsed, setIsTopbarCollapsed] = useState(true);
+    const topbarRef = useRef<HTMLDivElement>(null);
     const pointerDragRef = useRef<{ id: number; startX: number; dragging: boolean; lastOverId: number | null } | null>(null);
     const suppressTabClickRef = useRef(false);
     const visibleTabs = tabs.filter((tab: Tab) => !tab.archived);
@@ -1001,6 +1003,7 @@ export const TopBar = ({
     const [tabItemWidth, setTabItemWidth] = useState(180);
     const visibleWindowTabs = visibleTabs.slice(tabWindowStart, tabWindowStart + visibleTabSlots);
     const hasHiddenTabs = visibleTabs.length > visibleTabSlots;
+    const primaryWebSocketId = settings?.primaryWebSocketId || settings?.websockets?.[0]?.id;
     const statusMeta = (status?: Tab["status"]) => {
         const isEn = settings?.appLanguage === 'en';
         if (status === 'reading') return { label: isEn ? 'Reading' : 'Читаю', color: '#4CAF50', icon: '▶' };
@@ -1161,6 +1164,19 @@ export const TopBar = ({
         observer.observe(el);
         return () => observer.disconnect();
     }, [visibleTabs.length]);
+
+    useEffect(() => {
+        const el = topbarRef.current;
+        if (!el) return;
+        const updateCompactMode = () => {
+            // A very narrow window always falls back to the compact state.
+            if (el.clientWidth < 900) setIsTopbarCollapsed(true);
+        };
+        updateCompactMode();
+        const observer = new ResizeObserver(updateCompactMode);
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, []);
     useEffect(() => {
         setTabWindowStart((start) => Math.max(0, Math.min(start, Math.max(0, visibleTabs.length - visibleTabSlots))));
     }, [visibleTabs.length, visibleTabSlots]);
@@ -1172,7 +1188,8 @@ export const TopBar = ({
 
     return (
         <div
-            className="top-bar"
+            ref={topbarRef}
+            className={`top-bar${isTopbarCollapsed ? ' is-compact' : ''}`}
             style={{
                 backgroundColor: 'var(--bg-topbar)',
                 borderBottom: '1px solid var(--border-subtle)',
@@ -1190,7 +1207,7 @@ export const TopBar = ({
 
             <button
                 type="button"
-                className="header-btn"
+                className="header-btn topbar-optional"
                 onClick={openHome}
                 title={settings?.appLanguage === 'en' ? 'Back to Hub' : 'Выйти в Hub'}
                 aria-label={settings?.appLanguage === 'en' ? 'Open home' : 'Открыть главное меню'}
@@ -1336,9 +1353,15 @@ export const TopBar = ({
                     );
                 })}
 
-                <div className="tab tab-add" onClick={addNewTab}>
-                    +
-                </div>
+                <button
+                    type="button"
+                    className="tab tab-add"
+                    onClick={addNewTab}
+                    title={settings?.appLanguage === 'en' ? 'New tab' : 'Новая вкладка'}
+                    aria-label={settings?.appLanguage === 'en' ? 'Create new tab' : 'Создать новую вкладку'}
+                >
+                    <span aria-hidden="true">+</span>
+                </button>
                 {hasHiddenTabs && (
                     <button
                         className="tab"
@@ -1428,10 +1451,23 @@ export const TopBar = ({
                 );
             })()}
 
+            <button
+                type="button"
+                className="header-btn topbar-collapse-toggle"
+                onClick={() => setIsTopbarCollapsed((value) => !value)}
+                title={isTopbarCollapsed
+                    ? (settings?.appLanguage === 'en' ? 'Expand toolbar' : 'Развернуть панель')
+                    : (settings?.appLanguage === 'en' ? 'Collapse toolbar' : 'Свернуть панель')}
+                aria-label={isTopbarCollapsed ? 'Expand toolbar' : 'Collapse toolbar'}
+                style={{ width: 28, height: 33, flex: '0 0 28px', padding: 0, justifyContent: 'center', fontSize: 18 }}
+            >
+                {isTopbarCollapsed ? '‹' : '›'}
+            </button>
+
             <div className="header-actions" style={{ display: 'flex', alignItems: 'center', flex: '0 0 auto', minWidth: 0, overflow: 'visible' }}>
                 {(settings.topbarShowClipboard ?? true) && <button
                     onClick={toggleClipboard}
-                    className="header-btn"
+                    className="header-btn topbar-optional"
                     style={{
                         color: useClipboard ? '#4CAF50' : '#ff4444',
                         display: 'flex',
@@ -1471,7 +1507,7 @@ export const TopBar = ({
                             <button
                                 key={ws.id}
                                 onClick={() => toggleWs(ws.id)}
-                                className="header-btn"
+                                className={`header-btn${ws.id === primaryWebSocketId ? '' : ' topbar-secondary-ws'}`}
                                 style={{
                                     color,
                                     display: 'flex',
@@ -1499,7 +1535,7 @@ export const TopBar = ({
                         e.preventDefault();
                         openTextSyncSettings?.();
                     }}
-                    className="header-btn"
+                    className="header-btn topbar-optional"
                     title={
                         settings?.appLanguage === 'en'
                             ? 'Setsuna Sync. Click to toggle receiving when configured, right-click for settings.'
@@ -1526,7 +1562,7 @@ export const TopBar = ({
 
                 {(settings.topbarShowCapture ?? true) && <button
                     onClick={openCaptureSourcePicker}
-                    className="header-btn"
+                    className="header-btn topbar-optional"
                     title={
                         activeTab?.captureSource?.name
                             ? t('capture.current', { source: activeTab.captureSource.name })
@@ -1554,7 +1590,7 @@ export const TopBar = ({
 
                 <button
                     onClick={openJlModeWindow}
-                    className="header-btn"
+                    className="header-btn topbar-optional"
                     style={{ color: 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '6px' }}
                     title={settings?.appLanguage === 'en' ? 'Open Setsuna Flow' : 'Открыть Setsuna Flow'}
                 >
@@ -1563,7 +1599,7 @@ export const TopBar = ({
 
                 {(settings.topbarShowSearch ?? true) && <button
                     onClick={openSearch}
-                    className="header-btn"
+                    className="header-btn topbar-optional"
                     style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
                     <IconSearch /> <span>{t('common.search')}</span>
@@ -1571,7 +1607,7 @@ export const TopBar = ({
 
                 {(settings.topbarShowImport ?? true) && <button
                     onClick={openImport}
-                    className="header-btn"
+                    className="header-btn topbar-optional"
                     style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
                     <IconExport /> <span>{t('topbar.import')}</span>
@@ -1579,7 +1615,7 @@ export const TopBar = ({
 
                 {(settings.topbarShowExport ?? true) && <button
                     onClick={openExport}
-                    className="header-btn"
+                    className="header-btn topbar-optional"
                     style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
                     <IconImport /> <span>{t('topbar.export')}</span>
@@ -1587,7 +1623,7 @@ export const TopBar = ({
 
                 {(settings.topbarShowBrowser ?? true) && <button
                     onClick={toggleBrowser}
-                    className="header-btn"
+                    className="header-btn topbar-optional"
                     style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
                     <IconBrowser /> <span>{isBrowserOpen ? t('topbar.hideBrowser') : t('topbar.browser')}</span>
@@ -1595,7 +1631,7 @@ export const TopBar = ({
 
                 <button
                     onClick={clearAll}
-                    className="header-btn"
+                    className="header-btn topbar-optional"
                     style={{
                         color: '#ff4444',
                         display: 'flex',

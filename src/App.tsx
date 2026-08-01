@@ -23,6 +23,7 @@ import SetupWizard from "./components/SetupWizard";
 import HomeScreen from "./components/HomeScreen";
 import PlayerSkeleton from "./components/PlayerSkeleton";
 import WorkspaceShell from "./components/WorkspaceShell";
+import releaseInfo from "./release-info.json";
 import {
     discordActivityTypeForMode,
     applyTabOrder,
@@ -58,7 +59,7 @@ type CaptureWindowInfo = {
 };
 
 type UpdateDialogState =
-    | { kind: 'available'; update: Update; progress?: number; message?: string }
+    | { kind: 'available'; update: Update; progress?: number; message?: string; busy?: boolean }
     | { kind: 'none'; message: string }
     | { kind: 'error'; message: string };
 
@@ -86,6 +87,12 @@ const readStoredSettings = (): AppSettings => {
 };
 
 const WORKSPACE_UPDATED_AT_STORAGE_KEY = "txthk-workspace-updated-at";
+const SKIPPED_UPDATE_VERSION_STORAGE_KEY = "setsuna-skipped-update-version";
+
+const updaterBuildNumber = (version: string): string => {
+    const match = /^0\.0\.(\d+)$/.exec(version);
+    return match?.[1] || version;
+};
 
 const normalizeStoredTabs = (value: unknown, defaultName: string): Tab[] => {
     if (!Array.isArray(value)) return [];
@@ -690,6 +697,8 @@ export default function App() {
                 return;
             }
 
+            const skippedVersion = localStorage.getItem(SKIPPED_UPDATE_VERSION_STORAGE_KEY);
+            if (!manual && skippedVersion === update.version) return;
             setUpdateDialog({ kind: 'available', update });
         } catch (error) {
             if (manual) {
@@ -717,6 +726,7 @@ export default function App() {
             update: currentUpdate,
             progress: 0,
             message: settings.appLanguage === 'en' ? 'Downloading update...' : 'Скачиваю обновление...',
+            busy: true,
         });
 
         try {
@@ -729,6 +739,7 @@ export default function App() {
                         update: currentUpdate,
                         progress: 0,
                         message: settings.appLanguage === 'en' ? 'Downloading update...' : 'Скачиваю обновление...',
+                        busy: true,
                     });
                 } else if (event.event === 'Progress') {
                     downloaded += event.data.chunkLength;
@@ -737,6 +748,7 @@ export default function App() {
                         kind: 'available',
                         update: currentUpdate,
                         progress: percent,
+                        busy: true,
                         message: percent !== undefined
                             ? `${settings.appLanguage === 'en' ? 'Downloading' : 'Скачивание'} ${percent}%`
                             : settings.appLanguage === 'en' ? 'Downloading update...' : 'Скачиваю обновление...',
@@ -747,6 +759,7 @@ export default function App() {
                         update: currentUpdate,
                         progress: 100,
                         message: settings.appLanguage === 'en' ? 'Installing update...' : 'Устанавливаю обновление...',
+                        busy: true,
                     });
                 }
             });
@@ -758,6 +771,12 @@ export default function App() {
             });
         }
     }, [settings.appLanguage, updateDialog]);
+
+    const skipCurrentUpdate = useCallback(() => {
+        if (!updateDialog || updateDialog.kind !== 'available' || updateDialog.busy) return;
+        localStorage.setItem(SKIPPED_UPDATE_VERSION_STORAGE_KEY, updateDialog.update.version);
+        setUpdateDialog(null);
+    }, [updateDialog]);
 
     useEffect(() => {
         if (!isAppLoaded || settings.updateAutoCheck === false) return;
@@ -3223,7 +3242,7 @@ export default function App() {
 
             {updateDialog && (
                 <div
-                    onClick={() => updateDialog.kind !== 'available' && setUpdateDialog(null)}
+                    onClick={() => (updateDialog.kind !== 'available' || !updateDialog.busy) && setUpdateDialog(null)}
                     style={{
                         position: 'fixed',
                         inset: 0,
@@ -3258,22 +3277,39 @@ export default function App() {
                             <>
                                 <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.5, marginBottom: 14 }}>
                                     {settings.appLanguage === 'en' ? 'A new Setsuna build is ready.' : 'Новая сборка Setsuna готова к установке.'}
-                                    {updateDialog.update.version ? ` ${settings.appLanguage === 'en' ? 'Version' : 'Версия'} ${updateDialog.update.version}.` : ''}
+                                    {updateDialog.update.version ? ` ${settings.appLanguage === 'en' ? 'Internal build' : 'Внутренняя сборка'} #${updaterBuildNumber(updateDialog.update.version)}.` : ''}
                                 </div>
+                                {updateDialog.update.body && !updateDialog.busy && (
+                                    <div style={{ maxHeight: 120, overflowY: 'auto', whiteSpace: 'pre-wrap', color: 'var(--text-muted)', background: 'var(--bg-side)', border: '1px solid var(--border-main)', borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                                        {updateDialog.update.body}
+                                    </div>
+                                )}
                                 {updateDialog.message && <div style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 10 }}>{updateDialog.message}</div>}
                                 {updateDialog.progress !== undefined && (
                                     <div style={{ height: 6, background: 'var(--bg-side)', borderRadius: 999, overflow: 'hidden', marginBottom: 14 }}>
                                         <div style={{ width: `${updateDialog.progress}%`, height: '100%', background: 'var(--accent-blue)' }} />
                                     </div>
                                 )}
-                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-                                    <button className="btn-secondary" onClick={() => setUpdateDialog(null)} style={{ padding: '8px 12px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 10 }}>
+                                    <button className="btn-secondary" disabled={updateDialog.busy} onClick={skipCurrentUpdate} style={{ padding: '8px 12px', opacity: updateDialog.busy ? 0.55 : 1 }}>
+                                        {settings.appLanguage === 'en' ? 'Skip this version' : 'Пропустить версию'}
+                                    </button>
+                                    <button className="btn-secondary" disabled={updateDialog.busy} onClick={() => setUpdateDialog(null)} style={{ padding: '8px 12px', opacity: updateDialog.busy ? 0.55 : 1 }}>
                                         {settings.appLanguage === 'en' ? 'Later' : 'Позже'}
                                     </button>
-                                    <button className="btn-primary" onClick={installUpdate} style={{ padding: '8px 12px' }}>
-                                        {settings.appLanguage === 'en' ? 'Install and restart' : 'Установить и перезапустить'}
+                                    <button className="btn-primary" disabled={updateDialog.busy} onClick={installUpdate} style={{ padding: '8px 12px', opacity: updateDialog.busy ? 0.7 : 1 }}>
+                                        {updateDialog.busy
+                                            ? (settings.appLanguage === 'en' ? 'Updating...' : 'Обновляю...')
+                                            : (settings.appLanguage === 'en' ? 'Install and restart' : 'Установить и перезапустить')}
                                     </button>
                                 </div>
+                                {!updateDialog.busy && (
+                                    <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 12 }}>
+                                        {settings.appLanguage === 'en'
+                                            ? `Installed: ${releaseInfo.displayVersion} (build ${releaseInfo.buildNumber})`
+                                            : `Установлено: ${releaseInfo.displayVersion} (сборка ${releaseInfo.buildNumber})`}
+                                    </div>
+                                )}
                             </>
                         ) : (
                             <>

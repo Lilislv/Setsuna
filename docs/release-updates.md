@@ -10,11 +10,13 @@ Setsuna uses the Tauri v2 updater. Release builds attach `latest.json` and signe
 
 ## Publishing A Release
 
-1. Update versions in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
-2. Commit the release changes.
-3. Push a tag like `v0.5.0`.
-4. Wait for the `Release` workflow to finish.
-5. Open the draft GitHub release, edit notes, and publish it.
+1. Set the user-facing name in `src/release-info.json` as `displayVersion`. It can use any naming scheme.
+2. Increase `buildNumber` by exactly one. This is the only value used to order updates.
+3. Set `src-tauri/tauri.conf.json` version to `0.0.<buildNumber>`; for build 2 use `0.0.2`.
+4. Commit the release changes.
+5. Push any desired release tag, for example `v0.1.0`. The tag name is not used for update ordering.
+6. Wait for the `Release` workflow to finish.
+7. Open the draft GitHub release, edit notes, and publish it.
 
 The app checks:
 
@@ -27,6 +29,8 @@ https://github.com/Lilislv/Setsuna/releases/latest/download/latest.json
 For local release verification:
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\pr\txthk\.tauri\setsuna-updater.key"
-npm run tauri -- build --debug
+$env:CI="true"
+$env:TAURI_SIGNING_PRIVATE_KEY=Get-Content "C:\pr\txthk\.tauri\setsuna-updater.key" -Raw
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+npm run desktop:release
 ```
