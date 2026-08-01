@@ -3,9 +3,22 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getTranslator, type AppLanguage } from "./utils/i18n";
 import "./capture-region.css";
 
 type Point = { x: number; y: number };
+
+/// This overlay is its own window and gets no props, so the language comes
+/// from the same stored settings the main window writes.
+const overlayTranslator = () => {
+  let language: AppLanguage = "ru";
+  try {
+    language = JSON.parse(localStorage.getItem("txthk-settings") || "{}").appLanguage || "ru";
+  } catch {
+    language = "ru";
+  }
+  return getTranslator(language);
+};
 
 const normalizedRect = (start: Point, end: Point) => ({
   left: Math.min(start.x, end.x),
@@ -16,6 +29,7 @@ const normalizedRect = (start: Point, end: Point) => ({
 
 function CaptureRegion() {
   const startRef = useRef<Point | null>(null);
+  const t = overlayTranslator();
   const [start, setStart] = useState<Point | null>(null);
   const [end, setEnd] = useState<Point | null>(null);
   const [busy, setBusy] = useState(false);
@@ -94,7 +108,7 @@ function CaptureRegion() {
         cancel();
       }}
     >
-      <div className="capture-region-hint">Выдели область для карточки <kbd>Esc</kbd></div>
+      <div className="capture-region-hint">{t("captureRegion.hintImage")} <kbd>Esc</kbd></div>
       {rect && (
         <div
           className="capture-region-selection"

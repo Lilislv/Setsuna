@@ -835,28 +835,28 @@ export const MobileLayout = ({
                             <label className="mobile-setting-row">
                                 <span>{isEn ? 'Word field' : 'Поле слова'}</span>
                                 <select value={settings.ankiFieldWord || 'none'} onChange={(e) => updateSetting('ankiFieldWord', e.target.value)}>
-                                    <option value="none">none</option>
+                                    <option value="none">{t("common.none")}</option>
                                     {ankiFields.map((field) => <option key={field} value={field}>{field}</option>)}
                                 </select>
                             </label>
                             <label className="mobile-setting-row">
                                 <span>{isEn ? 'Meaning field' : 'Поле значения'}</span>
                                 <select value={settings.ankiFieldMeaning || 'none'} onChange={(e) => updateSetting('ankiFieldMeaning', e.target.value)}>
-                                    <option value="none">none</option>
+                                    <option value="none">{t("common.none")}</option>
                                     {ankiFields.map((field) => <option key={field} value={field}>{field}</option>)}
                                 </select>
                             </label>
                             <label className="mobile-setting-row">
                                 <span>{isEn ? 'Sentence field' : 'Поле примера'}</span>
                                 <select value={settings.ankiFieldSentence || 'none'} onChange={(e) => updateSetting('ankiFieldSentence', e.target.value)}>
-                                    <option value="none">none</option>
+                                    <option value="none">{t("common.none")}</option>
                                     {ankiFields.map((field) => <option key={field} value={field}>{field}</option>)}
                                 </select>
                             </label>
                             <label className="mobile-setting-row">
                                 <span>{isEn ? 'Screenshot field' : 'Поле скрина'}</span>
                                 <select value={settings.ankiFieldScreenshot || 'none'} onChange={(e) => updateSetting('ankiFieldScreenshot', e.target.value)}>
-                                    <option value="none">none</option>
+                                    <option value="none">{t("common.none")}</option>
                                     {ankiFields.map((field) => <option key={field} value={field}>{field}</option>)}
                                 </select>
                             </label>

@@ -3571,6 +3571,7 @@ export default function App() {
                         title={settings.appLanguage === "en" ? "EPUB Reader" : "EPUB-ридер"}
                         icon={<IconBookTab />}
                         accent="reader"
+                        language={settings.appLanguage}
                         onHome={() => setActiveWorkspace("hub")}
                         onSettings={() => openSettingsPanel('epub-reader')}
                     >
@@ -3585,6 +3586,7 @@ export default function App() {
                         title={settings.appLanguage === "en" ? "Anime Player" : "Аниме-плеер"}
                         icon={<IconPlayerTab />}
                         accent="player"
+                        language={settings.appLanguage}
                         onHome={() => setActiveWorkspace("hub")}
                         onSettings={() => openSettingsPanel('player-main')}
                     >
