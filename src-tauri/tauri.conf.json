@@ -16,8 +16,8 @@
         "title": "Setsuna",
         "width": 1280,
         "height": 800,
-        "minWidth": 1100,
-        "minHeight": 680
+        "minWidth": 480,
+        "minHeight": 400
       }
     ],
     "security": {

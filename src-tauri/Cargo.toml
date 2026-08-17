@@ -47,6 +47,7 @@ tauri-plugin-single-instance = "2"
 screenshots = "0.8.10"
 xcap = "0.9.4"
 discord-rich-presence = "1.1.0"
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Icon themes on Linux are overwhelmingly SVG (Breeze ships no app PNGs at

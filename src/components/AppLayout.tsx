@@ -26,6 +26,7 @@ import { readText as readClipboardText } from '@tauri-apps/plugin-clipboard-mana
 import { listen } from '@tauri-apps/api/event';
 import {
     createDictFileMetadata,
+    createGooglePkceSession,
     downloadFromDrive,
     exchangeCodeForToken,
     getAccessToken,
@@ -33,6 +34,7 @@ import {
     getDictDriveInfo,
     listBackups,
     uploadToDrive,
+    type GooglePkceSession,
 } from '../utils/gdrive';
 import { GOOGLE_DRIVE_AVAILABLE } from '../utils/featureFlags';
 import { tokenizeLookupText, normalizeWebSocketUrl } from '../utils/appRuntime';
@@ -222,6 +224,8 @@ export const MobileLayout = ({
     const [driveStatus, setDriveStatus] = useState('');
     const [driveAuthInput, setDriveAuthInput] = useState('');
     const [driveBusy, setDriveBusy] = useState(false);
+    const drivePkceRef = useRef<GooglePkceSession | null>(null);
+    const driveRedirectRef = useRef('http://127.0.0.1:1337');
     const [ankiStatusText, setAnkiStatusText] = useState('');
     const [ankiDecks, setAnkiDecks] = useState<string[]>([]);
     const [ankiModels, setAnkiModels] = useState<string[]>([]);
@@ -247,7 +251,9 @@ export const MobileLayout = ({
         setDriveBusy(true);
         setDriveStatus(isEn ? 'Connecting...' : 'Подключаю...');
         try {
-            const tokenData = await exchangeCodeForToken(code, 'http://127.0.0.1:1337');
+            const pkce = drivePkceRef.current;
+            if (!pkce) throw new Error(isEn ? 'Start Google sign-in again first.' : 'Сначала снова открой вход Google.');
+            const tokenData = await exchangeCodeForToken(code, driveRedirectRef.current, pkce.verifier, pkce.state);
             if (!tokenData.refresh_token) throw new Error(isEn ? 'Google did not return a refresh token.' : 'Google не выдал refresh token.');
             updateSetting('gdriveRefreshToken', tokenData.refresh_token);
             setDriveAuthInput('');
@@ -399,12 +405,15 @@ export const MobileLayout = ({
             // hits this app and fires the "oauth_code" event, which we exchange automatically.
             const start = await invoke<{ port: number; redirect_uri: string; reused: boolean }>('start_oauth_server');
             const redirectUri = start.redirect_uri;
+            const pkce = await createGooglePkceSession();
+            drivePkceRef.current = pkce;
+            driveRedirectRef.current = redirectUri;
             const unlisten = await listen<string>('oauth_code', async (event) => {
                 try { unlisten(); } catch {}
                 setDriveBusy(true);
                 setDriveStatus(isEn ? 'Connecting…' : 'Подключаю…');
                 try {
-                    const tokenData = await exchangeCodeForToken(String(event.payload || ''), redirectUri);
+                    const tokenData = await exchangeCodeForToken(String(event.payload || ''), redirectUri, pkce.verifier, pkce.state);
                     if (!tokenData.refresh_token) throw new Error(isEn ? 'Google did not return a refresh token.' : 'Google не выдал refresh token.');
                     updateSetting('gdriveRefreshToken', tokenData.refresh_token);
                     setDriveAuthInput('');
@@ -415,7 +424,7 @@ export const MobileLayout = ({
                     setDriveBusy(false);
                 }
             });
-            const url = getAuthUrl(redirectUri);
+            const url = getAuthUrl(redirectUri, pkce);
             await openUrl(url);
             setDriveStatus(isEn ? 'Sign in in the browser, then return to the app.' : 'Войди в браузере и вернись в приложение.');
         } catch (error: any) {
@@ -431,7 +440,9 @@ export const MobileLayout = ({
         setDriveBusy(true);
         setDriveStatus(isEn ? 'Connecting...' : 'Подключаю...');
         try {
-            const tokenData = await exchangeCodeForToken(code, 'http://127.0.0.1:1337');
+            const pkce = drivePkceRef.current;
+            if (!pkce) throw new Error(isEn ? 'Start Google sign-in again first.' : 'Сначала снова открой вход Google.');
+            const tokenData = await exchangeCodeForToken(code, driveRedirectRef.current, pkce.verifier, pkce.state);
             if (!tokenData.refresh_token) throw new Error(isEn ? 'Google did not return refresh token.' : 'Google не выдал refresh token.');
             updateSetting('gdriveRefreshToken', tokenData.refresh_token);
             setDriveAuthInput('');

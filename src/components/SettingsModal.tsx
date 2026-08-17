@@ -90,15 +90,6 @@ const SettingsSubNavButton = ({ active, label, onClick }: Omit<SettingsNavButton
   </button>
 );
 
-const DRIVE_TEST_ACCESS_STORAGE_KEY = "setsuna-drive-test-access";
-const DRIVE_TEST_ACCESS_HASH = "fcd2b6586247b2ed12bca71f97eb2a79ce2568ac3236f4a829feac9d2adef153";
-
-const sha256Hex = async (value: string) => {
-  const bytes = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-};
-
 interface AccountDevice {
   id?: string;
   deviceId?: string;
@@ -139,9 +130,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
   const [isRemoteCaptureChecking, setIsRemoteCaptureChecking] = useState(false);
   const [remoteCaptureStatus, setRemoteCaptureStatus] = useState("");
   const [appVersion, setAppVersion] = useState("");
-  const [driveTesterUnlocked, setDriveTesterUnlocked] = useState(() => localStorage.getItem(DRIVE_TEST_ACCESS_STORAGE_KEY) === "1");
-  const [driveTesterCode, setDriveTesterCode] = useState("");
-  const [driveTesterError, setDriveTesterError] = useState("");
 
   const normalizeWebSocketUrl = (value: string) => {
       const trimmed = value.trim();
@@ -745,18 +733,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
       setTimeout(() => setHighlightedSection(null), 1000); 
   };
 
-  const unlockDriveTesterMode = async () => {
-      const hash = await sha256Hex(driveTesterCode.trim());
-      if (hash !== DRIVE_TEST_ACCESS_HASH) {
-          setDriveTesterError(settings.appLanguage === 'en' ? 'Invalid tester code.' : 'Неверный код тестера.');
-          return;
-      }
-      localStorage.setItem(DRIVE_TEST_ACCESS_STORAGE_KEY, "1");
-      setDriveTesterUnlocked(true);
-      setDriveTesterCode("");
-      setDriveTesterError("");
-  };
-
   const isEnglish = settings.appLanguage === 'en';
   const sectionMeta: Record<SettingsTab, { title: string; description: string }> = {
       text: { title: t('settings.nav.text'), description: isEnglish ? 'Appearance, text sources and reading behavior' : 'Внешний вид, источники текста и поведение читалки' },
@@ -863,7 +839,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
 
               <div className="settings-nav-group">
                   <span className="settings-nav-heading">{isEnglish ? 'Services' : 'Сервисы'}</span>
-                  <SettingsNavButton active={activeTab === 'cloud'} icon={<IconCloud />} label="Google Drive" badge="Soon" onClick={() => handleNav('cloud', 'cloud-main')} />
+                  <SettingsNavButton active={activeTab === 'cloud'} icon={<IconCloud />} label="Google Drive" onClick={() => handleNav('cloud', 'cloud-main')} />
                   <SettingsNavButton active={activeTab === 'discord'} icon={<IconMessage />} label="Discord" onClick={() => handleNav('discord', 'discord-main')} />
                   <SettingsNavButton active={activeTab === 'updates'} icon={<IconRefresh />} label={isEnglish ? 'Updates' : 'Обновления'} onClick={() => handleNav('updates', 'updates-main')} />
               </div>
@@ -1656,48 +1632,16 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
 
               {/* === CLOUD TAB === */}
               {activeTab === 'cloud' && (
-                  driveTesterUnlocked ? (
-                      <div className="tab-content-anim">
-                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: -14 }}>
-                              <button className="btn-secondary" style={{ padding: '6px 10px', fontSize: 11 }} onClick={() => { localStorage.removeItem(DRIVE_TEST_ACCESS_STORAGE_KEY); setDriveTesterUnlocked(false); }}>
-                                  {settings.appLanguage === 'en' ? 'Leave test mode' : 'Выйти из тестового режима'}
-                              </button>
-                          </div>
-                          <SettingsCloud
-                              settings={settings}
-                              updateSetting={updateSetting}
-                              onSettingsChange={onSettingsChange}
-                              tabs={tabs}
-                              setTabs={setTabs}
-                              syncDictionaries={syncDictionaries}
-                              highlightedSection={highlightedSection}
-                              isOpen={activeTab === 'cloud' && isOpen}
-                          />
-                      </div>
-                  ) : (
-                      <div className="tab-content-anim">
-                          <section className="drive-coming-soon">
-                              <div className="drive-coming-soon-inner">
-                                  <div className="drive-mark">G</div>
-                                  <div className="drive-soon-label">Soon</div>
-                                  <h2>Google Drive</h2>
-                                  <p>
-                                      {settings.appLanguage === 'en'
-                                          ? 'Cloud backup is still being tested. It will become available after data compatibility and recovery are verified.'
-                                          : 'Облачные бэкапы ещё тестируются. Функция откроется после проверки совместимости данных и восстановления.'}
-                                  </p>
-                                  <details className="drive-tester-access">
-                                      <summary>{settings.appLanguage === 'en' ? 'Tester access' : 'Доступ для тестеров'}</summary>
-                                      <div>
-                                          <input className="modern-input" type="password" value={driveTesterCode} onChange={(event) => { setDriveTesterCode(event.target.value); setDriveTesterError(''); }} onKeyDown={(event) => { if (event.key === 'Enter') unlockDriveTesterMode(); }} placeholder={settings.appLanguage === 'en' ? 'Access code' : 'Код доступа'} />
-                                          <button className="btn-primary" onClick={unlockDriveTesterMode}>{settings.appLanguage === 'en' ? 'Unlock' : 'Открыть'}</button>
-                                      </div>
-                                      {driveTesterError && <span>{driveTesterError}</span>}
-                                  </details>
-                              </div>
-                          </section>
-                      </div>
-                  )
+                  <SettingsCloud
+                      settings={settings}
+                      updateSetting={updateSetting}
+                      onSettingsChange={onSettingsChange}
+                      tabs={tabs}
+                      setTabs={setTabs}
+                      syncDictionaries={syncDictionaries}
+                      highlightedSection={highlightedSection}
+                      isOpen={activeTab === 'cloud' && isOpen}
+                  />
               )}
 
               {/* === DISCORD TAB === */}

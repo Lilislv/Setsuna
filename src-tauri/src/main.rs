@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime as StdSystemTime, UNIX_EPOCH};
-use sysinfo::System;
+use sysinfo::{Disks, System};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::menu::{Menu, MenuItem};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1669,14 +1669,162 @@ async fn update_dictionary_from_source(
     result
 }
 
+fn available_space_for_path(path: &Path) -> Option<u64> {
+    let base = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+    let resolved = base.canonicalize().unwrap_or(base);
+    let disks = Disks::new_with_refreshed_list();
+    disks
+        .list()
+        .iter()
+        .filter(|disk| resolved.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().components().count())
+        .map(|disk| disk.available_space())
+}
+
+fn emit_drive_progress(app: &tauri::AppHandle, operation: &str, transferred: u64, total: u64) {
+    let percent = if total == 0 {
+        0
+    } else {
+        ((transferred.saturating_mul(100) / total).min(100)) as u8
+    };
+    let _ = app.emit(
+        "drive_dictionary_progress",
+        DriveTransferProgress {
+            operation: operation.to_string(),
+            transferred,
+            total,
+            percent,
+        },
+    );
+}
+
+fn resumable_next_offset(range: Option<&str>) -> u64 {
+    range
+        .and_then(|value| value.rsplit('-').next())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|last| last.saturating_add(1))
+        .unwrap_or(0)
+}
+
+async fn query_resumable_upload_offset(
+    client: &reqwest::Client,
+    url: &str,
+    token: &str,
+    file_len: u64,
+) -> Result<u64, String> {
+    let response = client
+        .put(url)
+        .bearer_auth(token)
+        .header("Content-Length", "0")
+        .header("Content-Range", format!("bytes */{}", file_len))
+        .body(Vec::<u8>::new())
+        .send()
+        .await
+        .map_err(|error| format!("Failed to query dictionary upload state: {}", error))?;
+
+    if response.status().is_success() {
+        return Ok(file_len);
+    }
+    if response.status().as_u16() == 308 {
+        return Ok(resumable_next_offset(
+            response
+                .headers()
+                .get("range")
+                .and_then(|value| value.to_str().ok()),
+        )
+        .min(file_len));
+    }
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err("Google Drive upload session expired. Start the upload again.".to_string());
+    }
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Err(format!(
+        "Failed to query dictionary upload state: {} - {}",
+        status, body
+    ))
+}
+
+#[tauri::command]
+fn get_dictionary_storage_info(app: tauri::AppHandle) -> Result<DictionaryStorageInfo, String> {
+    let path = get_dictionary_db_path(&app)?;
+    let size = fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or(0);
+    Ok(DictionaryStorageInfo {
+        path: path.to_string_lossy().into_owned(),
+        size,
+        available_bytes: available_space_for_path(&path),
+    })
+}
+
+#[tauri::command]
+fn store_google_refresh_token(refresh_token: String) -> Result<(), String> {
+    if refresh_token.trim().is_empty() {
+        return Err("Google refresh token is empty".to_string());
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let entry = keyring::Entry::new("com.serichka.setsuna", "google-drive")
+            .map_err(|e| format!("Credential storage is unavailable: {}", e))?;
+        return entry
+            .set_password(refresh_token.trim())
+            .map_err(|e| format!("Failed to protect Google credentials: {}", e));
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        Err("Secure Google credential storage is not available on mobile yet".to_string())
+    }
+}
+
+#[tauri::command]
+fn load_google_refresh_token() -> Result<Option<String>, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let entry = keyring::Entry::new("com.serichka.setsuna", "google-drive")
+            .map_err(|e| format!("Credential storage is unavailable: {}", e))?;
+        return match entry.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(format!("Failed to read Google credentials: {}", error)),
+        };
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn delete_google_refresh_token() -> Result<(), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let entry = keyring::Entry::new("com.serichka.setsuna", "google-drive")
+            .map_err(|e| format!("Credential storage is unavailable: {}", e))?;
+        return match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(format!("Failed to remove Google credentials: {}", error)),
+        };
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        Ok(())
+    }
+}
+
 #[tauri::command]
 async fn upload_db_to_drive(
     app: tauri::AppHandle,
     url: String,
     token: String,
 ) -> Result<(), String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
     let db_path = get_dictionary_db_path(&app)?;
-    let file = tokio::fs::File::open(&db_path)
+    let mut file = tokio::fs::File::open(&db_path)
         .await
         .map_err(|e| format!("Failed to open dictionary database: {}", e))?;
     let file_len = file
@@ -1684,30 +1832,112 @@ async fn upload_db_to_drive(
         .await
         .map_err(|e| format!("Failed to inspect dictionary database: {}", e))?
         .len();
-    let stream = tokio_util::io::ReaderStream::new(file);
-    let body = reqwest::Body::wrap_stream(stream);
     let client = reqwest::Client::new();
-    let res = client
-        .patch(&url)
-        .bearer_auth(token)
-        .header("Content-Type", "application/octet-stream")
-        .header("Content-Length", file_len.to_string())
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to upload dictionary database: {}", e))?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!(
-            "Dictionary database upload failed: {}{}",
-            status,
-            if body.is_empty() {
-                String::new()
-            } else {
-                format!(" - {}", body)
+    emit_drive_progress(&app, "upload", 0, file_len);
+
+    if !url.contains("uploadType=resumable") && !url.contains("upload_id=") {
+        let stream = tokio_util::io::ReaderStream::new(file);
+        let body = reqwest::Body::wrap_stream(stream);
+        let res = client
+            .patch(&url)
+            .bearer_auth(token)
+            .header("Content-Type", "application/octet-stream")
+            .header("Content-Length", file_len.to_string())
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to upload dictionary database: {}", e))?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(format!("Dictionary database upload failed: {} - {}", status, body));
+        }
+        emit_drive_progress(&app, "upload", file_len, file_len);
+        return Ok(());
+    }
+
+    const CHUNK_SIZE: usize = 8 * 1024 * 1024;
+    let mut offset = 0_u64;
+    while offset < file_len {
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|e| format!("Failed to seek dictionary database: {}", e))?;
+        let amount = ((file_len - offset) as usize).min(CHUNK_SIZE);
+        let mut chunk = vec![0_u8; amount];
+        file.read_exact(&mut chunk)
+            .await
+            .map_err(|e| format!("Failed to read dictionary database: {}", e))?;
+        let end = offset + amount as u64 - 1;
+        let mut attempts = 0_u8;
+        loop {
+            attempts += 1;
+            let result = client
+                .put(&url)
+                .bearer_auth(&token)
+                .header("Content-Type", "application/octet-stream")
+                .header("Content-Length", amount.to_string())
+                .header("Content-Range", format!("bytes {}-{}/{}", offset, end, file_len))
+                .body(chunk.clone())
+                .send()
+                .await;
+            match result {
+                Ok(response) if response.status().is_success() => {
+                    offset = file_len;
+                    break;
+                }
+                Ok(response) if response.status().as_u16() == 308 => {
+                    let confirmed = resumable_next_offset(
+                        response
+                            .headers()
+                            .get("range")
+                            .and_then(|value| value.to_str().ok()),
+                    )
+                    .min(file_len);
+                    if confirmed > offset {
+                        offset = confirmed;
+                        break;
+                    }
+                    if attempts >= 4 {
+                        return Err(
+                            "Google Drive did not accept the current dictionary chunk."
+                                .to_string(),
+                        );
+                    }
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let retryable = status.is_server_error() || status.as_u16() == 429;
+                    let body = response.text().await.unwrap_or_default();
+                    if retryable && attempts < 4 {
+                        tokio::time::sleep(Duration::from_millis(500 * attempts as u64)).await;
+                        if let Ok(confirmed) =
+                            query_resumable_upload_offset(&client, &url, &token, file_len).await
+                        {
+                            if confirmed > offset {
+                                offset = confirmed;
+                                break;
+                            }
+                        }
+                        continue;
+                    }
+                    return Err(format!("Dictionary database upload failed: {} - {}", status, body));
+                }
+                Err(error) if attempts < 4 => {
+                    let _ = error;
+                    tokio::time::sleep(Duration::from_millis(500 * attempts as u64)).await;
+                    if let Ok(confirmed) =
+                        query_resumable_upload_offset(&client, &url, &token, file_len).await
+                    {
+                        if confirmed > offset {
+                            offset = confirmed;
+                            break;
+                        }
+                    }
+                }
+                Err(error) => return Err(format!("Failed to upload dictionary database: {}", error)),
             }
-        ));
+        }
+        emit_drive_progress(&app, "upload", offset, file_len);
     }
     Ok(())
 }
@@ -1717,34 +1947,82 @@ async fn download_db_from_drive(
     app: tauri::AppHandle,
     url: String,
     token: String,
+    expected_size: Option<u64>,
 ) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let db_path = get_data_path(&app, "dictionary.db")?;
+    let temp_path = db_path.with_extension("db.drive-download");
+    let rollback_path = db_path.with_extension("db.before-drive-restore");
     let client = reqwest::Client::new();
-    let res = client
+    let mut res = client
         .get(&url)
         .bearer_auth(token)
         .send()
         .await
         .map_err(|e| format!("Failed to download dictionary database: {}", e))?;
     if !res.status().is_success() {
-        return Err(format!(
-            "Dictionary database download failed: {}",
-            res.status()
-        ));
+        return Err(format!("Dictionary database download failed: {}", res.status()));
     }
-    let db_path = get_data_path(&app, "dictionary.db")?;
-    let mut file = tokio::fs::File::create(&db_path)
+    let total = expected_size.or_else(|| res.content_length()).unwrap_or(0);
+    if total > 0 {
+        if let Some(available) = available_space_for_path(&db_path) {
+            let margin = (total / 50).max(32 * 1024 * 1024);
+            if available < total.saturating_add(margin) {
+                return Err(format!(
+                    "Not enough local disk space. Need at least {} bytes, available {} bytes.",
+                    total.saturating_add(margin),
+                    available
+                ));
+            }
+        }
+    }
+
+    let _ = tokio::fs::remove_file(&temp_path).await;
+    let mut file = tokio::fs::File::create(&temp_path)
         .await
-        .map_err(|e| format!("Failed to create dictionary database: {}", e))?;
-    let mut res = res;
+        .map_err(|e| format!("Failed to create temporary dictionary database: {}", e))?;
+    let mut downloaded = 0_u64;
+    emit_drive_progress(&app, "download", 0, total);
     while let Some(chunk) = res
         .chunk()
         .await
         .map_err(|e| format!("Failed to read downloaded dictionary database: {}", e))?
     {
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+        file.write_all(&chunk)
             .await
             .map_err(|e| format!("Failed to save dictionary database: {}", e))?;
+        downloaded += chunk.len() as u64;
+        emit_drive_progress(&app, "download", downloaded, total.max(downloaded));
     }
+    file.sync_all()
+        .await
+        .map_err(|e| format!("Failed to flush dictionary database: {}", e))?;
+    drop(file);
+
+    if let Some(expected) = expected_size {
+        if downloaded != expected {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(format!(
+                "Downloaded dictionary size mismatch: expected {}, received {} bytes.",
+                expected, downloaded
+            ));
+        }
+    }
+
+    let _ = tokio::fs::remove_file(&rollback_path).await;
+    if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
+        tokio::fs::rename(&db_path, &rollback_path)
+            .await
+            .map_err(|e| format!("Failed to prepare dictionary replacement: {}", e))?;
+    }
+    if let Err(error) = tokio::fs::rename(&temp_path, &db_path).await {
+        if tokio::fs::try_exists(&rollback_path).await.unwrap_or(false) {
+            let _ = tokio::fs::rename(&rollback_path, &db_path).await;
+        }
+        return Err(format!("Failed to apply downloaded dictionary: {}", error));
+    }
+    emit_drive_progress(&app, "download", downloaded, downloaded);
     Ok(())
 }
 
@@ -2662,43 +2940,63 @@ fn prepare_jl_windows(app: &AppHandle) -> Result<(), String> {
 }
 
 fn sanitize_main_window_size(main_win: &tauri::WebviewWindow) {
-    let min_width = 1100;
-    let min_height = 680;
-    let fallback_width = 1280;
-    let fallback_height = 800;
+    const MIN_WIDTH: f64 = 480.0;
+    const MIN_HEIGHT: f64 = 400.0;
+    const FALLBACK_WIDTH: f64 = 1280.0;
+    const FALLBACK_HEIGHT: f64 = 800.0;
 
-    let size = match main_win.inner_size() {
-        Ok(size) => size,
-        Err(_) => return,
-    };
-
-    let monitor_size = main_win
+    let _ = main_win.set_min_size(Some(tauri::LogicalSize::new(MIN_WIDTH, MIN_HEIGHT)));
+    let monitors = main_win.available_monitors().unwrap_or_default();
+    let monitor = main_win
         .current_monitor()
         .ok()
         .flatten()
-        .map(|monitor| *monitor.size());
+        .or_else(|| monitors.first().cloned());
+    let scale = monitor.as_ref().map(|item| item.scale_factor()).unwrap_or(1.0);
+    let physical_size = match main_win.inner_size() {
+        Ok(size) => size,
+        Err(_) => return,
+    };
+    let logical_size = physical_size.to_logical::<f64>(scale);
+    let monitor_logical = monitor
+        .as_ref()
+        .map(|item| item.size().to_logical::<f64>(item.scale_factor()));
+    let max_width = monitor_logical
+        .map(|size| (size.width - 32.0).max(MIN_WIDTH))
+        .unwrap_or(3840.0);
+    let max_height = monitor_logical
+        .map(|size| (size.height - 48.0).max(MIN_HEIGHT))
+        .unwrap_or(2160.0);
 
-    let max_width = monitor_size.map(|size| size.width).unwrap_or(3840);
-    let max_height = monitor_size.map(|size| size.height).unwrap_or(2160);
+    let width = if logical_size.width < 100.0 {
+        FALLBACK_WIDTH.min(max_width)
+    } else {
+        logical_size.width.clamp(MIN_WIDTH, max_width)
+    };
+    let height = if logical_size.height < 100.0 {
+        FALLBACK_HEIGHT.min(max_height)
+    } else {
+        logical_size.height.clamp(MIN_HEIGHT, max_height)
+    };
+    if (width - logical_size.width).abs() > 0.5 || (height - logical_size.height).abs() > 0.5 {
+        let _ = main_win.set_size(tauri::LogicalSize::new(width, height));
+    }
 
-    let is_bad_size = size.width < min_width
-        || size.height < min_height
-        || size.width > max_width.saturating_add(80)
-        || size.height > max_height.saturating_add(80);
-
-    let _ = main_win.set_min_size(Some(tauri::LogicalSize::new(
-        min_width as f64,
-        min_height as f64,
-    )));
-
-    if is_bad_size {
-        let width = fallback_width
-            .min(max_width.saturating_sub(80))
-            .max(min_width);
-        let height = fallback_height
-            .min(max_height.saturating_sub(80))
-            .max(min_height);
-        let _ = main_win.set_size(tauri::LogicalSize::new(width as f64, height as f64));
+    let is_visible = match (main_win.outer_position(), main_win.outer_size()) {
+        (Ok(position), Ok(size)) => monitors.iter().any(|item| {
+            let monitor_position = item.position();
+            let monitor_size = item.size();
+            let left = i64::from(position.x).max(i64::from(monitor_position.x));
+            let top = i64::from(position.y).max(i64::from(monitor_position.y));
+            let right = (i64::from(position.x) + i64::from(size.width))
+                .min(i64::from(monitor_position.x) + i64::from(monitor_size.width));
+            let bottom = (i64::from(position.y) + i64::from(size.height))
+                .min(i64::from(monitor_position.y) + i64::from(monitor_size.height));
+            right - left >= 80 && bottom - top >= 60
+        }),
+        _ => true,
+    };
+    if !is_visible {
         let _ = main_win.center();
     }
 }
@@ -7566,6 +7864,14 @@ mod tests {
         assert!(lookup_forms("liked").contains(&"like".to_string()));
         assert!(lookup_forms("dogs").contains(&"dog".to_string()));
     }
+
+    #[test]
+    fn resumable_upload_range_uses_only_confirmed_bytes() {
+        assert_eq!(resumable_next_offset(Some("bytes=0-8388607")), 8_388_608);
+        assert_eq!(resumable_next_offset(Some("0-42")), 43);
+        assert_eq!(resumable_next_offset(None), 0);
+        assert_eq!(resumable_next_offset(Some("invalid")), 0);
+    }
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -7646,6 +7952,23 @@ async fn update_discord_presence(
     })
     .await
     .map_err(|e| format!("Discord RPC task failed: {}", e))?
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DriveTransferProgress {
+    operation: String,
+    transferred: u64,
+    total: u64,
+    percent: u8,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DictionaryStorageInfo {
+    path: String,
+    size: u64,
+    available_bytes: Option<u64>,
 }
 
 // Inside an AppImage the bundled GTK and mesa libraries frequently disagree
@@ -7790,6 +8113,10 @@ fn main() {
             get_furigana,
             scan_cursor,
             start_oauth_server,
+            store_google_refresh_token,
+            load_google_refresh_token,
+            delete_google_refresh_token,
+            get_dictionary_storage_info,
             upload_db_to_drive,
             download_db_from_drive,
             get_running_processes,

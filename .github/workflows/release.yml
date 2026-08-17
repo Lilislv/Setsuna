@@ -1,5 +1,10 @@
 name: Release
 
+env:
+  # OAuth client IDs are public identifiers. Keeping it here makes both
+  # Windows and Linux release builds independent from a developer .env.local.
+  VITE_GOOGLE_CLIENT_ID: 785539988278-kssnl36lnqbtm6ojkhooghp2b6rjeeup.apps.googleusercontent.com
+
 on:
   push:
     tags:

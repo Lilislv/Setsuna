@@ -1,0 +1,373 @@
+.drive-settings {
+    display: grid;
+    gap: 16px;
+    width: 100%;
+}
+
+.drive-connection,
+.drive-section,
+.drive-quota-section,
+.drive-auth-fallback {
+    border: 1px solid var(--border-main);
+    background: var(--bg-panel);
+    border-radius: 6px;
+    padding: 18px;
+}
+
+.drive-connection {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.drive-connection > div:first-child {
+    min-width: 0;
+}
+
+.drive-connection strong {
+    color: var(--text-main);
+    font-size: 15px;
+}
+
+.drive-connection p,
+.drive-section-heading p,
+.drive-auth-fallback p {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.55;
+    margin: 5px 0 0;
+}
+
+.drive-status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #777;
+    margin-right: 9px;
+}
+
+.drive-status-dot.is-online {
+    background: #41c36c;
+    box-shadow: 0 0 0 3px rgba(65, 195, 108, 0.12);
+}
+
+.drive-inline-actions,
+.drive-dictionary-actions,
+.drive-callback-row,
+.drive-row-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.btn-danger-outline {
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid rgba(255, 88, 88, 0.42);
+    border-radius: 5px;
+    background: transparent;
+    color: #ff6d6d;
+    cursor: pointer;
+}
+
+.btn-danger-outline:hover:not(:disabled) {
+    background: rgba(255, 88, 88, 0.08);
+}
+
+.btn-danger-outline:disabled,
+.drive-settings button:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.drive-section-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 14px;
+}
+
+.drive-section-heading h3 {
+    color: var(--text-main);
+    font-size: 15px;
+    margin: 0;
+}
+
+.drive-section-heading > strong {
+    color: var(--text-main);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.drive-quota-track,
+.drive-transfer-track {
+    height: 6px;
+    overflow: hidden;
+    border-radius: 3px;
+    background: var(--bg-main);
+}
+
+.drive-quota-track > span,
+.drive-transfer-track > span {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    background: #4fa6ff;
+    transition: width 180ms ease;
+}
+
+.drive-check-row,
+.drive-warning-check,
+.drive-tab-picker label,
+.drive-restore-tabs label {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--text-main);
+    font-size: 13px;
+}
+
+.drive-check-row {
+    min-height: 36px;
+}
+
+.drive-tab-picker,
+.drive-restore-tabs {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 7px 12px;
+    max-height: 190px;
+    overflow: auto;
+    border-top: 1px solid var(--border-main);
+    border-bottom: 1px solid var(--border-main);
+    padding: 12px 2px;
+}
+
+.drive-picker-heading {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 3px;
+}
+
+.drive-picker-heading small {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.drive-primary-action {
+    margin-top: 14px;
+    width: 100%;
+}
+
+.drive-count {
+    min-width: 28px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--border-main);
+    color: var(--text-muted);
+    font-size: 11px;
+    border-radius: 4px;
+}
+
+.drive-archive-list {
+    display: grid;
+    gap: 6px;
+    max-height: 330px;
+    overflow: auto;
+}
+
+.drive-backup-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    padding: 10px 11px;
+    border: 1px solid var(--border-main);
+    background: var(--bg-main);
+    border-radius: 4px;
+}
+
+.drive-backup-row.is-selected {
+    border-color: #4fa6ff;
+}
+
+.drive-backup-row > div:first-child {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+}
+
+.drive-backup-row strong,
+.drive-backup-row span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.drive-backup-row strong {
+    color: var(--text-main);
+    font-size: 12px;
+}
+
+.drive-backup-row span {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.drive-icon-danger,
+.drive-restore-title button {
+    width: 30px;
+    height: 30px;
+    border: 1px solid rgba(255, 80, 80, 0.35);
+    color: #ff6666;
+    background: transparent;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.drive-empty {
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 22px;
+    text-align: center;
+    border: 1px dashed var(--border-main);
+}
+
+.drive-restore-panel {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-main);
+    display: grid;
+    gap: 10px;
+}
+
+.drive-restore-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    color: var(--text-main);
+    min-width: 0;
+}
+
+.drive-restore-title strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.drive-storage-comparison {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.drive-storage-comparison > div {
+    display: grid;
+    gap: 4px;
+    border: 1px solid var(--border-main);
+    background: var(--bg-main);
+    padding: 12px;
+    border-radius: 4px;
+}
+
+.drive-storage-comparison span,
+.drive-storage-comparison small {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.drive-storage-comparison strong {
+    color: var(--text-main);
+    font-size: 16px;
+}
+
+.drive-warning-check {
+    margin: 12px 0;
+    padding: 10px 12px;
+    border-left: 3px solid #e7b64b;
+    background: rgba(231, 182, 75, 0.07);
+}
+
+.drive-transfer {
+    display: grid;
+    gap: 6px;
+    margin: 12px 0;
+}
+
+.drive-transfer > div:first-child {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-main);
+    font-size: 12px;
+}
+
+.drive-transfer small {
+    color: var(--text-muted);
+}
+
+.drive-auth-fallback details {
+    margin-top: 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.drive-callback-row .modern-input {
+    min-width: 0;
+    flex: 1;
+}
+
+.drive-message {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    padding: 10px 12px;
+    border: 1px solid var(--border-main);
+    border-radius: 4px;
+    background: var(--bg-side);
+    color: var(--text-main);
+    font-size: 12px;
+}
+
+@media (max-width: 760px) {
+    .drive-connection,
+    .drive-section-heading {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .drive-inline-actions,
+    .drive-dictionary-actions,
+    .drive-callback-row {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .drive-inline-actions > button,
+    .drive-dictionary-actions > button,
+    .drive-callback-row > button {
+        width: 100%;
+    }
+
+    .drive-storage-comparison {
+        grid-template-columns: 1fr;
+    }
+
+    .drive-backup-row {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .drive-row-actions {
+        justify-content: flex-end;
+    }
+}

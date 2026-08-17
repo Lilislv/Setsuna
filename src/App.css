@@ -203,50 +203,6 @@ body {
     font-family: var(--font-stack);
 }
 
-.drive-coming-soon {
-    min-height: 430px;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--border-main);
-    border-radius: 8px;
-    background: var(--bg-panel);
-    padding: 28px;
-}
-
-.drive-coming-soon-inner {
-    width: min(500px, 100%);
-    text-align: center;
-}
-
-.drive-mark {
-    width: 48px;
-    height: 48px;
-    margin: 0 auto 18px;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--border-main);
-    border-radius: 8px;
-    color: var(--accent-blue);
-    font-size: 18px;
-    font-weight: 900;
-}
-
-.drive-soon-label {
-    color: var(--accent-blue);
-    font-size: 11px;
-    font-weight: 900;
-    text-transform: uppercase;
-}
-
-.drive-coming-soon h2 { margin: 7px 0 10px; color: var(--text-main); font-size: 22px; }
-.drive-coming-soon p { max-width: 420px; margin: 0 auto 24px; color: var(--text-muted); font-size: 13px; line-height: 1.6; }
-.drive-tester-access { border-top: 1px solid var(--border-main); padding-top: 16px; }
-.drive-tester-access summary { color: var(--text-muted); font-size: 12px; cursor: pointer; }
-.drive-tester-access > div { display: flex; gap: 8px; margin-top: 14px; }
-.drive-tester-access input { flex: 1; min-width: 0; }
-.drive-tester-access button { padding: 8px 14px; }
-.drive-tester-access > span { display: block; margin-top: 8px; color: #ff6b6b; font-size: 11px; text-align: left; }
-
     .header-btn:hover {
         color: var(--text-main);
         background: var(--hover-bg);

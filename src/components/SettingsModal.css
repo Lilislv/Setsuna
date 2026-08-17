@@ -19,7 +19,7 @@
 .settings-window {
     width: min(1500px, calc(100vw - 48px));
     height: min(920px, calc(100vh - 48px));
-    min-height: 580px;
+    min-height: min(580px, calc(100vh - 48px));
     display: flex;
     flex-direction: column;
     overflow: hidden;
