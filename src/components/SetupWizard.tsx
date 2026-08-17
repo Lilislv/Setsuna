@@ -91,11 +91,23 @@ const DEFAULT_ANKI_CONNECT_CONFIG = {
     ignoreOriginList: [],
     webBindAddress: "127.0.0.1",
     webBindPort: 8765,
-    webCorsOriginList: ["tauri://localhost"],
+    webCorsOriginList: [
+        "http://localhost",
+        "http://tauri.localhost",
+        "tauri://localhost",
+        "http://127.0.0.1:1420",
+        "http://localhost:1420",
+    ],
 };
 
 const getRequiredAnkiCorsOrigins = () => {
-    const origins = ["tauri://localhost"];
+    const origins = [
+        "http://localhost",
+        "http://tauri.localhost",
+        "tauri://localhost",
+        "http://127.0.0.1:1420",
+        "http://localhost:1420",
+    ];
     const currentOrigin = typeof window !== "undefined" && window.location?.origin ? window.location.origin : "";
     const isDevOrigin = currentOrigin.startsWith("http://localhost") || currentOrigin.startsWith("http://127.0.0.1");
 
@@ -107,7 +119,9 @@ const formatConfig = (config: unknown) => JSON.stringify(config, null, 2);
 
 const mergeAnkiConnectConfig = (rawConfig: string) => {
     const parsed = rawConfig.trim() ? JSON.parse(rawConfig) : {};
-    const currentCors = Array.isArray(parsed.webCorsOriginList) ? parsed.webCorsOriginList : [];
+    const currentCors = Array.isArray(parsed.webCorsOriginList)
+        ? parsed.webCorsOriginList.filter((origin: unknown) => origin !== "*")
+        : [];
 
     const next = {
         ...parsed,

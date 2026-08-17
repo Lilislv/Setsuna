@@ -44,6 +44,7 @@ tauri-plugin-process = "2.3.1"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
 screenshots = "0.8.10"
 xcap = "0.9.4"
 discord-rich-presence = "1.1.0"

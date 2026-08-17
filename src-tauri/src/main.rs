@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OpenFlags};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -17,12 +17,12 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime as StdSystemTime, UNIX_EPOCH};
 use sysinfo::System;
-use tauri::utils::config::Color;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::menu::{Menu, MenuItem};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::utils::config::Color;
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -96,7 +96,7 @@ pub struct TextSyncState {
 }
 
 pub struct DiscordPresenceState {
-    pub runtime: Mutex<Option<DiscordPresenceRuntime>>,
+    pub runtime: Arc<Mutex<Option<DiscordPresenceRuntime>>>,
 }
 
 static OAUTH_SERVER_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
@@ -123,8 +123,16 @@ fn launch_anki() -> Result<(), String> {
     {
         let mut candidates = Vec::new();
         if let Ok(path) = env::var("LOCALAPPDATA") {
+            let local_app_data = PathBuf::from(&path);
             candidates.push(
-                PathBuf::from(path)
+                local_app_data
+                    .join("AnkiProgramFiles")
+                    .join(".venv")
+                    .join("Scripts")
+                    .join("anki.exe"),
+            );
+            candidates.push(
+                local_app_data
                     .join("Programs")
                     .join("Anki")
                     .join("anki.exe"),
@@ -172,13 +180,26 @@ fn launch_anki() -> Result<(), String> {
 
 #[tauri::command]
 async fn anki_request(action: String, params: Value) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let mut payload = serde_json::json!({
+        "action": action,
+        "version": 6,
+        "params": params,
+    });
+    if let Some(api_key) = read_ankiconnect_api_key() {
+        payload["key"] = Value::String(api_key);
+    }
+
+    // AnkiConnect is strictly local. Bypassing system/VPN proxies avoids sending
+    // 127.0.0.1 traffic through a proxy which can reply with an unrelated 403.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|error| format!("Could not create AnkiConnect client: {error}"))?;
+    let response = client
         .post("http://127.0.0.1:8765")
-        .json(&serde_json::json!({
-            "action": action,
-            "version": 6,
-            "params": params,
-        }))
+        .header(reqwest::header::ORIGIN, "http://localhost")
+        .json(&payload)
         .send()
         .await
         .map_err(|error| format!("AnkiConnect is unavailable: {error}"))?;
@@ -198,6 +219,131 @@ async fn anki_request(action: String, params: Value) -> Result<Value, String> {
         return Err(error.to_string());
     }
     Ok(payload.get("result").cloned().unwrap_or(Value::Null))
+}
+
+const SETSUNA_ANKI_ORIGINS: [&str; 5] = [
+    "http://localhost",
+    "http://tauri.localhost",
+    "tauri://localhost",
+    "http://127.0.0.1:1420",
+    "http://localhost:1420",
+];
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnkiConnectConfigResult {
+    path: String,
+    changed: bool,
+    requires_anki_restart: bool,
+    origins: Vec<String>,
+}
+
+fn ankiconnect_config_path() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let base = env::var_os("APPDATA").map(PathBuf::from).map(|path| path.join("Anki2"));
+
+    #[cfg(target_os = "macos")]
+    let base = env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|path| path.join("Library").join("Application Support").join("Anki2"));
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let base = env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(PathBuf::from).map(|path| path.join(".local").join("share")))
+        .map(|path| path.join("Anki2"));
+
+    base.map(|path| path.join("addons21").join("2055492159").join("config.json"))
+}
+
+fn read_ankiconnect_config() -> Option<(PathBuf, Value)> {
+    let path = ankiconnect_config_path()?;
+    let contents = fs::read_to_string(&path).ok()?;
+    let config = serde_json::from_str(&contents).ok()?;
+    Some((path, config))
+}
+
+fn read_ankiconnect_api_key() -> Option<String> {
+    let (_, config) = read_ankiconnect_config()?;
+    config
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+}
+
+#[tauri::command]
+fn configure_ankiconnect() -> Result<AnkiConnectConfigResult, String> {
+    let path = ankiconnect_config_path().ok_or_else(|| {
+        "Could not locate the Anki data directory on this computer.".to_string()
+    })?;
+    if !path.is_file() {
+        return Err(format!(
+            "AnkiConnect config was not found at {}. Install add-on 2055492159 and restart Anki first.",
+            path.display()
+        ));
+    }
+
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+    let mut config: Value = serde_json::from_str(&contents)
+        .map_err(|error| format!("AnkiConnect config is not valid JSON: {error}"))?;
+    let original_config = config.clone();
+    let object = config
+        .as_object_mut()
+        .ok_or_else(|| "AnkiConnect config must be a JSON object.".to_string())?;
+
+    let mut origins = object
+        .get("webCorsOriginList")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    origins.retain(|value| value.as_str() != Some("*"));
+    for origin in SETSUNA_ANKI_ORIGINS {
+        if !origins.iter().any(|value| value.as_str() == Some(origin)) {
+            origins.push(Value::String(origin.to_string()));
+        }
+    }
+    object.insert("webCorsOriginList".to_string(), Value::Array(origins));
+    object
+        .entry("webBindAddress".to_string())
+        .or_insert_with(|| Value::String("127.0.0.1".to_string()));
+    object
+        .entry("webBindPort".to_string())
+        .or_insert_with(|| Value::Number(8765.into()));
+
+    if let Some(ignored) = object.get_mut("ignoreOriginList").and_then(Value::as_array_mut) {
+        ignored.retain(|value| {
+            value
+                .as_str()
+                .map(|origin| !SETSUNA_ANKI_ORIGINS.contains(&origin))
+                .unwrap_or(true)
+        });
+    } else {
+        object.insert("ignoreOriginList".to_string(), Value::Array(Vec::new()));
+    }
+
+    let updated = serde_json::to_string_pretty(&config)
+        .map_err(|error| format!("Could not serialize AnkiConnect config: {error}"))?;
+    let changed = config != original_config;
+    if changed {
+        let backup_path = path.with_extension("json.setsuna-backup");
+        if !backup_path.exists() {
+            fs::copy(&path, &backup_path).map_err(|error| {
+                format!("Could not back up AnkiConnect config: {error}")
+            })?;
+        }
+        fs::write(&path, format!("{updated}\n"))
+            .map_err(|error| format!("Could not write AnkiConnect config: {error}"))?;
+    }
+
+    Ok(AnkiConnectConfigResult {
+        path: path.display().to_string(),
+        changed,
+        requires_anki_restart: changed,
+        origins: SETSUNA_ANKI_ORIGINS.iter().map(|origin| origin.to_string()).collect(),
+    })
 }
 
 fn oauth_server_port_state() -> &'static Mutex<Option<u16>> {
@@ -2554,20 +2700,34 @@ fn close_discord_runtime(runtime: &mut Option<DiscordPresenceRuntime>) {
     }
 }
 
-#[tauri::command]
-fn clear_discord_presence(state: tauri::State<'_, DiscordPresenceState>) -> Result<(), String> {
-    let mut runtime = state.runtime.lock().map_err(|e| e.to_string())?;
+fn clear_discord_runtime_mutex(
+    runtime: &Mutex<Option<DiscordPresenceRuntime>>,
+) -> Result<(), String> {
+    let mut runtime = runtime.lock().map_err(|e| e.to_string())?;
     close_discord_runtime(&mut runtime);
     Ok(())
 }
 
+fn clear_discord_runtime(state: &DiscordPresenceState) -> Result<(), String> {
+    clear_discord_runtime_mutex(&state.runtime)
+}
+
 #[tauri::command]
-fn update_discord_presence(
-    payload: DiscordPresencePayload,
+async fn clear_discord_presence(
     state: tauri::State<'_, DiscordPresenceState>,
 ) -> Result<(), String> {
+    let runtime = Arc::clone(&state.runtime);
+    tauri::async_runtime::spawn_blocking(move || clear_discord_runtime_mutex(&runtime))
+        .await
+        .map_err(|e| format!("Discord RPC task failed: {}", e))?
+}
+
+fn update_discord_presence_blocking(
+    payload: DiscordPresencePayload,
+    runtime: &Mutex<Option<DiscordPresenceRuntime>>,
+) -> Result<(), String> {
     let client_id = payload.client_id.trim().to_string();
-    let mut runtime = state.runtime.lock().map_err(|e| e.to_string())?;
+    let mut runtime = runtime.lock().map_err(|e| e.to_string())?;
 
     if !payload.enabled || client_id.is_empty() {
         close_discord_runtime(&mut runtime);
@@ -3130,6 +3290,7 @@ fn is_common_japanese_particle(c: char) -> bool {
             | '\u{3078}' // へ
             | '\u{3067}' // で
             | '\u{3068}' // と
+            | '\u{306E}' // の
             | '\u{3082}' // も
     )
 }
@@ -3208,6 +3369,14 @@ fn scan_end_boundary_penalty(chars: &[char], start: usize, len: usize, cursor: u
         .any(|suffix| tail.starts_with(suffix))
         {
             return 2;
+        }
+
+        let next = chars[end];
+        if is_common_japanese_particle(next) {
+            return 0;
+        }
+        if is_hiragana_char(next) && chars[start..end].iter().any(|c| is_kanji(c)) {
+            return 1;
         }
     }
     let last = chars.get(end - 1).copied().unwrap_or('\0');
@@ -6882,6 +7051,41 @@ mod tests {
     }
 
     #[test]
+    fn scan_cursor_prefers_full_renyoukei_before_no_particle() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, 'test', 'n')",
+            params![
+                "\u{7A81}\u{3063}\u{5F35}",
+                "\u{3064}\u{3063}\u{3071}\u{308A}",
+                "short dictionary headword"
+            ],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, 'test', 'v5r vt')",
+            params![
+                "\u{7A81}\u{3063}\u{5F35}\u{308B}",
+                "\u{3064}\u{3063}\u{3071}\u{308B}",
+                "to brace"
+            ],
+        )
+        .unwrap();
+
+        let sentence = "\u{7A81}\u{3063}\u{5F35}\u{308A}\u{306E}\u{56DE}\u{8EE2}\u{901F}\u{5EA6}";
+        for cursor in 0..4 {
+            let result = scan_cursor_in_db(&db, sentence, cursor).unwrap();
+            assert_eq!(result.match_start, 0, "cursor={cursor}");
+            assert_eq!(result.match_len, 4, "cursor={cursor}");
+            assert_eq!(result.word, "\u{7A81}\u{3063}\u{5F35}\u{308A}", "cursor={cursor}");
+            assert!(result
+                .entries
+                .iter()
+                .any(|entry| entry.term == "\u{7A81}\u{3063}\u{5F35}\u{308B}"));
+        }
+    }
+
+    #[test]
     fn scan_cursor_rejects_deinflected_noun_homophone() {
         let db = test_db();
         db.execute(
@@ -7057,10 +7261,14 @@ fn show_main_from_tray(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+    let _ = app.emit("setsuna://tray-state", false);
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn hide_windows_to_tray(app: &AppHandle) {
+    let discord_state = app.state::<DiscordPresenceState>();
+    let _ = clear_discord_runtime(discord_state.inner());
+    let _ = app.emit("setsuna://tray-state", true);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
@@ -7113,6 +7321,19 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[tauri::command]
+async fn update_discord_presence(
+    payload: DiscordPresencePayload,
+    state: tauri::State<'_, DiscordPresenceState>,
+) -> Result<(), String> {
+    let runtime = Arc::clone(&state.runtime);
+    tauri::async_runtime::spawn_blocking(move || {
+        update_discord_presence_blocking(payload, &runtime)
+    })
+    .await
+    .map_err(|e| format!("Discord RPC task failed: {}", e))?
+}
+
 fn main() {
     install_panic_logger();
 
@@ -7131,7 +7352,7 @@ fn main() {
         seq: Arc::new(Mutex::new(0)),
     };
     let discord_presence_state = DiscordPresenceState {
-        runtime: Mutex::new(None),
+        runtime: Arc::new(Mutex::new(None)),
     };
     let diagnostics_state = DiagnosticsState {
         frontend: Mutex::new(None),
@@ -7146,7 +7367,15 @@ fn main() {
         paused: AtomicBool::new(true),
     };
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default();
+
+    // Register this first so a repeated launch exits before creating windows or a tray icon.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        show_main_from_tray(app);
+    }));
+
+    let builder = builder.plugin(tauri_plugin_opener::init());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(
@@ -7212,6 +7441,7 @@ fn main() {
             get_ffmpeg_status,
             launch_anki,
             anki_request,
+            configure_ankiconnect,
             extract_player_clip,
             delete_dictionary,
             delete_dictionaries,

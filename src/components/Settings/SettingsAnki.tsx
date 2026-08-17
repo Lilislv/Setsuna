@@ -22,6 +22,13 @@ interface SettingsAnkiProps {
     isOpen: boolean;
 }
 
+type AnkiConnectConfigResult = {
+    path: string;
+    changed: boolean;
+    requiresAnkiRestart: boolean;
+    origins: string[];
+};
+
 const labels = {
     ru: {
         connected: "подключено",
@@ -179,6 +186,7 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
     const [ankiConnected, setAnkiConnected] = useState(false);
     const [isConnecting, setIsConnecting] = useState(false);
     const [connectionError, setConnectionError] = useState("");
+    const [ankiSetupMessage, setAnkiSetupMessage] = useState("");
     const [addonCodeCopied, setAddonCodeCopied] = useState(false);
     const [ankiBackend, setAnkiBackend] = useState<"ankiconnect" | "ankidroid">("ankiconnect");
     const [ankiDroidStatus, setAnkiDroidStatus] = useState<{
@@ -258,10 +266,44 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
 
     const launchAnkiAndConnect = async () => {
         setConnectionError("");
+        setAnkiSetupMessage("");
+        let configResult: AnkiConnectConfigResult | null = null;
+        let configError = "";
         try {
+            try {
+                configResult = await invoke<AnkiConnectConfigResult>("configure_ankiconnect");
+            } catch (error) {
+                configError = String(error);
+            }
             await invoke("launch_anki");
-            await new Promise((resolve) => window.setTimeout(resolve, 1800));
-            await loadAnkiData();
+            let serviceReady = false;
+            for (let attempt = 0; attempt < 20; attempt += 1) {
+                await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 1200 : 1000));
+                try {
+                    await invokeAnki("version");
+                    serviceReady = true;
+                    break;
+                } catch {
+                    // Anki can take a while to load the profile and start AnkiConnect.
+                }
+            }
+            if (!serviceReady) {
+                throw new Error(settings.appLanguage === "en"
+                    ? "Anki started, but AnkiConnect did not open port 8765 within 20 seconds. Check that add-on 2055492159 is enabled, then restart Anki."
+                    : "Anki запущен, но AnkiConnect не открыл порт 8765 за 20 секунд. Проверьте, что аддон 2055492159 включён, затем перезапустите Anki.");
+            }
+            const connected = await loadAnkiData();
+            if (connected) {
+                setAnkiSetupMessage(settings.appLanguage === "en"
+                    ? "AnkiConnect is configured and ready."
+                    : "AnkiConnect настроен и готов к работе.");
+            } else if (configResult?.requiresAnkiRestart) {
+                setAnkiSetupMessage(settings.appLanguage === "en"
+                    ? "Setsuna fixed the AnkiConnect config. Fully close and reopen Anki once, then check the connection again."
+                    : "Setsuna исправила конфиг AnkiConnect. Полностью закройте и снова откройте Anki один раз, затем повторите проверку.");
+            } else if (configError) {
+                setConnectionError((current) => `${current || t.connectionFailed}\n${configError}`);
+            }
         } catch (error) {
             setConnectionError(String(error));
         }
@@ -423,14 +465,18 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
                                 {t.openAnki}
                             </button>
                         )}
-                        <button type="button" onClick={() => loadAnkiData()} disabled={isConnecting} className="btn-primary" style={{ padding: "8px 14px", fontSize: 12, opacity: isConnecting ? 0.65 : 1 }}>
+                        <button type="button" onClick={ankiConnected ? () => loadAnkiData() : launchAnkiAndConnect} disabled={isConnecting} className="btn-primary" style={{ padding: "8px 14px", fontSize: 12, opacity: isConnecting ? 0.65 : 1 }}>
                             {isConnecting ? t.connecting : ankiConnected ? t.refresh : t.connect}
                         </button>
                     </div>
                 </div>
 
                 {connectionError && !ankiConnected && (
-                    <div style={{ marginTop: 12, color: "#ff8b8b", fontSize: 12, overflowWrap: "anywhere" }}>{connectionError}</div>
+                    <div style={{ marginTop: 12, color: "#ff8b8b", fontSize: 12, overflowWrap: "anywhere", whiteSpace: "pre-line" }}>{connectionError}</div>
+                )}
+
+                {ankiSetupMessage && (
+                    <div style={{ marginTop: 12, color: ankiConnected ? "#69cf83" : "#e9bd65", fontSize: 12, lineHeight: 1.55 }}>{ankiSetupMessage}</div>
                 )}
 
                 {ankiBackend === "ankidroid" && ankiDroidStatus && (

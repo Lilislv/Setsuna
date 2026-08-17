@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { ReactNode } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import releaseInfo from "../release-info.json";
 import { invoke } from "@tauri-apps/api/core";
@@ -8,8 +9,11 @@ import SetupWizard from "./SetupWizard";
 import SettingsLookup from "./Settings/SettingsLookup";
 import SettingsAnki from "./Settings/SettingsAnki";
 import SettingsCloud from "./Settings/SettingsCloud";
+import SettingsDiscord from "./Settings/SettingsDiscord";
+import { IconArchive, IconBookTab, IconClose, IconCloud, IconEye, IconImport, IconMessage, IconRefresh, IconSearch, IconTextTab } from "./Icons";
 import { DEFAULT_SETTINGS } from "../utils/constants";
 import { getTranslator } from "../utils/i18n";
+import "./SettingsModal.css";
 
 export interface TextReplacement { id: string; active: boolean; pattern: string; replacement: string; isRegex: boolean; }
 export interface WsConfig { id: string; name: string; url: string; active: boolean; }
@@ -64,6 +68,37 @@ interface SettingsModalProps {
 
 type SettingsTab = 'text' | 'sync' | 'archive' | 'jl' | 'epub' | 'lookup' | 'anki' | 'cloud' | 'player' | 'discord' | 'updates';
 
+interface SettingsNavButtonProps {
+  active: boolean;
+  icon: ReactNode;
+  label: string;
+  badge?: string;
+  onClick: () => void;
+}
+
+const SettingsNavButton = ({ active, icon, label, badge, onClick }: SettingsNavButtonProps) => (
+  <button type="button" className={`settings-nav-item${active ? " is-active" : ""}`} onClick={onClick}>
+    <span className="settings-nav-icon" aria-hidden="true">{icon}</span>
+    <span className="settings-nav-label">{label}</span>
+    {badge && <span className="settings-nav-badge">{badge}</span>}
+  </button>
+);
+
+const SettingsSubNavButton = ({ active, label, onClick }: Omit<SettingsNavButtonProps, "icon" | "badge">) => (
+  <button type="button" className={`settings-subnav-item${active ? " is-active" : ""}`} onClick={onClick}>
+    {label}
+  </button>
+);
+
+const DRIVE_TEST_ACCESS_STORAGE_KEY = "setsuna-drive-test-access";
+const DRIVE_TEST_ACCESS_HASH = "fcd2b6586247b2ed12bca71f97eb2a79ce2568ac3236f4a829feac9d2adef153";
+
+const sha256Hex = async (value: string) => {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
 interface AccountDevice {
   id?: string;
   deviceId?: string;
@@ -104,6 +139,9 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
   const [isRemoteCaptureChecking, setIsRemoteCaptureChecking] = useState(false);
   const [remoteCaptureStatus, setRemoteCaptureStatus] = useState("");
   const [appVersion, setAppVersion] = useState("");
+  const [driveTesterUnlocked, setDriveTesterUnlocked] = useState(() => localStorage.getItem(DRIVE_TEST_ACCESS_STORAGE_KEY) === "1");
+  const [driveTesterCode, setDriveTesterCode] = useState("");
+  const [driveTesterError, setDriveTesterError] = useState("");
 
   const normalizeWebSocketUrl = (value: string) => {
       const trimmed = value.trim();
@@ -681,24 +719,17 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
 
   useEffect(() => {
       if (!isOpen || !initialSection) return;
-      if (initialSection === 'sync-main') {
-          setActiveTab('sync');
-          setActiveSubTab('sync-main');
-          setHighlightedSection('sync-main');
+      if (initialSection.startsWith('text-') || initialSection === 'sync-main') {
+          setActiveTab('text');
+          const target = initialSection.startsWith('text-') ? initialSection : 'text-src';
+          setActiveSubTab(target);
+          setHighlightedSection(target);
       } else if (initialSection === 'archive-main') {
           setActiveTab('archive');
           setActiveSubTab('archive-main');
           setHighlightedSection('archive-main');
       } else if (initialSection.startsWith('anki-')) {
           setActiveTab('anki');
-          setActiveSubTab(initialSection);
-          setHighlightedSection(initialSection);
-      } else if (initialSection.startsWith('epub-')) {
-          setActiveTab('epub');
-          setActiveSubTab(initialSection);
-          setHighlightedSection(initialSection);
-      } else if (initialSection.startsWith('player-')) {
-          setActiveTab('player');
           setActiveSubTab(initialSection);
           setHighlightedSection(initialSection);
       }
@@ -713,6 +744,34 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
       }, 50);
       setTimeout(() => setHighlightedSection(null), 1000); 
   };
+
+  const unlockDriveTesterMode = async () => {
+      const hash = await sha256Hex(driveTesterCode.trim());
+      if (hash !== DRIVE_TEST_ACCESS_HASH) {
+          setDriveTesterError(settings.appLanguage === 'en' ? 'Invalid tester code.' : 'Неверный код тестера.');
+          return;
+      }
+      localStorage.setItem(DRIVE_TEST_ACCESS_STORAGE_KEY, "1");
+      setDriveTesterUnlocked(true);
+      setDriveTesterCode("");
+      setDriveTesterError("");
+  };
+
+  const isEnglish = settings.appLanguage === 'en';
+  const sectionMeta: Record<SettingsTab, { title: string; description: string }> = {
+      text: { title: t('settings.nav.text'), description: isEnglish ? 'Appearance, text sources and reading behavior' : 'Внешний вид, источники текста и поведение читалки' },
+      sync: { title: 'Setsuna Sync', description: isEnglish ? 'Connected devices and capture' : 'Подключённые устройства и захват' },
+      archive: { title: isEnglish ? 'Archive' : 'Архив', description: isEnglish ? 'Finished and paused reading sessions' : 'Завершённые и отложенные сессии' },
+      jl: { title: 'Setsuna Flow', description: isEnglish ? 'Floating reading mode' : 'Компактный режим чтения поверх окон' },
+      epub: { title: isEnglish ? 'EPUB reader' : 'EPUB-ридер', description: isEnglish ? 'Book reader settings' : 'Настройки чтения книг' },
+      lookup: { title: t('settings.nav.lookup'), description: isEnglish ? 'Lookup window, dictionaries and shortcuts' : 'Окно поиска, словари и горячие клавиши' },
+      anki: { title: 'Anki', description: isEnglish ? 'Cards, decks and screenshots' : 'Карточки, колоды и скриншоты' },
+      cloud: { title: 'Google Drive', description: isEnglish ? 'Private backups and restore' : 'Приватные резервные копии и восстановление' },
+      player: { title: isEnglish ? 'Player' : 'Плеер', description: isEnglish ? 'Video and subtitle settings' : 'Видео и настройки субтитров' },
+      discord: { title: 'Discord', description: isEnglish ? 'Rich Presence and activity preview' : 'Rich Presence и предпросмотр активности' },
+      updates: { title: isEnglish ? 'Updates' : 'Обновления', description: isEnglish ? 'Version and automatic update settings' : 'Версия и параметры автоматического обновления' },
+  };
+  const currentSection = sectionMeta[activeTab];
 
   if (!isOpen) return null;
 
@@ -749,116 +808,69 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           </div>
       )}
 
-      {/* ОВЕРЛЕЙ. Удаляем класс модалки при предпросмотре, чтобы отключить блюр */}
-      <div className={isPreviewMode ? "" : "modal-overlay"} onClick={() => { if (!isPreviewMode) { handleCancel(); onClearLookup(); } }} 
-           style={{
-               position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
-               display: 'flex', alignItems: 'center', justifyContent: 'center',
-               pointerEvents: isPreviewMode ? 'none' : 'auto', 
-               backgroundColor: isPreviewMode ? 'transparent' : 'var(--overlay-bg)',
-               zIndex: 10000,
-               transition: 'background-color 0.2s'
-           }}>
-        
-        {/* ИСПРАВЛЕНИЕ: animation: none убивает CSS анимацию, мешающую opacity: 0 */}
-        <div className="modern-modal" onClick={(e) => { e.stopPropagation(); onClearLookup(); }} 
-             style={{ 
-                 opacity: isPreviewMode ? 0 : 1, 
-                 animation: isPreviewMode ? 'none' : undefined, 
-                 pointerEvents: isPreviewMode ? 'none' : 'auto',
-                 background: 'var(--bg-panel)', color: 'var(--text-main)', border: '1px solid var(--border-main)', 
-                 width: '95vw', maxWidth: '1400px', height: '90vh', minHeight: '600px', display: 'flex', flexDirection: 'column',
-                 transition: 'opacity 0.2s'
-             }}>
-          
-          <div className="modern-header" style={{ borderBottom: '1px solid var(--border-main)', padding: '15px 25px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                  <h1 style={{ fontWeight: 'normal', margin: 0, fontSize: '22px' }}>{t('settings.title')}</h1>
-                  <button onClick={() => setIsPreviewMode(true)} style={{ background: 'var(--bg-side)', color: 'var(--accent-blue)', border: '1px solid var(--accent-blue)', borderRadius: '6px', padding: '6px 12px', cursor: 'pointer', transition: '0.1s', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      👁 {t('settings.preview')}
+      <div className={`settings-overlay${isPreviewMode ? ' is-preview' : ''}`} onClick={() => { if (!isPreviewMode) { handleCancel(); onClearLookup(); } }}>
+        <div className={`settings-window${isPreviewMode ? ' is-preview' : ''}`} onClick={(e) => { e.stopPropagation(); onClearLookup(); }}>
+          <header className="settings-topbar">
+              <div className="settings-title-block">
+                  <span className="settings-eyebrow">Setsuna</span>
+                  <div>
+                      <h1>{currentSection.title}</h1>
+                      <p>{currentSection.description}</p>
+                  </div>
+              </div>
+              <div className="settings-topbar-actions">
+                  <button type="button" className="settings-action" onClick={() => setIsPreviewMode(true)}>
+                      <IconEye /> <span>{t('settings.preview')}</span>
+                  </button>
+                  <button type="button" className="settings-action" onClick={() => setWizardOpen(true)}>
+                      <IconImport /> <span>{t('settings.wizard')}</span>
+                  </button>
+                  <button type="button" className="settings-action is-danger" onClick={() => setResetDialog(true)}>{t('settings.reset')}</button>
+                  <button type="button" className="settings-action is-icon" onClick={handleCancel} title={t('common.close')} aria-label={t('common.close')}>
+                      <IconClose />
                   </button>
               </div>
-              
-              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                  <button
-                      onClick={handleCancel}
-                      style={{
-                          background: 'transparent',
-                          color: 'var(--text-muted)',
-                          border: '1px solid var(--border-main)',
-                          width: '32px',
-                          height: '32px',
-                          borderRadius: '6px',
-                          cursor: 'pointer',
-                          fontSize: '18px',
-                          lineHeight: '1',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                      }}
-                      title={t('common.close')}
-                  >
-                      ×
-                  </button>
+          </header>
 
-                  <button onClick={() => setResetDialog(true)} style={{ background: 'transparent', color: '#ff4444', border: 'none', cursor: 'pointer', transition: '0.2s', fontSize: '13px' }}>{t('settings.reset')}</button>
-                  <button onClick={() => setWizardOpen(true)} style={{ background: 'transparent', color: 'var(--text-main)', border: 'none', cursor: 'pointer', transition: '0.2s', fontSize: '13px' }}>{t('settings.wizard')}</button>
+          <div className="settings-layout">
+            <nav className="settings-navigation" aria-label={isEnglish ? 'Settings sections' : 'Разделы настроек'}>
+              <div className="settings-nav-group">
+                  <span className="settings-nav-heading">{isEnglish ? 'Reading' : 'Чтение'}</span>
+                  <SettingsNavButton active={activeTab === 'text'} icon={<IconTextTab />} label={t('settings.nav.text')} onClick={() => handleNav('text', 'text-app')} />
+                  {activeTab === 'text' && <div className="settings-subnav">
+                      <SettingsSubNavButton active={activeSubTab === 'text-app'} label={t('settings.nav.appearance')} onClick={() => handleNav('text', 'text-app')} />
+                      <SettingsSubNavButton active={activeSubTab === 'text-stats'} label={t('settings.nav.stats')} onClick={() => handleNav('text', 'text-stats')} />
+                      <SettingsSubNavButton active={activeSubTab === 'text-src'} label={t('settings.nav.sources')} onClick={() => handleNav('text', 'text-src')} />
+                      <SettingsSubNavButton active={activeSubTab === 'text-filters'} label={t('settings.nav.filters')} onClick={() => handleNav('text', 'text-filters')} />
+                  </div>}
+                  <SettingsNavButton active={activeTab === 'archive'} icon={<IconArchive />} label={isEnglish ? 'Archive' : 'Архив'} onClick={() => handleNav('archive', 'archive-main')} />
+                  <SettingsNavButton active={activeTab === 'jl'} icon={<IconTextTab />} label="Setsuna Flow" onClick={() => handleNav('jl', 'jl-main')} />
               </div>
 
-          </div>
-          
-          <div className="modern-body" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-            
-            {/* ЛЕВОЕ МЕНЮ */}
-            <div className="modern-sidebar" style={{ borderRight: '1px solid var(--border-main)', flexShrink: 0, width: '240px', overflowY: 'auto', padding: '15px 0' }}>
-              <div onClick={() => handleNav('text', 'text-app')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'text' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'text' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>{t('settings.nav.text')}</div>
-              {activeTab === 'text' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '10px' }}>
-                      <div onClick={() => handleNav('text', 'text-app')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'text-app' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'text-app' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{t('settings.nav.appearance')}</div>
-                      <div onClick={() => handleNav('text', 'text-stats')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'text-stats' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'text-stats' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{t('settings.nav.stats')}</div>
-                      <div onClick={() => handleNav('text', 'text-src')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'text-src' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'text-src' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{t('settings.nav.sources')}</div>
-                      <div onClick={() => handleNav('text', 'text-filters')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'text-filters' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'text-filters' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{t('settings.nav.filters')}</div>
-                  </div>
-              )}
-              <div onClick={() => handleNav('sync', 'sync-main')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'sync' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'sync' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>{settings.appLanguage === 'en' ? 'Setsuna Sync' : 'Setsuna Sync'}</div>
-              <div onClick={() => handleNav('archive', 'archive-main')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'archive' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'archive' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>{settings.appLanguage === 'en' ? 'Archive' : 'Архив'}</div>
-              <div onClick={() => handleNav('jl', 'jl-main')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'jl' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'jl' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>Setsuna Flow</div>
-              <div onClick={() => handleNav('epub', 'epub-reader')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'epub' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'epub' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>{settings.appLanguage === 'en' ? 'EPUB reader' : 'EPUB-читалка'}</div>
-              {activeTab === 'epub' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '10px' }}>
-                      <div onClick={() => handleNav('epub', 'epub-reader')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'epub-reader' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'epub-reader' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{settings.appLanguage === 'en' ? 'Reading view' : 'Вид чтения'}</div>
-                      <div onClick={() => handleNav('epub', 'epub-layout')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'epub-layout' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'epub-layout' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{settings.appLanguage === 'en' ? 'Layout' : 'Раскладка'}</div>
-                  </div>
-              )}
-              <div onClick={() => handleNav('player', 'player-main')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'player' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'player' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>{settings.appLanguage === 'en' ? 'Player' : 'Плеер'}</div>
-              {activeTab === 'player' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '10px' }}>
-                      <div onClick={() => handleNav('player', 'player-main')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'player-main' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'player-main' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{settings.appLanguage === 'en' ? 'Playback' : 'Воспроизведение'}</div>
-                      <div onClick={() => handleNav('player', 'player-mining')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'player-mining' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'player-mining' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{settings.appLanguage === 'en' ? 'Mining' : 'Майнинг'}</div>
-                      <div onClick={() => handleNav('player', 'player-binds')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'player-binds' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'player-binds' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{settings.appLanguage === 'en' ? 'Keybinds' : 'Бинды'}</div>
-                  </div>
-              )}
-              <div onClick={() => handleNav('lookup', 'lookup-win')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'lookup' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'lookup' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>{t('settings.nav.lookup')}</div>
-              {activeTab === 'lookup' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '10px' }}>
-                      <div onClick={() => handleNav('lookup', 'lookup-win')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'lookup-win' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'lookup-win' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{t('settings.nav.lookupWindow')}</div>
-                      <div onClick={() => handleNav('lookup', 'lookup-dicts')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'lookup-dicts' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'lookup-dicts' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{t('settings.nav.dictionaries')}</div>
-                  </div>
-              )}
-              <div onClick={() => handleNav('anki', 'anki-cards')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'anki' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'anki' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>Anki</div>
-              {activeTab === 'anki' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '10px' }}>
-                      <div onClick={() => handleNav('anki', 'anki-cards')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'anki-cards' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'anki-cards' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{t('settings.nav.cards')}</div>
-                      <div onClick={() => handleNav('anki', 'anki-hooks')} style={{ padding: '6px 20px 6px 35px', cursor: 'pointer', fontSize: '13px', color: activeSubTab === 'anki-hooks' ? 'var(--accent-blue)' : 'var(--text-muted)', borderLeft: activeSubTab === 'anki-hooks' ? '3px solid var(--accent-blue)' : '3px solid transparent' }}>{t('settings.nav.screenshots')}</div>
-                  </div>
-              )}
-              <div onClick={() => handleNav('cloud', 'cloud-main')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'cloud' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'cloud' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>{t('settings.nav.cloud')}</div>
-              <div onClick={() => handleNav('discord', 'discord-main')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'discord' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'discord' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>Discord</div>
-              <div onClick={() => handleNav('updates', 'updates-main')} style={{ padding: '8px 20px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', color: activeTab === 'updates' ? 'var(--text-main)' : 'var(--text-muted)', backgroundColor: activeTab === 'updates' ? 'var(--hover-bg)' : 'transparent', transition: '0.1s' }}>{settings.appLanguage === 'en' ? 'Updates' : 'Обновления'}</div>
-            </div>
-            
-            {/* ПРАВАЯ ПАНЕЛЬ С КОНТЕНТОМ */}
-            <div ref={scrollContainerRef} className="modern-content" style={{ background: 'var(--bg-main)', flex: 1, overflowY: 'auto', padding: '25px', position: 'relative' }}>
+              <div className="settings-nav-group">
+                  <span className="settings-nav-heading">{isEnglish ? 'Tools' : 'Инструменты'}</span>
+                  <SettingsNavButton active={activeTab === 'lookup'} icon={<IconSearch />} label={t('settings.nav.lookup')} onClick={() => handleNav('lookup', 'lookup-win')} />
+                  {activeTab === 'lookup' && <div className="settings-subnav">
+                      <SettingsSubNavButton active={activeSubTab === 'lookup-win'} label={t('settings.nav.lookupWindow')} onClick={() => handleNav('lookup', 'lookup-win')} />
+                      <SettingsSubNavButton active={activeSubTab === 'lookup-dicts'} label={t('settings.nav.dictionaries')} onClick={() => handleNav('lookup', 'lookup-dicts')} />
+                  </div>}
+                  <SettingsNavButton active={activeTab === 'anki'} icon={<IconBookTab />} label="Anki" onClick={() => handleNav('anki', 'anki-cards')} />
+                  {activeTab === 'anki' && <div className="settings-subnav">
+                      <SettingsSubNavButton active={activeSubTab === 'anki-cards'} label={t('settings.nav.cards')} onClick={() => handleNav('anki', 'anki-cards')} />
+                      <SettingsSubNavButton active={activeSubTab === 'anki-hooks'} label={t('settings.nav.screenshots')} onClick={() => handleNav('anki', 'anki-hooks')} />
+                  </div>}
+              </div>
+
+              <div className="settings-nav-group">
+                  <span className="settings-nav-heading">{isEnglish ? 'Services' : 'Сервисы'}</span>
+                  <SettingsNavButton active={activeTab === 'cloud'} icon={<IconCloud />} label="Google Drive" badge="Soon" onClick={() => handleNav('cloud', 'cloud-main')} />
+                  <SettingsNavButton active={activeTab === 'discord'} icon={<IconMessage />} label="Discord" onClick={() => handleNav('discord', 'discord-main')} />
+                  <SettingsNavButton active={activeTab === 'updates'} icon={<IconRefresh />} label={isEnglish ? 'Updates' : 'Обновления'} onClick={() => handleNav('updates', 'updates-main')} />
+              </div>
+            </nav>
+
+            <main ref={scrollContainerRef} className="settings-content">
+              <div className="settings-content-inner">
               
               {/* === TEXT TAB === */}
               {activeTab === 'text' && (
@@ -1644,42 +1656,54 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
 
               {/* === CLOUD TAB === */}
               {activeTab === 'cloud' && (
-                  <SettingsCloud 
-                      settings={settings} 
-                      updateSetting={updateSetting} 
-                      onSettingsChange={onSettingsChange}
-                      tabs={tabs} 
-                      setTabs={setTabs} 
-                      syncDictionaries={syncDictionaries} 
-                      highlightedSection={highlightedSection} 
-                      isOpen={activeTab === 'cloud' && isOpen} 
-                  />
+                  driveTesterUnlocked ? (
+                      <div className="tab-content-anim">
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: -14 }}>
+                              <button className="btn-secondary" style={{ padding: '6px 10px', fontSize: 11 }} onClick={() => { localStorage.removeItem(DRIVE_TEST_ACCESS_STORAGE_KEY); setDriveTesterUnlocked(false); }}>
+                                  {settings.appLanguage === 'en' ? 'Leave test mode' : 'Выйти из тестового режима'}
+                              </button>
+                          </div>
+                          <SettingsCloud
+                              settings={settings}
+                              updateSetting={updateSetting}
+                              onSettingsChange={onSettingsChange}
+                              tabs={tabs}
+                              setTabs={setTabs}
+                              syncDictionaries={syncDictionaries}
+                              highlightedSection={highlightedSection}
+                              isOpen={activeTab === 'cloud' && isOpen}
+                          />
+                      </div>
+                  ) : (
+                      <div className="tab-content-anim">
+                          <section className="drive-coming-soon">
+                              <div className="drive-coming-soon-inner">
+                                  <div className="drive-mark">G</div>
+                                  <div className="drive-soon-label">Soon</div>
+                                  <h2>Google Drive</h2>
+                                  <p>
+                                      {settings.appLanguage === 'en'
+                                          ? 'Cloud backup is still being tested. It will become available after data compatibility and recovery are verified.'
+                                          : 'Облачные бэкапы ещё тестируются. Функция откроется после проверки совместимости данных и восстановления.'}
+                                  </p>
+                                  <details className="drive-tester-access">
+                                      <summary>{settings.appLanguage === 'en' ? 'Tester access' : 'Доступ для тестеров'}</summary>
+                                      <div>
+                                          <input className="modern-input" type="password" value={driveTesterCode} onChange={(event) => { setDriveTesterCode(event.target.value); setDriveTesterError(''); }} onKeyDown={(event) => { if (event.key === 'Enter') unlockDriveTesterMode(); }} placeholder={settings.appLanguage === 'en' ? 'Access code' : 'Код доступа'} />
+                                          <button className="btn-primary" onClick={unlockDriveTesterMode}>{settings.appLanguage === 'en' ? 'Unlock' : 'Открыть'}</button>
+                                      </div>
+                                      {driveTesterError && <span>{driveTesterError}</span>}
+                                  </details>
+                              </div>
+                          </section>
+                      </div>
+                  )
               )}
 
               {/* === DISCORD TAB === */}
               {activeTab === 'discord' && (
-                <div className="tab-content-anim">
-                    <div id="discord-main" className={`modern-card ${highlightedSection === 'discord-main' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>
-                        <div className="card-label" style={{ color: 'var(--text-main)' }}>Discord Rich Presence</div>
-                        <label className="checkbox-label" style={{ marginBottom: 14 }}><input type="checkbox" checked={settings.discordEnabled ?? false} onChange={(e) => updateSetting('discordEnabled', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Show Setsuna activity in Discord' : 'Показывать активность Setsuna в Discord'}</label>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 14 }}>
-                            <label className="checkbox-label"><input type="checkbox" checked={settings.discordShowTab ?? true} onChange={(e) => updateSetting('discordShowTab', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Show tab name' : 'Показывать название вкладки'}</label>
-                            <label className="checkbox-label"><input type="checkbox" checked={settings.discordShowTimer ?? true} onChange={(e) => updateSetting('discordShowTimer', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Show session timer' : 'Показывать таймер'}</label>
-                            <label className="checkbox-label"><input type="checkbox" checked={settings.discordShowStats ?? true} onChange={(e) => updateSetting('discordShowStats', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Show reading stats' : 'Показывать статистику'}</label>
-                        </div>
-                        <details style={{ borderTop: '1px solid var(--border-main)', paddingTop: 12 }}>
-                            <summary style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>{settings.appLanguage === 'en' ? 'Advanced' : 'Дополнительно'}</summary>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 12 }}>
-                                <label className="checkbox-label"><input type="checkbox" checked={settings.discordShowPaused ?? true} onChange={(e) => updateSetting('discordShowPaused', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Paused state' : 'Паузу'}</label>
-                                <label className="checkbox-label"><input type="checkbox" checked={settings.discordShowProgress ?? true} onChange={(e) => updateSetting('discordShowProgress', e.target.checked)} /> {settings.appLanguage === 'en' ? 'EPUB progress' : 'Прогресс EPUB'}</label>
-                                <label className="checkbox-label"><input type="checkbox" checked={settings.discordShowButtons ?? false} onChange={(e) => updateSetting('discordShowButtons', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Buttons' : 'Кнопки'}</label>
-                                <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-                                    App ID
-                                    <input type="text" className="modern-input" value={settings.discordClientId || ''} onChange={(e) => updateSetting('discordClientId', e.target.value)} placeholder="1498569429045215302" style={{ marginTop: 6 }} />
-                                </label>
-                            </div>
-                        </details>
-                    </div>
+                <div className="tab-content-anim" id="discord-main">
+                    <SettingsDiscord settings={settings} tabs={tabs} updateSetting={updateSetting} />
                 </div>
               )}
 
@@ -1718,7 +1742,8 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                 </div>
               )}
 
-            </div>
+              </div>
+            </main>
           </div>
         </div>
       </div>

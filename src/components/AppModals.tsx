@@ -37,10 +37,20 @@ export const NoticeModal = ({ notice, setNotice, language = 'ru' }: any) => {
 };
 export const ImportProgressModal = ({ jsonProgress, dictProgress, language = 'ru' }: any) => {
     const t = getTranslator(language as AppLanguage);
+    const progressOverlayStyle = {
+        position: 'fixed' as const,
+        inset: 0,
+        width: '100vw',
+        height: '100vh',
+        zIndex: 100002,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+    };
 
     if (jsonProgress) {
         return (
-            <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="modal-overlay" style={progressOverlayStyle} role="status" aria-live="polite">
                 <div className="modern-modal" style={{ background: 'var(--bg-panel)', padding: '30px', borderRadius: '8px', width: '350px', height: 'auto', minHeight: 'auto', display: 'block', textAlign: 'center', border: '1px solid var(--border-main)' }}>
                     <h3 style={{ marginTop: 0, color: 'var(--text-main)', fontSize: '18px', fontWeight: 'normal' }}>{t('modal.importText')}</h3>
                     <div style={{ width: '100%', height: '8px', backgroundColor: 'var(--bg-main)', borderRadius: '4px', overflow: 'hidden', margin: '20px 0' }}>
@@ -54,7 +64,7 @@ export const ImportProgressModal = ({ jsonProgress, dictProgress, language = 'ru
 
     if (dictProgress) {
         return (
-            <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="modal-overlay" style={progressOverlayStyle} role="status" aria-live="polite">
                 <div className="modern-modal" style={{ background: 'var(--bg-panel)', padding: '30px', borderRadius: '8px', width: '400px', height: 'auto', minHeight: 'auto', display: 'block', textAlign: 'center', border: '1px solid var(--border-main)' }}>
                     <div style={{ color: '#4CAF50', fontSize: '14px', marginBottom: '8px', fontWeight: 'bold' }}>
                         {dictProgress.total_dicts > 1 ? t('modal.importCollection', { count: dictProgress.total_dicts }) : t('modal.importDictionary')}

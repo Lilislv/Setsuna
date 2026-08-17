@@ -20,6 +20,7 @@ import { getTranslator } from "./utils/i18n";
 import { ConfirmDialogModal, ImportProgressModal, ExportModal, NoticeModal } from "./components/AppModals";
 import { SearchBar, TopBar, BrowserSidebar, MobileLayout } from "./components/AppLayout";
 import SetupWizard from "./components/SetupWizard";
+import StartupSplash from "./components/StartupSplash";
 import HomeScreen from "./components/HomeScreen";
 import PlayerSkeleton from "./components/PlayerSkeleton";
 import WorkspaceShell from "./components/WorkspaceShell";
@@ -72,17 +73,29 @@ const stripLegacyOverlaySettings = <T extends Record<string, any>>(settings: T):
     return settings;
 };
 
+const APP_LANGUAGE_STORAGE_KEY = 'setsuna-app-language';
+const readStoredAppLanguage = (): AppSettings['appLanguage'] | undefined => {
+    const value = localStorage.getItem(APP_LANGUAGE_STORAGE_KEY);
+    return value === 'ru' || value === 'en' ? value : undefined;
+};
+
 const readStoredSettings = (): AppSettings => {
     try {
         const saved = localStorage.getItem('txthk-settings');
-        if (!saved) return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS });
+        const storedLanguage = readStoredAppLanguage();
+        const languageOverride = storedLanguage ? { appLanguage: storedLanguage } : {};
+        if (!saved) return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS, ...languageOverride });
 
         const value = JSON.parse(saved);
         const overrides = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-        return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS, ...overrides });
+        return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS, ...overrides, ...languageOverride });
     } catch (error) {
         console.warn('Failed to read saved settings; defaults will be used', error);
-        return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS });
+        const storedLanguage = readStoredAppLanguage();
+        return stripLegacyOverlaySettings({
+            ...DEFAULT_SETTINGS,
+            ...(storedLanguage ? { appLanguage: storedLanguage } : {}),
+        });
     }
 };
 
@@ -286,6 +299,7 @@ export default function App() {
     const discordLastPayloadRef = useRef("");
     const discordFailureCountRef = useRef(0);
     const discordDisabledUntilRef = useRef(0);
+    const [isInTray, setIsInTray] = useState(false);
 
     const [isSearchOpen, setIsSearchOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
@@ -560,9 +574,27 @@ export default function App() {
     const isResizingRef = useRef(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isAppLoaded, setIsAppLoaded] = useState(false);
+    const [splashMinimumElapsed, setSplashMinimumElapsed] = useState(false);
+    const [splashPhase, setSplashPhase] = useState<'visible' | 'leaving' | 'hidden'>('visible');
     const [updateDialog, setUpdateDialog] = useState<UpdateDialogState | null>(null);
     const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
     const isCheckingUpdateRef = useRef(false);
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => setSplashMinimumElapsed(true), 1850);
+        return () => window.clearTimeout(timer);
+    }, []);
+
+    useEffect(() => {
+        if (!isAppLoaded || !splashMinimumElapsed || splashPhase !== 'visible') return;
+        setSplashPhase('leaving');
+    }, [isAppLoaded, splashMinimumElapsed, splashPhase]);
+
+    useEffect(() => {
+        if (splashPhase !== 'leaving') return;
+        const timer = window.setTimeout(() => setSplashPhase('hidden'), 600);
+        return () => window.clearTimeout(timer);
+    }, [splashPhase]);
 
     const activeTab = tabs.find((t) => t.id === activeTabId);
     const textHookerTabs = useMemo(
@@ -590,12 +622,21 @@ export default function App() {
     });
 
     useEffect(() => {
+        let unlisten: UnlistenFn | undefined;
+        listen<boolean>("setsuna://tray-state", (event) => {
+            setIsInTray(event.payload);
+            discordLastPayloadRef.current = "";
+        }).then((stop) => { unlisten = stop; }).catch(() => {});
+        return () => unlisten?.();
+    }, []);
+
+    useEffect(() => {
         if (!isAppLoaded) return;
 
         const sendPresence = async () => {
             if (Date.now() < discordDisabledUntilRef.current) return;
 
-            if (!settings.discordEnabled || !settings.discordClientId?.trim() || !activeTab) {
+            if (isInTray || !settings.discordEnabled || !settings.discordClientId?.trim() || !activeTab) {
                 if (discordLastPayloadRef.current) {
                     discordLastPayloadRef.current = "";
                     await invoke("clear_discord_presence").catch(() => {});
@@ -643,11 +684,15 @@ export default function App() {
             });
         };
 
-        sendPresence();
+        const initialTimer = window.setTimeout(sendPresence, 220);
         const interval = window.setInterval(sendPresence, 15000);
-        return () => window.clearInterval(interval);
+        return () => {
+            window.clearTimeout(initialTimer);
+            window.clearInterval(interval);
+        };
     }, [
         isAppLoaded,
+        isInTray,
         activeTab?.id,
         activeTab?.name,
         activeTab?.mode,
@@ -1086,6 +1131,7 @@ export default function App() {
     useEffect(() => {
         try {
             localStorage.setItem('txthk-settings', JSON.stringify(stripLegacyOverlaySettings({ ...settings })));
+            localStorage.setItem(APP_LANGUAGE_STORAGE_KEY, settings.appLanguage || 'ru');
         } catch (error) {
             console.warn('Failed to persist settings', error);
         }
@@ -3133,7 +3179,7 @@ export default function App() {
     }, [lookupCambridgeForManualSearch, settings.cambridgeApiOnlyWhenNoLocal]);
 
     if (!isAppLoaded) {
-        return <div style={{ backgroundColor: 'var(--bg-main)', width: '100vw', height: '100vh' }} />;
+        return <StartupSplash />;
     }
 
     return (
@@ -3147,6 +3193,7 @@ export default function App() {
             }}
             onClick={() => setLookupStack([])}
         >
+            {splashPhase !== 'hidden' && <StartupSplash leaving={splashPhase === 'leaving'} />}
             <SetupWizard
                 isOpen={!isMobileLayout && isFirstRunWizardOpen}
                 onClose={closeFirstRunWizard}
@@ -3155,7 +3202,18 @@ export default function App() {
                 ankiDeck={settings.ankiDeck}
                 ankiModel={settings.ankiModel}
                 settings={settings}
-                onSettingsPatch={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
+                onSettingsPatch={(patch) => setSettings((prev) => {
+                    const next = { ...prev, ...patch };
+                    try {
+                        localStorage.setItem('txthk-settings', JSON.stringify(stripLegacyOverlaySettings({ ...next })));
+                        if (patch.appLanguage === 'ru' || patch.appLanguage === 'en') {
+                            localStorage.setItem(APP_LANGUAGE_STORAGE_KEY, patch.appLanguage);
+                        }
+                    } catch (error) {
+                        console.warn('Failed to persist setup wizard settings', error);
+                    }
+                    return next;
+                })}
                 onAnkiDeckChange={(deck) => setSettings((prev) => ({ ...prev, ankiDeck: deck }))}
             />
             {floatingBtn && (
@@ -3651,10 +3709,10 @@ export default function App() {
                         } else if (settings.textSyncRemoteUrl?.trim() && settings.textSyncRemoteToken?.trim()) {
                             setSettings({ ...settings, textSyncRemoteEnabled: !settings.textSyncRemoteEnabled });
                         } else {
-                            openSettingsPanel('sync-main');
+                            openSettingsPanel('text-src');
                         }
                     }}
-                    openTextSyncSettings={() => openSettingsPanel('sync-main')}
+                    openTextSyncSettings={() => openSettingsPanel('text-src')}
                     useClipboard={settings.useClipboard}
                     toggleClipboard={() => setSettings({ ...settings, useClipboard: !settings.useClipboard })}
                     openSearch={() => {
