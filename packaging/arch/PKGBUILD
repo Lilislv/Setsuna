@@ -1,0 +1,78 @@
+# Builds Setsuna from the checkout this file lives in, so local changes are
+# included. Run `makepkg -si` from this directory.
+
+pkgname=setsuna
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Desktop app for reading Japanese text with lookup, Anki integration and Yomitan dictionary import"
+arch=('x86_64')
+url="https://github.com/Lilislv/Setsuna"
+license=('MIT')
+depends=(
+    'webkit2gtk-4.1'
+    'gtk3'
+    'glib2'
+    'gdk-pixbuf2'
+    'cairo'
+    'libsoup3'
+    'libxcb'
+    'wayland'
+    'bzip2'
+    'xz'
+    'libayatana-appindicator'
+)
+makedepends=('rust' 'cargo' 'nodejs' 'npm' 'pkgconf' 'clang' 'libpipewire' 'libdrm' 'mesa')
+optdepends=(
+    'at-spi2-core: Alt+Q hover lookup (X11 sessions only)'
+    'pipewire: screen capture on Wayland'
+    'gst-plugins-good: audio and video playback in the built-in browser'
+    'ffmpeg: clip extraction for Anki cards'
+)
+options=('!lto')
+source=()
+
+_repo="$(realpath "$startdir/../..")"
+
+build() {
+    cd "$_repo"
+    npm ci
+    # Must go through the Tauri CLI rather than plain `cargo build`. The CLI
+    # enables the tauri crate's custom-protocol feature, and without it Tauri
+    # compiles in dev mode (see tauri-macros context.rs: `dev: cfg!(not(feature
+    # = "custom-protocol"))`) — the window then tries to load devUrl at
+    # 127.0.0.1:1420 instead of the embedded frontend and fails to connect.
+    # --no-bundle skips deb/rpm/AppImage, since makepkg does the packaging.
+    # The CLI also runs beforeBuildCommand, so the frontend is built here.
+    npx tauri build --no-bundle
+}
+
+package() {
+    cd "$_repo"
+
+    install -Dm755 "src-tauri/target/release/Setsuna" "$pkgdir/usr/bin/setsuna"
+
+    # Matches the layout the .deb bundler uses, which is what the app's
+    # resource resolution expects.
+    install -dm755 "$pkgdir/usr/lib/Setsuna/bin"
+
+    for _size in 32x32 128x128; do
+        install -Dm644 "src-tauri/icons/${_size}.png" \
+            "$pkgdir/usr/share/icons/hicolor/${_size}/apps/setsuna.png"
+    done
+    install -Dm644 "src-tauri/icons/128x128@2x.png" \
+        "$pkgdir/usr/share/icons/hicolor/256x256/apps/setsuna.png"
+
+    install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/setsuna.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Setsuna
+Comment=Desktop app for reading Japanese text
+Exec=setsuna %U
+Icon=setsuna
+Categories=Education;Languages;
+Terminal=false
+StartupWMClass=Setsuna
+EOF
+
+    install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

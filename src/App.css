@@ -2,6 +2,10 @@
 
 :root {
     /* �A�p�x���r���u �����|�q���{�y (���u���u�x�p���y�����r�p�������� �y�x App.tsx �����y ���}�u�~�u ���u�}��) */
+    /* Tells the engine which variant to paint native form controls in.
+       Without it <select> popups and scrollbars render light on a dark UI.
+       App.tsx overrides this when the active theme changes. */
+    color-scheme: dark;
     --bg-main: #1a1a1a;
     --bg-topbar: #141414;
     --bg-panel: #202020;

@@ -1,8 +1,9 @@
-Put ffmpeg.exe here to bundle it with Setsuna installers.
+Put the ffmpeg binary here to bundle it with Setsuna installers.
 
 Expected file:
 
-- src-tauri/bin/ffmpeg.exe
+- src-tauri/bin/ffmpeg.exe on Windows
+- src-tauri/bin/ffmpeg on Linux (must be executable)
 
 Setsuna also checks these locations at runtime:
 

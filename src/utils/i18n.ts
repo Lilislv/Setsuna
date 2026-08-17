@@ -237,6 +237,40 @@ const translations = {
         "wizard.config.newConfig": "Новый config:",
         "wizard.config.copy": "Скопировать новый config",
         "wizard.config.copied": "Скопировано",
+        "lookup.error.failed": "Лукап не сработал: {error}",
+        "lookup.error.noWord": "Под курсором нет доступного для чтения слова",
+        "lookup.error.hoverWayland": "Лукап под курсором не работает в Wayland: композитор не сообщает приложениям позицию курсора, а окна не знают своего положения на экране. Нужна сессия X11.",
+        "lookup.error.hoverUnsupported": "Лукап под курсором пока не поддерживается в этой системе.",
+        "lookup.error.selectionWayland": "Выделение текста под курсором не работает в Wayland. Нужна сессия X11.",
+        "lookup.error.selectionUnsupported": "Выделение текста под курсором пока не поддерживается в этой системе.",
+        "lookup.error.x11": "Не удалось получить позицию курсора через X11: {detail}",
+        "lookup.error.accessibility": "Не удалось обратиться к службе специальных возможностей: {detail}",
+        "lookup.error.processes": "Не удалось получить процессы: {error}",
+        "lookup.error.region": "Не удалось снять область: {error}",
+        "lookupAgent.screenshot": "Скриншот",
+        "lookupAgent.process": "Процесс для скриншота",
+        "lookupAgent.refreshing": "Обновляю...",
+        "lookupAgent.processPlaceholder": "Процесс для скрина",
+        "lookupAgent.selectRegion": "Выбрать область экрана",
+        "lookupAgent.region": "Область",
+        "lookupAgent.ankiDeck": "Колода Anki",
+        "lookupAgent.deckForCard": "Колода для этой карточки",
+        "lookupAgent.deckSingleMode": "В настройках выбрана одна колода для всего",
+        "lookupAgent.deckNotSelected": "Не выбрана",
+        "lookupAgent.regionChosen": "Выбранная область",
+        "lookupAgent.noScreenshotSource": "Скриншот не настроен",
+        "lookupAgent.regionReady": "Область готова",
+        "lookupAgent.processReady": "Процесс выбран",
+        "lookupAgent.noScreenshot": "Без скрина",
+        "captureRegion.hintImage": "Выдели область для карточки",
+        "workspace.settings": "Настройки",
+        "workspace.openSettings": "Открыть настройки",
+        "lookup.audioUnavailable": "Аудио недоступно",
+        "lookup.playAudio": "Послушать",
+        "common.none": "нет",
+        "lookup.meaning": "Значение",
+        "lookup.readings": "Чтения",
+        "player.abOff": "A-B выкл",
     },
     en: {
         "common.close": "Close",
@@ -474,12 +508,68 @@ const translations = {
         "wizard.config.newConfig": "New config:",
         "wizard.config.copy": "Copy new config",
         "wizard.config.copied": "Copied",
+        "lookup.error.failed": "Lookup failed: {error}",
+        "lookup.error.noWord": "There is no readable word under the cursor",
+        "lookup.error.hoverWayland": "Hover lookup does not work on Wayland: the compositor does not report the pointer position to applications, and windows do not know their own position on screen. An X11 session is required.",
+        "lookup.error.hoverUnsupported": "Hover lookup is not supported on this system yet.",
+        "lookup.error.selectionWayland": "Selecting the hovered text does not work on Wayland. An X11 session is required.",
+        "lookup.error.selectionUnsupported": "Selecting the hovered text is not supported on this system yet.",
+        "lookup.error.x11": "Could not read the pointer position through X11: {detail}",
+        "lookup.error.accessibility": "Could not reach the accessibility service: {detail}",
+        "lookup.error.processes": "Could not get the process list: {error}",
+        "lookup.error.region": "Could not capture the region: {error}",
+        "lookupAgent.screenshot": "Screenshot",
+        "lookupAgent.process": "Process to capture",
+        "lookupAgent.refreshing": "Refreshing...",
+        "lookupAgent.processPlaceholder": "Capture source",
+        "lookupAgent.selectRegion": "Select a screen region",
+        "lookupAgent.region": "Region",
+        "lookupAgent.ankiDeck": "Anki deck",
+        "lookupAgent.deckForCard": "Deck for this card",
+        "lookupAgent.deckSingleMode": "Settings use a single deck for everything",
+        "lookupAgent.deckNotSelected": "Not selected",
+        "lookupAgent.regionChosen": "Selected region",
+        "lookupAgent.noScreenshotSource": "No screenshot source set",
+        "lookupAgent.regionReady": "Region ready",
+        "lookupAgent.processReady": "Process selected",
+        "lookupAgent.noScreenshot": "No screenshot",
+        "captureRegion.hintImage": "Select an area for the card",
+        "workspace.settings": "Settings",
+        "workspace.openSettings": "Open settings",
+        "lookup.audioUnavailable": "Audio unavailable",
+        "lookup.playAudio": "Play audio",
+        "common.none": "none",
+        "lookup.meaning": "Meaning",
+        "lookup.readings": "Readings",
+        "player.abOff": "A-B off",
     },
 } as const;
 
 export type TranslationKey = keyof typeof translations.ru;
 
 type Replacements = Record<string, string | number>;
+
+/**
+ * Backend commands report failures as translation keys rather than prose, so
+ * that they can be shown in the selected language. An optional system detail
+ * follows a "|" separator and is substituted into the template. Anything that
+ * is not a known key is passed through unchanged, which keeps errors from
+ * commands that have not been converted readable.
+ */
+export const translateBackendError = (
+    error: unknown,
+    translate: ReturnType<typeof getTranslator>
+): string => {
+    const message = String(error ?? "").replace(/^Error:\s*/, "");
+    const separator = message.indexOf("|");
+    const key = (separator === -1 ? message : message.slice(0, separator)).trim();
+    const detail = separator === -1 ? "" : message.slice(separator + 1).trim();
+
+    if (key in translations.ru) {
+        return translate(key as TranslationKey, { detail });
+    }
+    return message;
+};
 
 export const getTranslator = (language: AppLanguage = "ru") => {
     const dictionary = translations[language] || translations.ru;

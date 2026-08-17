@@ -7,6 +7,7 @@ import type { DictEntry, LookupData, LookupScreenshotSource } from "./components
 import type { CaptureSourceBinding } from "./utils/constants";
 import { DEFAULT_SETTINGS, themes } from "./utils/constants";
 import { getDecks } from "./utils/anki";
+import { getTranslator, translateBackendError, type AppLanguage } from "./utils/i18n";
 import "./index.css";
 import "./App.css";
 import "./lookup-window.css";
@@ -87,6 +88,10 @@ const makeLookupData = (
 
 const isEnglishToken = (value: string) => /^[A-Za-z]+(?:['’-][A-Za-z]+)*$/.test(value);
 
+/// Read at the point of use rather than captured, so switching language takes
+/// effect without reopening the lookup window.
+const currentTranslator = () => getTranslator(readSettings().appLanguage as AppLanguage);
+
 function ExternalLookupAgent() {
   const [settings, setSettings] = useState(readSettings);
   const [stack, setStack] = useState<LookupData[]>([]);
@@ -98,6 +103,9 @@ function ExternalLookupAgent() {
   const [ankiDecks, setAnkiDecks] = useState<string[]>([]);
   const [selectedDeck, setSelectedDeck] = useState("");
   const busyRef = useRef(false);
+  // Recomputed per render so a language change applies immediately. Callbacks
+  // use currentTranslator() instead, to avoid capturing a stale language.
+  const t = getTranslator((settings.appLanguage || "ru") as AppLanguage);
 
   const effectiveDeck = settings.ankiDeckMode === "contextual"
     ? (selectedDeck || settings.ankiGlobalDeck || settings.ankiDeck)
@@ -115,7 +123,7 @@ function ExternalLookupAgent() {
       const windows = await invoke<CaptureWindowInfo[]>("get_capture_windows");
       setCaptureWindows(windows);
     } catch (error) {
-      setStatus(`Не удалось получить процессы: ${String(error)}`);
+      setStatus(currentTranslator()("lookup.error.processes", { error: String(error) }));
     } finally {
       setLoadingSources(false);
     }
@@ -173,7 +181,7 @@ function ExternalLookupAgent() {
 
       if (!result?.entries?.length) {
         setStack([]);
-        setStatus("Под курсором нет доступного для чтения слова");
+        setStatus(currentTranslator()("lookup.error.noWord"));
         await showAt(point);
         return;
       }
@@ -194,8 +202,11 @@ function ExternalLookupAgent() {
       setStack([makeLookupData(result.entries, result.word, context || hoveredText || result.word, point)]);
       await showAt(point);
     } catch (error) {
+      const translate = currentTranslator();
       setStack([]);
-      setStatus(`Лукап не сработал: ${String(error)}`);
+      setStatus(translate("lookup.error.failed", {
+        error: translateBackendError(error, translate),
+      }));
       await showAt(point);
     } finally {
       window.setTimeout(() => {
@@ -226,7 +237,7 @@ function ExternalLookupAgent() {
         setStatus("");
       }));
       unlisteners.push(await listen<{ error: string }>("lookup_region_failed", (event) => {
-        setStatus(`Не удалось снять область: ${event.payload.error}`);
+        setStatus(currentTranslator()("lookup.error.region", { error: event.payload.error }));
       }));
       if (disposed) unlisteners.splice(0).forEach((unlisten) => unlisten());
     };
@@ -255,8 +266,8 @@ function ExternalLookupAgent() {
         <button
           type="button"
           className="lookup-agent-close"
-          title="Закрыть"
-          aria-label="Закрыть"
+          title={t("common.close")}
+          aria-label={t("common.close")}
           onClick={() => invoke("hide_external_lookup_window").catch(() => {})}
         >
           ×
@@ -264,10 +275,10 @@ function ExternalLookupAgent() {
       </div>
       <div className="lookup-agent-tools">
       <label className="lookup-agent-field lookup-agent-field-process">
-        <span>Скриншот</span>
+        <span>{t("lookupAgent.screenshot")}</span>
         <select
-        aria-label="Процесс для скриншота"
-        title="Процесс для скриншота"
+        aria-label={t("lookupAgent.process")}
+        title={t("lookupAgent.process")}
         value={captureSource?.pid ? String(captureSource.pid) : ""}
         onFocus={() => void refreshCaptureWindows()}
         onChange={(event) => {
@@ -290,7 +301,7 @@ function ExternalLookupAgent() {
           localStorage.setItem(CAPTURE_SOURCE_KEY, JSON.stringify(next));
         }}
         >
-        <option value="">{loadingSources ? "Обновляю..." : "Процесс для скрина"}</option>
+        <option value="">{loadingSources ? t("lookupAgent.refreshing") : t("lookupAgent.processPlaceholder")}</option>
         {captureWindows.map((window) => (
           <option key={`${window.id || window.pid}-${window.title}`} value={String(window.pid || "")}>
             {window.title || window.app_name || window.process_name}
@@ -301,28 +312,28 @@ function ExternalLookupAgent() {
       <button
         type="button"
         className={`lookup-agent-region ${regionImage ? "is-active" : ""}`}
-        title="Выбрать область экрана"
+        title={t("lookupAgent.selectRegion")}
         onClick={() => invoke("begin_lookup_region_capture").catch((error) => setStatus(String(error)))}
       >
-        <span aria-hidden="true">▣</span><span>Область</span>
+        <span aria-hidden="true">▣</span><span>{t("lookupAgent.region")}</span>
       </button>
       <label className="lookup-agent-field lookup-agent-field-deck">
-        <span>Колода Anki</span>
+        <span>{t("lookupAgent.ankiDeck")}</span>
         <select
-          aria-label="Колода Anki"
+          aria-label={t("lookupAgent.ankiDeck")}
           value={effectiveDeck || ""}
           disabled={settings.ankiDeckMode !== "contextual"}
-          title={settings.ankiDeckMode === "contextual" ? "Колода для этой карточки" : "В настройках выбрана одна колода для всего"}
+          title={settings.ankiDeckMode === "contextual" ? t("lookupAgent.deckForCard") : t("lookupAgent.deckSingleMode")}
           onChange={(event) => {
             setSelectedDeck(event.target.value);
           }}
         >
-          {!effectiveDeck && <option value="">Не выбрана</option>}
+          {!effectiveDeck && <option value="">{t("lookupAgent.deckNotSelected")}</option>}
           {ankiDecks.map((deck) => <option key={deck} value={deck}>{deck}</option>)}
         </select>
       </label>
-      <span className={`lookup-agent-source ${regionImage || captureSource ? "is-ready" : ""}`} title={regionImage ? "Выбранная область" : captureSource?.name || "Скриншот не настроен"}>
-        {regionImage ? "Область готова" : captureSource ? "Процесс выбран" : "Без скрина"}
+      <span className={`lookup-agent-source ${regionImage || captureSource ? "is-ready" : ""}`} title={regionImage ? t("lookupAgent.regionChosen") : captureSource?.name || t("lookupAgent.noScreenshotSource")}>
+        {regionImage ? t("lookupAgent.regionReady") : captureSource ? t("lookupAgent.processReady") : t("lookupAgent.noScreenshot")}
       </span>
       </div>
     </header>

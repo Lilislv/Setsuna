@@ -254,6 +254,11 @@ export default function App() {
         root.style.setProperty('--border-color', activeTheme['--border-main']);
         root.style.setProperty('--button-bg', activeTheme['--bg-side']);
 
+        // Native form controls (<select> popups, checkboxes, scrollbars) are
+        // painted by the engine, not by our CSS, so they need to be told which
+        // variant to use or they stay light on the dark themes.
+        root.style.colorScheme = themeName === 'light' ? 'light' : 'dark';
+
         root.dataset.theme = themeName;
         document.body.dataset.theme = themeName;
     }, [settings.theme, settings.fontSize, settings.fontFamily]);
@@ -3624,6 +3629,7 @@ export default function App() {
                         title={settings.appLanguage === "en" ? "EPUB Reader" : "EPUB-ридер"}
                         icon={<IconBookTab />}
                         accent="reader"
+                        language={settings.appLanguage}
                         onHome={() => setActiveWorkspace("hub")}
                         onSettings={() => openSettingsPanel('epub-reader')}
                     >
@@ -3638,6 +3644,7 @@ export default function App() {
                         title={settings.appLanguage === "en" ? "Anime Player" : "Аниме-плеер"}
                         icon={<IconPlayerTab />}
                         accent="player"
+                        language={settings.appLanguage}
                         onHome={() => setActiveWorkspace("hub")}
                         onSettings={() => openSettingsPanel('player-main')}
                     >

@@ -70,6 +70,8 @@ use windows::Win32::UI::Accessibility::{
 
 mod dictionary_import;
 mod epub_import;
+#[cfg(target_os = "linux")]
+mod hover_lookup;
 mod player_media;
 use dictionary_import::{import_dictionaries, import_dictionary};
 use epub_import::import_epub;
@@ -685,7 +687,7 @@ fn select_hovered_lookup_range(
     _match_start: usize,
     _match_len: usize,
 ) -> Result<(), String> {
-    Err("Text range selection is currently implemented for Windows only".to_string())
+    Err(global_lookup_unavailable_reason("selection"))
 }
 
 pub struct DiagnosticsState {
@@ -1032,7 +1034,47 @@ fn current_process_memory_snapshot() -> Value {
     })
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn current_process_memory_snapshot() -> Value {
+    // /proc/self/status reports these in kB. VmRSS is the closest analogue to
+    // the Windows working set, VmHWM to the peak working set, and RssAnon to
+    // the private (non file-backed) resident pages.
+    fn read_kib(status: &str, key: &str) -> Option<u64> {
+        status.lines().find_map(|line| {
+            let rest = line.strip_prefix(key)?.strip_prefix(':')?;
+            rest.split_whitespace().next()?.parse::<u64>().ok()
+        })
+    }
+
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(rss_kib) = read_kib(&status, "VmRSS") {
+            let mut snapshot = serde_json::json!({
+                "pid": std::process::id().to_string(),
+                "name": "Setsuna",
+                "role": "main",
+                "memoryRaw": rss_kib * 1024,
+                "source": "/proc/self/status",
+            });
+            if let Some(peak_kib) = read_kib(&status, "VmHWM") {
+                snapshot["peakMemoryRaw"] = (peak_kib * 1024).into();
+            }
+            if let Some(private_kib) = read_kib(&status, "RssAnon") {
+                snapshot["privateRaw"] = (private_kib * 1024).into();
+            }
+            return snapshot;
+        }
+    }
+
+    serde_json::json!({
+        "pid": std::process::id().to_string(),
+        "name": "Setsuna",
+        "role": "main",
+        "memoryRaw": 0,
+        "source": "procStatusUnavailable",
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn current_process_memory_snapshot() -> Value {
     serde_json::json!({
         "pid": std::process::id().to_string(),
@@ -4648,7 +4690,242 @@ fn get_icon_as_base64(path: &str) -> Option<String> {
     None
 }
 
-#[cfg(not(target_os = "windows"))]
+/// Directories that hold XDG data, most specific first.
+#[cfg(target_os = "linux")]
+fn xdg_data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = std::env::var_os("XDG_DATA_HOME") {
+        dirs.push(PathBuf::from(home));
+    } else if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".local/share"));
+    }
+    let system = std::env::var("XDG_DATA_DIRS")
+        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+    dirs.extend(system.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
+    dirs
+}
+
+/// Maps an executable's file name to the `Icon=` value of the desktop entry
+/// that launches it. Built once — scanning every applications directory per
+/// process would be far too slow for `get_running_processes`.
+#[cfg(target_os = "linux")]
+fn desktop_entry_icons() -> &'static HashMap<String, String> {
+    static INDEX: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut index = HashMap::new();
+        for dir in xdg_data_dirs() {
+            let entries = match std::fs::read_dir(dir.join("applications")) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                    continue;
+                }
+                let contents = match std::fs::read_to_string(&path) {
+                    Ok(contents) => contents,
+                    Err(_) => continue,
+                };
+
+                let mut icon = None;
+                let mut executables = Vec::new();
+                for line in contents.lines() {
+                    let line = line.trim();
+                    if let Some(value) = line.strip_prefix("Icon=") {
+                        if icon.is_none() {
+                            icon = Some(value.trim().to_string());
+                        }
+                    } else if let Some(value) =
+                        line.strip_prefix("Exec=").or_else(|| line.strip_prefix("TryExec="))
+                    {
+                        // Exec may carry a full command line and %-field codes.
+                        if let Some(program) = value.split_whitespace().next() {
+                            if let Some(name) = Path::new(program).file_name() {
+                                executables.push(name.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                }
+
+                if let Some(icon) = icon {
+                    if let Some(stem) = path.file_stem() {
+                        executables.push(stem.to_string_lossy().to_string());
+                    }
+                    for executable in executables {
+                        // Earlier directories win, matching XDG precedence.
+                        index.entry(executable).or_insert_with(|| icon.clone());
+                    }
+                }
+            }
+        }
+        index
+    })
+}
+
+/// Icon themes to consult, best first. Themes disagree on directory order
+/// (hicolor uses <size>/apps, Breeze uses apps/<size>) and icons referenced by
+/// desktop entries are not always under `apps` — plenty are status, device or
+/// action icons — so the index below searches every category instead.
+#[cfg(target_os = "linux")]
+fn icon_theme_search_order() -> Vec<String> {
+    let mut themes: Vec<String> = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        let settings = PathBuf::from(home).join(".config/gtk-3.0/settings.ini");
+        if let Ok(contents) = std::fs::read_to_string(settings) {
+            for line in contents.lines() {
+                if let Some(value) = line.trim().strip_prefix("gtk-icon-theme-name=") {
+                    themes.push(value.trim().to_string());
+                }
+            }
+        }
+    }
+    for fallback in ["breeze", "hicolor", "Adwaita"] {
+        if !themes.iter().any(|t| t == fallback) {
+            themes.push(fallback.to_string());
+        }
+    }
+    themes
+}
+
+/// Ranks two files for the same icon: scalable art beats bitmaps, and among
+/// bitmaps the largest wins, since the caller downscales to 32px.
+#[cfg(target_os = "linux")]
+fn icon_candidate_quality(path: &Path) -> u32 {
+    if path.extension().and_then(|e| e.to_str()) == Some("svg") {
+        return u32::MAX;
+    }
+    path.components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .filter_map(|name| {
+            let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u32>().ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+fn collect_icon_files(
+    dir: &Path,
+    depth: usize,
+    wanted: &HashSet<String>,
+    theme_rank: usize,
+    best: &mut HashMap<String, (usize, u32, PathBuf)>,
+) {
+    if depth > 3 {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_icon_files(&path, depth + 1, wanted, theme_rank, best);
+            continue;
+        }
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if extension != "svg" && extension != "png" {
+            continue;
+        }
+        let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(stem) if wanted.contains(stem) => stem.to_string(),
+            _ => continue,
+        };
+        let quality = icon_candidate_quality(&path);
+        match best.get(&stem) {
+            // A theme earlier in the search order always wins; within one
+            // theme, the better rendition wins.
+            Some((rank, existing, _)) if *rank < theme_rank || *existing >= quality => {}
+            _ => {
+                best.insert(stem, (theme_rank, quality, path));
+            }
+        }
+    }
+}
+
+/// Resolves every icon named by a desktop entry to a file, in a single pass.
+/// Walking the themes per lookup would be far too slow — Breeze alone holds
+/// thousands of files.
+#[cfg(target_os = "linux")]
+fn icon_file_index() -> &'static HashMap<String, PathBuf> {
+    static INDEX: std::sync::OnceLock<HashMap<String, PathBuf>> = std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        let wanted: HashSet<String> = desktop_entry_icons().values().cloned().collect();
+        let mut best: HashMap<String, (usize, u32, PathBuf)> = HashMap::new();
+        let themes = icon_theme_search_order();
+
+        for base in xdg_data_dirs() {
+            let icons_root = base.join("icons");
+            for (rank, theme) in themes.iter().enumerate() {
+                collect_icon_files(&icons_root.join(theme), 0, &wanted, rank, &mut best);
+            }
+            collect_icon_files(&base.join("pixmaps"), 3, &wanted, themes.len(), &mut best);
+        }
+
+        best.into_iter()
+            .map(|(name, (_, _, path))| (name, path))
+            .collect()
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_icon_file(icon: &str) -> Option<PathBuf> {
+    let direct = Path::new(icon);
+    if direct.is_absolute() && direct.is_file() {
+        return Some(direct.to_path_buf());
+    }
+    icon_file_index().get(icon).cloned()
+}
+
+/// Rasterises an SVG icon to a square RGBA image.
+#[cfg(target_os = "linux")]
+fn render_svg_icon(data: &[u8], size: u32) -> Option<image::RgbaImage> {
+    let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).ok()?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)?;
+
+    let tree_size = tree.size();
+    let scale = (size as f32 / tree_size.width()).min(size as f32 / tree_size.height());
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+
+    // tiny-skia stores premultiplied alpha; PNG expects straight alpha.
+    let mut rgba = image::RgbaImage::new(size, size);
+    for (source, target) in pixmap.pixels().iter().zip(rgba.pixels_mut()) {
+        let color = source.demultiply();
+        *target = image::Rgba([color.red(), color.green(), color.blue(), color.alpha()]);
+    }
+    Some(rgba)
+}
+
+#[cfg(target_os = "linux")]
+fn get_icon_as_base64(path: &str) -> Option<String> {
+    let executable = Path::new(path).file_name()?.to_string_lossy().to_string();
+    let icon = desktop_entry_icons().get(&executable)?;
+    let icon_file = resolve_icon_file(icon)?;
+
+    // Match the 32x32 RGBA PNG the Windows path produces.
+    let resized = if icon_file.extension().and_then(|e| e.to_str()) == Some("svg") {
+        image::DynamicImage::ImageRgba8(render_svg_icon(&std::fs::read(&icon_file).ok()?, 32)?)
+    } else {
+        image::open(&icon_file)
+            .ok()?
+            .resize_exact(32, 32, image::imageops::FilterType::Lanczos3)
+    };
+
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    resized
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .ok()?;
+    Some(STANDARD.encode(encoded.into_inner()))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn get_icon_as_base64(_path: &str) -> Option<String> {
     None
 }
@@ -6141,10 +6418,47 @@ fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, String> {
     })
 }
 
+/// Names the reason point-based lookup cannot run. Returns an i18n key rather
+/// than prose so the lookup window can render it in the selected language;
+/// Wayland is a hard blocker rather than merely unfinished work, and the two
+/// cases are separate keys so translations can say so.
 #[cfg(not(target_os = "windows"))]
+fn global_lookup_unavailable_reason(feature: &str) -> String {
+    #[cfg(target_os = "linux")]
+    let on_wayland = hover_lookup::is_wayland_session();
+    #[cfg(not(target_os = "linux"))]
+    let on_wayland = false;
+
+    if on_wayland {
+        format!("lookup.error.{feature}Wayland")
+    } else {
+        format!("lookup.error.{feature}Unsupported")
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+async fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, String> {
+    if hover_lookup::is_wayland_session() {
+        return Err(global_lookup_unavailable_reason("hover"));
+    }
+
+    let (x, y) = hover_lookup::pointer_position()?;
+    let hovered = hover_lookup::text_at_point(x, y).await?;
+
+    Ok(GlobalLookupCopyResult {
+        x,
+        y,
+        text: hovered.text,
+        context: hovered.context,
+        cursor: hovered.cursor,
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 #[tauri::command]
 fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, String> {
-    Err("Global hover lookup is currently implemented for Windows only.".to_string())
+    Err(global_lookup_unavailable_reason("hover"))
 }
 
 #[tauri::command]
@@ -7334,7 +7648,34 @@ async fn update_discord_presence(
     .map_err(|e| format!("Discord RPC task failed: {}", e))?
 }
 
+// Inside an AppImage the bundled GTK and mesa libraries frequently disagree
+// with the host GPU driver, and WebKitGTK's DMA-BUF renderer then leaves the
+// webview blank after a resize. Falling back to the older renderer fixes the
+// blank paint but costs real compositing performance, so it is scoped to the
+// AppImage rather than applied to every Linux install. Native packages use the
+// system libraries and do not need it. Set the variable yourself to force
+// either behaviour anywhere.
+#[cfg(target_os = "linux")]
+fn configure_linux_webview_environment() {
+    // WebKitGTK only composites on the GPU on demand, dropping back to CPU
+    // painting for ordinary content. Forcing it on keeps scrolling and resizing
+    // on the GPU, which matters most on HiDPI screens where the CPU path has to
+    // push four times the pixels.
+    if std::env::var_os("WEBKIT_FORCE_COMPOSITING_MODE").is_none() {
+        std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+    }
+
+    let running_from_appimage = std::env::var_os("APPIMAGE").is_some();
+    if running_from_appimage && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 fn main() {
+    // Must happen before any GTK or WebKit initialisation.
+    #[cfg(target_os = "linux")]
+    configure_linux_webview_environment();
+
     install_panic_logger();
 
     let browser_state = BrowserState {
