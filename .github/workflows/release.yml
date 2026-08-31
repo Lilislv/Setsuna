@@ -76,8 +76,7 @@ jobs:
             Internal update build: ${{ steps.release_meta.outputs.build_number }}
           releaseDraft: true
           prerelease: false
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
+          includeUpdaterJson: true
           updaterJsonPreferNsis: true
 
   build-linux:
@@ -150,5 +149,4 @@ jobs:
             Internal update build: ${{ needs.build-windows.outputs.build_number }}
           releaseDraft: true
           prerelease: false
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
+          includeUpdaterJson: true

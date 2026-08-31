@@ -16,6 +16,7 @@ target/
 *.exe
 *.msi
 *.zip
+!src-tauri/resources/mobile-starter-dictionaries.zip
 
 # мусор
 .DS_Store
