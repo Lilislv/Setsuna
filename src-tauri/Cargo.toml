@@ -1,6 +1,6 @@
 [package]
 name = "Setsuna"
-version = "0.1.0"
+version = "0.1.1"
 description = "Desktop app for reading Japanese text"
 authors = ["Seri418"]
 edition = "2021"
@@ -37,6 +37,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 sysinfo = "0.38.4"
 base64 = "0.22.1"
 image = "0.25.10"
+lindera = { version = "=5.3.0", default-features = false, features = ["embed-ipadic"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 

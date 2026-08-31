@@ -27,17 +27,35 @@ import { listen } from '@tauri-apps/api/event';
 import {
     createDictFileMetadata,
     createGooglePkceSession,
+    bytesAvailableInDrive,
+    deleteDriveFile,
     downloadFromDrive,
     exchangeCodeForToken,
     getAccessToken,
     getAuthUrl,
     getDictDriveInfo,
+    getDriveQuota,
     listBackups,
     uploadToDrive,
+    type DriveFileInfo,
+    type DriveQuotaInfo,
     type GooglePkceSession,
 } from '../utils/gdrive';
 import { GOOGLE_DRIVE_AVAILABLE } from '../utils/featureFlags';
 import { tokenizeLookupText, normalizeWebSocketUrl } from '../utils/appRuntime';
+import {
+    getMobileOverlayStatus,
+    hideMobileOverlay,
+    requestMobileOverlayPermission,
+    showMobileOverlay,
+} from '../utils/mobileOverlay';
+import {
+    getMobileTextCaptureStatus,
+    hasMobileTextCapture,
+    startMobileTextCapture,
+    stopMobileTextCapture,
+} from '../utils/mobileTextCapture';
+import { openMobileDictionaryPicker } from '../utils/mobileFiles';
 import {
     clearAnkiMetaCache,
     getAnkiDroidStatus,
@@ -185,6 +203,101 @@ export const SearchBar = ({
     );
 };
 
+type MobileLookupToken = {
+    text: string;
+    reading?: string | null;
+    lemma?: string | null;
+    start?: number;
+    end?: number;
+    lookup?: boolean;
+};
+type MobileSettingsSection = 'reading' | 'flow' | 'source' | 'anki' | 'drive' | 'data';
+
+const MOBILE_JAPANESE_RE = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff66-\uff9f]/;
+const MOBILE_LATIN_RE = /[A-Za-z\u00c0-\u024f]/;
+
+const formatMobileBytes = (raw?: string | number | null) => {
+    const value = Number(raw || 0);
+    if (!Number.isFinite(value) || value <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+    const number = value / Math.pow(1024, index);
+    return `${number >= 10 || index === 0 ? number.toFixed(0) : number.toFixed(1)} ${units[index]}`;
+};
+
+const MobileSentenceTokens = ({
+    text,
+    onLookup,
+    placeholder,
+}: {
+    text: string;
+    onLookup: (token: string, cursor: number) => void;
+    placeholder: string;
+}) => {
+    const [tokens, setTokens] = useState<MobileLookupToken[] | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        setTokens(null);
+        const timer = window.setTimeout(() => {
+            if (!text.trim()) {
+                setTokens([]);
+                return;
+            }
+            invoke<MobileLookupToken[]>('get_furigana', { text, contextBefore: '', contextAfter: '' })
+                .then((result) => {
+                    if (!cancelled) setTokens(Array.isArray(result) && result.length > 0 ? result : null);
+                })
+                .catch(() => {
+                    if (!cancelled) setTokens(null);
+                });
+        }, 140);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+    }, [text]);
+
+    if (!text.trim()) return <div className="mobile-placeholder compact">{placeholder}</div>;
+
+    const parts = !tokens?.length
+        ? tokenizeLookupText(text).map((part) => ({ text: part.text, cursor: part.cursor, lookup: part.lookup, reading: null }))
+        : (() => {
+            let charOffset = 0;
+            return tokens.map((token) => {
+                const nativeStart = Number(token.start);
+                const cursor = Number.isInteger(nativeStart) && nativeStart >= 0
+                    ? nativeStart
+                    : charOffset;
+                charOffset += Array.from(token.text).length;
+                return {
+                    text: token.text,
+                    cursor,
+                    lookup: typeof token.lookup === 'boolean'
+                        ? token.lookup
+                        : MOBILE_JAPANESE_RE.test(token.text) || MOBILE_LATIN_RE.test(token.text),
+                    reading: token.reading,
+                };
+            });
+        })();
+
+    return <>
+        {parts.map((part, index) => part.lookup ? (
+            <button
+                key={`${part.text}-${part.cursor}-${index}`}
+                type="button"
+                className="lookup-token mobile-token"
+                onClick={() => onLookup(part.text, part.cursor)}
+            >
+                {part.reading && <ruby>{part.text}<rt>{part.reading}</rt></ruby>}
+                {!part.reading && part.text}
+            </button>
+        ) : (
+            <span key={`${part.text}-${part.cursor}-${index}`} className="mobile-token-plain">{part.text}</span>
+        ))}
+    </>;
+};
+
 export const MobileLayout = ({
     tabs,
     activeTab,
@@ -212,18 +325,25 @@ export const MobileLayout = ({
     wsStatuses,
     wsConnecting,
     wsIntents,
-    toggleWs,
+    setWsEnabled,
     lookupOpen,
+    lookupNotice,
+    settingsRequest,
 }: any) => {
     const t = getTranslator(settings?.appLanguage || 'ru');
     const [activeMobileView, setActiveMobileView] = useState<'text' | 'lookup'>('text');
     const [lookupText, setLookupText] = useState('');
     const [isMobileSettingsOpen, setIsMobileSettingsOpen] = useState(false);
+    const [mobileSettingsSection, setMobileSettingsSection] = useState<MobileSettingsSection>('reading');
     const [isStatsOpen, setIsStatsOpen] = useState(false);
     const [tabsOpen, setTabsOpen] = useState(false);
     const [driveStatus, setDriveStatus] = useState('');
     const [driveAuthInput, setDriveAuthInput] = useState('');
     const [driveBusy, setDriveBusy] = useState(false);
+    const [driveQuota, setDriveQuota] = useState<DriveQuotaInfo | null>(null);
+    const [driveBackups, setDriveBackups] = useState<DriveFileInfo[]>([]);
+    const [overlayStatus, setOverlayStatus] = useState('');
+    const [overlayResumeTick, setOverlayResumeTick] = useState(0);
     const drivePkceRef = useRef<GooglePkceSession | null>(null);
     const driveRedirectRef = useRef('http://127.0.0.1:1337');
     const [ankiStatusText, setAnkiStatusText] = useState('');
@@ -231,9 +351,98 @@ export const MobileLayout = ({
     const [ankiModels, setAnkiModels] = useState<string[]>([]);
     const [ankiFields, setAnkiFields] = useState<string[]>([]);
     const [ankiBusy, setAnkiBusy] = useState(false);
+    const [nativeCapture, setNativeCapture] = useState(() => getMobileTextCaptureStatus());
     const visibleTabs = (tabs || []).filter((tab: Tab) => !tab.archived);
     const stats = activeTab?.stats || defaultStats;
     const isEn = settings?.appLanguage === 'en';
+    const overlayText = activeTab?.lines?.[activeTab.lines.length - 1] || '';
+    const overlayOptions = {
+        fontSize: settings.mobileOverlayFontSize ?? 22,
+        opacity: settings.mobileOverlayOpacity ?? 88,
+        textColor: settings.mobileOverlayTextColor || '#ffffff',
+        backgroundColor: settings.mobileOverlayBackgroundColor || '#15181d',
+        width: settings.mobileOverlayWidth ?? 340,
+        height: settings.mobileOverlayHeight ?? 160,
+    };
+    const openMobileDictionaryImport = () => {
+        try {
+            if (!openMobileDictionaryPicker()) openImport();
+        } catch (error: any) {
+            setDriveStatus(error?.message || String(error));
+        }
+    };
+
+    useEffect(() => {
+        if (!settingsRequest?.id) return;
+        if (settingsRequest.section) setMobileSettingsSection(settingsRequest.section);
+        setIsMobileSettingsOpen(true);
+    }, [settingsRequest?.id, settingsRequest?.section]);
+
+    const refreshOverlayStatus = () => {
+        try {
+            const status = getMobileOverlayStatus();
+            setOverlayStatus(status.granted
+                ? (isEn ? 'Overlay permission is allowed.' : 'Разрешение на показ поверх приложений выдано.')
+                : (isEn ? 'Allow “display over other apps” for Setsuna first.' : 'Сначала разреши Setsuna показ поверх других приложений.'));
+            return status.granted;
+        } catch (error: any) {
+            setOverlayStatus(error?.message || String(error));
+            return false;
+        }
+    };
+
+    useEffect(() => {
+        const resume = () => setOverlayResumeTick((value) => value + 1);
+        window.addEventListener('focus', resume);
+        document.addEventListener('visibilitychange', resume);
+        return () => {
+            window.removeEventListener('focus', resume);
+            document.removeEventListener('visibilitychange', resume);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!settings.mobileOverlayEnabled) {
+            try { hideMobileOverlay(); } catch {}
+            return;
+        }
+        if (!overlayText) return;
+        let cancelled = false;
+        void (async () => {
+            let tokenData: Array<{ text: string; lookup: boolean }> = [];
+            try {
+                const tokens = await invoke<MobileLookupToken[]>('get_furigana', {
+                    text: overlayText,
+                    contextBefore: '',
+                    contextAfter: '',
+                });
+                tokenData = (Array.isArray(tokens) ? tokens : []).map((token) => ({
+                    text: token.text,
+                    lookup: MOBILE_JAPANESE_RE.test(token.text) || MOBILE_LATIN_RE.test(token.text),
+                }));
+            } catch {
+                // The overlay can still display the raw line when tokenization is unavailable.
+            }
+            if (cancelled) return;
+            try {
+                showMobileOverlay(overlayText, { ...overlayOptions, tokens: tokenData });
+                setOverlayStatus(isEn ? 'Showing the latest line over other apps.' : 'Последняя строка показывается поверх других приложений.');
+            } catch (error: any) {
+                setOverlayStatus(error?.message || String(error));
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [
+        overlayText,
+        settings.mobileOverlayEnabled,
+        settings.mobileOverlayFontSize,
+        settings.mobileOverlayOpacity,
+        settings.mobileOverlayTextColor,
+        settings.mobileOverlayBackgroundColor,
+        settings.mobileOverlayWidth,
+        settings.mobileOverlayHeight,
+        overlayResumeTick,
+    ]);
     const pasteAndConnectDrive = async () => {
         let text = '';
         try {
@@ -289,15 +498,51 @@ export const MobileLayout = ({
         }
     };
 
+    const toggleMobileFlow = () => {
+        if (settings.mobileOverlayEnabled) {
+            try { hideMobileOverlay(); } catch {}
+            updateSetting('mobileOverlayEnabled', false);
+            setOverlayStatus(isEn ? 'Setsuna Flow is hidden.' : 'Setsuna Flow скрыт.');
+            return;
+        }
+        const granted = refreshOverlayStatus();
+        updateSetting('mobileOverlayEnabled', true);
+        if (!granted) {
+            try {
+                requestMobileOverlayPermission();
+                setOverlayStatus(isEn
+                    ? 'Allow display over other apps, then return to Setsuna.'
+                    : 'Разреши показ поверх приложений и вернись в Setsuna.');
+            } catch (error: any) {
+                setOverlayStatus(error?.message || String(error));
+            }
+        }
+    };
+
     // Mobile text source over WebSocket (e.g. Textractor / LunaTranslator WS server
     // running on a Steam Deck / PC on the same network). Reuses the shared websocket
     // client in App.tsx by persisting a single dedicated entry in settings.websockets.
     const MOBILE_WS_ID = 'mobile-ws';
     const mobileWs = (settings.websockets || []).find((w: any) => w.id === MOBILE_WS_ID) || null;
-    const wsConnected = !!(wsStatuses && wsStatuses[MOBILE_WS_ID]);
-    const wsIsConnecting = !!(wsConnecting && wsConnecting[MOBILE_WS_ID]) && !wsConnected;
-    const wsIntentOn = !!(wsIntents && wsIntents[MOBILE_WS_ID]);
+    const useNativeCapture = hasMobileTextCapture();
+    const wsConnected = useNativeCapture
+        ? nativeCapture.connected
+        : !!(wsStatuses && wsStatuses[MOBILE_WS_ID]);
+    const wsIsConnecting = useNativeCapture
+        ? nativeCapture.running && !nativeCapture.connected
+        : !!(wsConnecting && wsConnecting[MOBILE_WS_ID]) && !wsConnected;
+    const wsIntentOn = useNativeCapture
+        ? nativeCapture.running
+        : !!(wsIntents && wsIntents[MOBILE_WS_ID]);
     const [wsDraftUrl, setWsDraftUrl] = useState(mobileWs?.url || '');
+
+    useEffect(() => {
+        if (!useNativeCapture) return;
+        const refresh = () => setNativeCapture(getMobileTextCaptureStatus());
+        refresh();
+        const timer = window.setInterval(refresh, 1500);
+        return () => window.clearInterval(timer);
+    }, [useNativeCapture]);
 
     const persistMobileWsUrl = (rawUrl: string, active: boolean) => {
         const url = normalizeWebSocketUrl(rawUrl);
@@ -318,14 +563,37 @@ export const MobileLayout = ({
         if (!url) return;
         setWsDraftUrl(url);
         persistMobileWsUrl(url, true);
-        if (toggleWs && !wsIntentOn) toggleWs(MOBILE_WS_ID);
+        if (useNativeCapture) {
+            try {
+                startMobileTextCapture(url);
+                setNativeCapture(getMobileTextCaptureStatus());
+                setWsEnabled?.(MOBILE_WS_ID, false);
+                if (setIsPaused) setIsPaused(false);
+            } catch (error: any) {
+                setDriveStatus(error?.message || String(error));
+            }
+            return;
+        }
+        // This must be explicit rather than a toggle: persisting settings is
+        // asynchronous, so a stale "off" value used to leave Android waiting
+        // forever without actually opening a socket.
+        setWsEnabled?.(MOBILE_WS_ID, true);
         // Connecting a text source means "I want to read now" - the app starts
         // paused, which would otherwise silently drop the incoming lines.
         if (setIsPaused) setIsPaused(false);
     };
 
     const disconnectMobileWs = () => {
-        if (toggleWs && wsIntentOn) toggleWs(MOBILE_WS_ID);
+        if (useNativeCapture) {
+            try {
+                stopMobileTextCapture();
+                setNativeCapture(getMobileTextCaptureStatus());
+            } catch (error: any) {
+                setDriveStatus(error?.message || String(error));
+            }
+            return;
+        }
+        setWsEnabled?.(MOBILE_WS_ID, false);
     };
 
     const wsStatusLabel = wsConnected
@@ -333,7 +601,9 @@ export const MobileLayout = ({
         : wsIsConnecting
             ? (isEn ? 'Connecting...' : 'Подключаюсь...')
             : wsIntentOn
-                ? (isEn ? 'Waiting for source...' : 'Жду источник...')
+                ? (nativeCapture.error
+                    ? nativeCapture.error
+                    : (isEn ? 'Waiting for source...' : 'Жду источник...'))
                 : (isEn ? 'Not connected' : 'Не подключено');
 
     const findAnkiField = (fields: string[], ...candidates: string[]) => {
@@ -345,6 +615,24 @@ export const MobileLayout = ({
         setAnkiBusy(true);
         try {
             const status = await getAnkiDroidStatus().catch(() => null);
+            if (!status?.available) {
+                setAnkiDecks([]);
+                setAnkiModels([]);
+                setAnkiFields([]);
+                setAnkiStatusText(isEn
+                    ? 'Install AnkiDroid first, then return here.'
+                    : 'Сначала установи AnkiDroid, затем вернись сюда.');
+                return;
+            }
+            if (!status.permissionGranted) {
+                setAnkiDecks([]);
+                setAnkiModels([]);
+                setAnkiFields([]);
+                setAnkiStatusText(isEn
+                    ? 'Allow AnkiDroid access, then tap Refresh.'
+                    : 'Разреши доступ к AnkiDroid, затем нажми «Обновить».');
+                return;
+            }
             const decks = await getDecks(force);
             const models = await getModels(force);
             const nextDeck = settings.ankiDeck || decks[0] || '';
@@ -381,6 +669,7 @@ export const MobileLayout = ({
     useEffect(() => {
         if (isMobileSettingsOpen) {
             loadMobileAnki(false);
+            void refreshDriveOverview(true);
         }
     }, [isMobileSettingsOpen]);
 
@@ -395,6 +684,22 @@ export const MobileLayout = ({
         const clean = JSON.parse(JSON.stringify(settings || {}));
         delete clean.gdriveRefreshToken;
         return clean;
+    };
+
+    const refreshDriveOverview = async (quiet = false) => {
+        if (!settings.gdriveRefreshToken) return;
+        if (!quiet) setDriveBusy(true);
+        try {
+            const token = await getAccessToken(settings.gdriveRefreshToken);
+            const [quota, backups] = await Promise.all([getDriveQuota(token), listBackups(token)]);
+            setDriveQuota(quota);
+            setDriveBackups(backups);
+            if (!quiet) setDriveStatus(isEn ? 'Google Drive is ready.' : 'Google Drive готов.');
+        } catch (error: any) {
+            setDriveStatus(error?.message || String(error));
+        } finally {
+            if (!quiet) setDriveBusy(false);
+        }
     };
 
     const connectDrive = async () => {
@@ -425,7 +730,7 @@ export const MobileLayout = ({
                 }
             });
             const url = getAuthUrl(redirectUri, pkce);
-            await openUrl(url);
+            await openUrl(url).catch(() => window.open(url, '_blank'));
             setDriveStatus(isEn ? 'Sign in in the browser, then return to the app.' : 'Войди в браузере и вернись в приложение.');
         } catch (error: any) {
             setDriveStatus(error?.message || String(error));
@@ -464,13 +769,20 @@ export const MobileLayout = ({
             await uploadToDrive(token, {
                 metadata: { date: new Date().toISOString(), source: 'setsuna-mobile' },
                 settings: cleanSettingsForBackup(),
-                tabs: (tabs || []).map((tab: any) => {
+                activeTabId,
+                tabs: (tabs || []).filter((tab: any) => !tab.archived).map((tab: any) => {
+                    const clean = JSON.parse(JSON.stringify(tab));
+                    delete clean.captureSource;
+                    return clean;
+                }),
+                archive: (tabs || []).filter((tab: any) => tab.archived).map((tab: any) => {
                     const clean = JSON.parse(JSON.stringify(tab));
                     delete clean.captureSource;
                     return clean;
                 }),
             });
             setDriveStatus(isEn ? 'Backup uploaded.' : 'Бэкап загружен.');
+            await refreshDriveOverview(true);
         } catch (error: any) {
             setDriveStatus(error?.message || String(error));
         } finally {
@@ -478,26 +790,70 @@ export const MobileLayout = ({
         }
     };
 
-    const restoreLatestMobileBackup = async () => {
+    const restoreMobileBackup = async (backup?: DriveFileInfo) => {
         if (!GOOGLE_DRIVE_AVAILABLE) return;
         if (!settings.gdriveRefreshToken) return;
         setDriveBusy(true);
-        setDriveStatus(isEn ? 'Restoring latest backup...' : 'Восстанавливаю последний бэкап...');
+        setDriveStatus(isEn ? 'Restoring backup...' : 'Восстанавливаю бэкап...');
         try {
             const token = await getAccessToken(settings.gdriveRefreshToken);
-            const backups = await listBackups(token);
-            if (!backups.length) throw new Error(isEn ? 'No backups in Google Drive.' : 'В Google Drive нет бэкапов.');
-            const data = await downloadFromDrive(token, backups[0].id);
+            const selected = backup || driveBackups[0] || (await listBackups(token))[0];
+            if (!selected) throw new Error(isEn ? 'No backups in Google Drive.' : 'В Google Drive нет бэкапов.');
+            const data = await downloadFromDrive(token, selected.id);
+            const restoredTabs = [
+                ...(Array.isArray(data.tabs) ? data.tabs : []),
+                ...(Array.isArray(data.archive) ? data.archive.map((tab: any) => ({ ...tab, archived: true })) : []),
+            ];
+            try {
+                localStorage.setItem('setsuna-pre-drive-restore', JSON.stringify({
+                    createdAt: new Date().toISOString(),
+                    settings,
+                    tabs,
+                    activeTabId,
+                }));
+            } catch {}
+
             if (data.settings && updateSettings) {
-                updateSettings({ ...data.settings, gdriveRefreshToken: settings.gdriveRefreshToken });
+                const currentDictionaries = Array.isArray(settings.dictionaries) ? settings.dictionaries : [];
+                const restoredDictionaries = Array.isArray(data.settings.dictionaries) ? data.settings.dictionaries : [];
+                const restoredByName = new Map(restoredDictionaries.map((dictionary: any) => [dictionary?.name, dictionary]));
+                updateSettings({
+                    ...settings,
+                    ...data.settings,
+                    dictionaries: currentDictionaries.map((dictionary: any) => restoredByName.get(dictionary?.name) || dictionary),
+                    gdriveRefreshToken: settings.gdriveRefreshToken,
+                });
             }
-            if (Array.isArray(data.tabs) && setTabs) {
-                setTabs(data.tabs);
-                if (data.tabs.length > 0) {
-                    switchTab(data.tabs[0].id);
-                }
+            if (restoredTabs.length > 0 && setTabs) {
+                setTabs(restoredTabs);
+                const requestedId = Number(data.activeTabId);
+                const nextActiveId = restoredTabs.some((tab: any) => tab.id === requestedId && !tab.archived)
+                    ? requestedId
+                    : restoredTabs.find((tab: any) => !tab.archived)?.id ?? restoredTabs[0].id;
+                window.setTimeout(() => switchTab(nextActiveId), 0);
             }
-            setDriveStatus(isEn ? 'Latest backup restored.' : 'Последний бэкап восстановлен.');
+            const restoredParts = [
+                data.settings ? (isEn ? 'settings' : 'настройки') : '',
+                restoredTabs.length ? `${restoredTabs.length} ${isEn ? 'tabs' : 'вкладок'}` : '',
+            ].filter(Boolean).join(isEn ? ' and ' : ' и ');
+            setDriveStatus(isEn
+                ? `Restored ${restoredParts || 'backup data'}. A safety copy was saved locally.`
+                : `Восстановлено: ${restoredParts || 'данные бэкапа'}. Перед заменой сохранена локальная страховочная копия.`);
+        } catch (error: any) {
+            setDriveStatus(error?.message || String(error));
+        } finally {
+            setDriveBusy(false);
+        }
+    };
+
+    const deleteMobileBackup = async (backup: DriveFileInfo) => {
+        if (!settings.gdriveRefreshToken) return;
+        setDriveBusy(true);
+        try {
+            const token = await getAccessToken(settings.gdriveRefreshToken);
+            await deleteDriveFile(token, backup.id);
+            await refreshDriveOverview(true);
+            setDriveStatus(isEn ? 'Backup removed.' : 'Бэкап удалён.');
         } catch (error: any) {
             setDriveStatus(error?.message || String(error));
         } finally {
@@ -574,6 +930,7 @@ export const MobileLayout = ({
             </header>
 
             <main className="mobile-main">
+                {lookupNotice && <div className="mobile-lookup-notice" role="status">{lookupNotice}</div>}
                 {activeMobileView === 'lookup' ? (
                     <div className="mobile-lookup-page">
                         <div className="mobile-section-title">{isEn ? 'Lookup' : 'Лукап'}</div>
@@ -596,17 +953,11 @@ export const MobileLayout = ({
                             </button>
                         </div>
                         <div className="mobile-token-panel">
-                            {lookupText.trim() ? tokenizeLookupText(lookupText).map((part, index) =>
-                                part.lookup ? (
-                                    <button key={`${part.text}-${part.cursor}-${index}`} type="button" className="lookup-token mobile-token" onClick={() => lookupTypedToken(part.text, part.cursor)}>
-                                        {part.text}
-                                    </button>
-                                ) : (
-                                    <span key={`${part.text}-${index}`} className="mobile-token-plain">{part.text}</span>
-                                )
-                            ) : (
-                                <div className="mobile-placeholder compact">{isEn ? 'Japanese words will become tappable here.' : 'Японские слова тут станут кликабельными.'}</div>
-                            )}
+                            <MobileSentenceTokens
+                                text={lookupText}
+                                onLookup={lookupTypedToken}
+                                placeholder={isEn ? 'Japanese and English words will become tappable here.' : 'Японские и английские слова тут станут кликабельными.'}
+                            />
                         </div>
                     </div>
                 ) : activeTab?.mode === 'player' ? (
@@ -621,6 +972,7 @@ export const MobileLayout = ({
                     </div>
                 ) : activeTab?.lines?.length ? (
                     <TextContainer
+                        contentKey={activeTab?.id ?? activeTabId}
                         lines={activeTab.lines || EMPTY_LINES}
                         lineFurigana={activeTab.lineFurigana || []}
                         onDelete={deleteLine}
@@ -655,6 +1007,15 @@ export const MobileLayout = ({
                 >
                     <IconSearch /> <span>{activeMobileView === 'lookup' ? (isEn ? 'Reading' : 'Чтение') : (isEn ? 'Lookup' : 'Лукап')}</span>
                 </button>
+                <button
+                    type="button"
+                    className={`mobile-dock-btn flow ${settings.mobileOverlayEnabled ? 'active' : ''}`}
+                    onClick={toggleMobileFlow}
+                    aria-label={isEn ? 'Setsuna Flow overlay' : 'Окно Setsuna Flow'}
+                    title={isEn ? 'Setsuna Flow' : 'Setsuna Flow'}
+                >
+                    <IconPin /> <span>Flow</span>
+                </button>
                 <button type="button" className="mobile-dock-btn tabs" onClick={() => setTabsOpen(true)} aria-label={isEn ? 'Windows' : 'Окна'}>
                     <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="4" y="6" width="16" height="14" rx="2.5" /><path d="M4 10h16" /></svg>
                     {visibleTabs.length > 1 && <span className="mobile-dock-badge">{visibleTabs.length}</span>}
@@ -684,7 +1045,7 @@ export const MobileLayout = ({
                             + {isEn ? 'New window' : 'Новое окно'}
                         </button>
                         <div className="mobile-tabs-actions">
-                            <button type="button" className="mobile-action" onClick={() => { openImport(); setTabsOpen(false); }}><IconImport /> {isEn ? 'Import dictionary' : 'Импорт словаря'}</button>
+                            <button type="button" className="mobile-action" onClick={() => { openMobileDictionaryImport(); setTabsOpen(false); }}><IconImport /> {isEn ? 'Import dictionary' : 'Импорт словаря'}</button>
                             <button type="button" className="mobile-action mobile-action-danger" onClick={() => { clearAll(); setTabsOpen(false); }}><IconClear /> {isEn ? 'Clear text' : 'Очистить'}</button>
                         </div>
                     </section>
@@ -722,10 +1083,32 @@ export const MobileLayout = ({
                                 <div className="mobile-kicker">Setsuna</div>
                                 <div className="mobile-settings-title">{isEn ? 'Settings' : 'Настройки'}</div>
                             </div>
-                            <button className="mobile-icon-btn" onClick={() => setIsMobileSettingsOpen(false)}>x</button>
+                            <button className="mobile-icon-btn" onClick={() => setIsMobileSettingsOpen(false)} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}><IconClose /></button>
                         </div>
 
-                        <div className="mobile-settings-section">
+                        <div className="mobile-settings-nav" role="tablist" aria-label={isEn ? 'Settings sections' : 'Разделы настроек'}>
+                            {([
+                                ['reading', isEn ? 'Reading' : 'Чтение'],
+                                ['flow', 'Flow'],
+                                ['source', isEn ? 'Source' : 'Источник'],
+                                ['anki', 'Anki'],
+                                ['drive', 'Drive'],
+                                ['data', isEn ? 'Data' : 'Данные'],
+                            ] as [MobileSettingsSection, string][]).map(([id, label]) => (
+                                <button
+                                    key={id}
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={mobileSettingsSection === id}
+                                    className={mobileSettingsSection === id ? 'active' : ''}
+                                    onClick={() => setMobileSettingsSection(id)}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {mobileSettingsSection === 'reading' && <div className="mobile-settings-section">
                             <div className="mobile-section-title">{isEn ? 'Interface' : 'Интерфейс'}</div>
                             <label className="mobile-setting-row">
                                 <span>{isEn ? 'Language' : 'Язык'}</span>
@@ -752,9 +1135,66 @@ export const MobileLayout = ({
                                     onChange={(e) => updateSetting('enableTextCleaner', e.target.checked)}
                                 />
                             </label>
-                        </div>
+                        </div>}
 
-                        <div className="mobile-settings-section">
+                        {mobileSettingsSection === 'flow' && <div className="mobile-settings-section mobile-flow-settings">
+                            <div className="mobile-section-title">Setsuna Flow</div>
+                            <div className="mobile-settings-note">
+                                {isEn
+                                    ? 'A fixed-size window with the latest hooked line. Drag the title bar, resize from the lower-right corner, and tap a word to look it up.'
+                                    : 'Окно фиксированного размера с последней строкой. Тяни за верхнюю панель, меняй размер за правый нижний угол и нажимай на слова для лукапа.'}
+                            </div>
+                            <div className="mobile-overlay-card">
+                                <div>
+                                    <strong>{isEn ? 'Show over other apps' : 'Показывать поверх приложений'}</strong>
+                                    <span>{isEn ? 'The arrow in Flow returns to Setsuna.' : 'Стрелка в окне Flow возвращает в Setsuna.'}</span>
+                                </div>
+                                <label className="mobile-overlay-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={settings.mobileOverlayEnabled === true}
+                                        onChange={toggleMobileFlow}
+                                    />
+                                    <span />
+                                </label>
+                            </div>
+                            <div className="mobile-settings-actions two">
+                                <button type="button" className="mobile-action" onClick={() => {
+                                    try {
+                                        requestMobileOverlayPermission();
+                                        setOverlayStatus(isEn ? 'Allow the permission, then return here.' : 'Разреши доступ и вернись сюда.');
+                                    } catch (error: any) { setOverlayStatus(error?.message || String(error)); }
+                                }}>
+                                    {isEn ? 'Allow overlay' : 'Разрешить доступ'}
+                                </button>
+                                <button type="button" className="mobile-action" onClick={refreshOverlayStatus}>
+                                    {isEn ? 'Check permission' : 'Проверить доступ'}
+                                </button>
+                            </div>
+                            <label className="mobile-setting-row mobile-setting-range">
+                                <span>{isEn ? 'Window width' : 'Ширина окна'} <b>{settings.mobileOverlayWidth ?? 340}</b></span>
+                                <input type="range" min="220" max="480" step="10" value={settings.mobileOverlayWidth ?? 340} onChange={(event) => updateSetting('mobileOverlayWidth', Number(event.target.value))} />
+                            </label>
+                            <label className="mobile-setting-row mobile-setting-range">
+                                <span>{isEn ? 'Window height' : 'Высота окна'} <b>{settings.mobileOverlayHeight ?? 160}</b></span>
+                                <input type="range" min="110" max="320" step="10" value={settings.mobileOverlayHeight ?? 160} onChange={(event) => updateSetting('mobileOverlayHeight', Number(event.target.value))} />
+                            </label>
+                            <label className="mobile-setting-row mobile-setting-range">
+                                <span>{isEn ? 'Text size' : 'Размер текста'} <b>{settings.mobileOverlayFontSize ?? 22}</b></span>
+                                <input type="range" min="12" max="48" value={settings.mobileOverlayFontSize ?? 22} onChange={(event) => updateSetting('mobileOverlayFontSize', Number(event.target.value))} />
+                            </label>
+                            <label className="mobile-setting-row mobile-setting-range">
+                                <span>{isEn ? 'Background opacity' : 'Прозрачность фона'} <b>{settings.mobileOverlayOpacity ?? 88}%</b></span>
+                                <input type="range" min="20" max="100" value={settings.mobileOverlayOpacity ?? 88} onChange={(event) => updateSetting('mobileOverlayOpacity', Number(event.target.value))} />
+                            </label>
+                            <div className="mobile-color-row">
+                                <label><span>{isEn ? 'Text' : 'Текст'}</span><input type="color" value={settings.mobileOverlayTextColor || '#ffffff'} onChange={(event) => updateSetting('mobileOverlayTextColor', event.target.value)} /></label>
+                                <label><span>{isEn ? 'Background' : 'Фон'}</span><input type="color" value={settings.mobileOverlayBackgroundColor || '#15181d'} onChange={(event) => updateSetting('mobileOverlayBackgroundColor', event.target.value)} /></label>
+                            </div>
+                            {overlayStatus && <div className="mobile-drive-status">{overlayStatus}</div>}
+                        </div>}
+
+                        {mobileSettingsSection === 'source' && <div className="mobile-settings-section">
                             <div className="mobile-section-title">{isEn ? 'Text source (WebSocket)' : 'Источник текста (WebSocket)'}</div>
                             <div className="mobile-settings-note">
                                 {isEn
@@ -797,9 +1237,9 @@ export const MobileLayout = ({
                                 <span className={`mobile-ws-dot ${wsConnected ? 'on' : wsIsConnecting || wsIntentOn ? 'pending' : 'off'}`} />
                                 {wsStatusLabel}
                             </div>
-                        </div>
+                        </div>}
 
-                        <div className="mobile-settings-section">
+                        {mobileSettingsSection === 'anki' && <div className="mobile-settings-section">
                             <div className="mobile-section-title">Anki</div>
                             <div className="mobile-settings-note">
                                 {isEn
@@ -811,7 +1251,17 @@ export const MobileLayout = ({
                                     className="mobile-action"
                                     disabled={ankiBusy}
                                     onClick={async () => {
-                                        await requestAnkiDroidPermission().catch((error) => setAnkiStatusText(error?.message || String(error)));
+                                        const permission = await requestAnkiDroidPermission()
+                                            .catch((error) => {
+                                                setAnkiStatusText(error?.message || String(error));
+                                                return null;
+                                            });
+                                        if (!permission?.permissionGranted) {
+                                            setAnkiStatusText(isEn
+                                                ? 'Allow the Android permission, then tap Refresh.'
+                                                : 'Подтверди Android-разрешение, затем нажми «Обновить».');
+                                            return;
+                                        }
                                         clearAnkiMetaCache();
                                         await loadMobileAnki(true);
                                     }}
@@ -872,9 +1322,9 @@ export const MobileLayout = ({
                                 </select>
                             </label>
                             {ankiStatusText && <div className="mobile-drive-status">{ankiStatusText}</div>}
-                        </div>
+                        </div>}
 
-                        <div className="mobile-settings-section">
+                        {mobileSettingsSection === 'drive' && <div className="mobile-settings-section">
                             <div className="mobile-section-title">Google Drive</div>
                             {!GOOGLE_DRIVE_AVAILABLE ? (
                                 <>
@@ -892,11 +1342,22 @@ export const MobileLayout = ({
                                     <div className="mobile-settings-note">
                                         {isEn ? 'Connected. Backups use the same hidden app folder as desktop Setsuna.' : 'Подключено. Бэкапы лежат в той же скрытой папке приложения, что и на ПК.'}
                                     </div>
+                                    <div className="mobile-drive-summary">
+                                        <div>
+                                            <strong>{isEn ? 'Cloud space' : 'Место в облаке'}</strong>
+                                            <span>{driveQuota?.unlimited
+                                                ? (isEn ? 'Unlimited plan' : 'Без лимита')
+                                                : driveQuota
+                                                    ? `${formatMobileBytes(bytesAvailableInDrive(driveQuota))} ${isEn ? 'free' : 'свободно'} / ${formatMobileBytes(driveQuota.limit)}`
+                                                    : (isEn ? 'Checking…' : 'Проверяю…')}</span>
+                                        </div>
+                                        <button type="button" className="mobile-icon-btn tiny" disabled={driveBusy} onClick={() => void refreshDriveOverview()} aria-label={isEn ? 'Refresh Drive' : 'Обновить Drive'}>↻</button>
+                                    </div>
                                     <div className="mobile-settings-actions two">
                                         <button className="mobile-action" disabled={driveBusy} onClick={uploadMobileBackup}>
                                             {isEn ? 'Upload backup' : 'Загрузить бэкап'}
                                         </button>
-                                        <button className="mobile-action" disabled={driveBusy} onClick={restoreLatestMobileBackup}>
+                                        <button className="mobile-action" disabled={driveBusy || !driveBackups.length} onClick={() => restoreMobileBackup()}>
                                             {isEn ? 'Restore latest' : 'Восстановить последний'}
                                         </button>
                                         <button className="mobile-action" disabled={driveBusy} onClick={uploadMobileDictionary}>
@@ -905,6 +1366,31 @@ export const MobileLayout = ({
                                         <button className="mobile-action" disabled={driveBusy} onClick={restoreMobileDictionary}>
                                             {isEn ? 'Download dictionary' : 'Скачать словарь'}
                                         </button>
+                                    </div>
+                                    <div className="mobile-settings-note mobile-dictionary-warning">
+                                        {isEn
+                                            ? 'Dictionaries can be very large. Uploading them uses your Drive quota and may take several minutes on mobile data.'
+                                            : 'Словари могут занимать много места. Их загрузка расходует квоту Drive и на мобильной сети может занять несколько минут.'}
+                                    </div>
+                                    <div className="mobile-backup-list">
+                                        <div className="mobile-backup-list-head">
+                                            <strong>{isEn ? 'Backup archive' : 'Архив бэкапов'}</strong>
+                                            <span>{driveBackups.length}</span>
+                                        </div>
+                                        {driveBackups.length === 0 ? (
+                                            <div className="mobile-settings-note">{isEn ? 'No cloud backups yet.' : 'В облаке пока нет бэкапов.'}</div>
+                                        ) : driveBackups.map((backup) => (
+                                            <div key={backup.id} className="mobile-backup-row">
+                                                <div>
+                                                    <strong>{backup.modifiedTime ? new Date(backup.modifiedTime).toLocaleString(isEn ? 'en-US' : 'ru-RU') : backup.name}</strong>
+                                                    <span>{formatMobileBytes(backup.size)}</span>
+                                                </div>
+                                                <div className="mobile-backup-actions">
+                                                    <button type="button" disabled={driveBusy} onClick={() => restoreMobileBackup(backup)}>{isEn ? 'Restore' : 'Восст.'}</button>
+                                                    <button type="button" disabled={driveBusy} className="danger" onClick={() => deleteMobileBackup(backup)} aria-label={isEn ? 'Delete backup' : 'Удалить бэкап'}>×</button>
+                                                </div>
+                                            </div>
+                                        ))}
                                     </div>
                                     <button className="mobile-action danger" disabled={driveBusy} onClick={() => updateSetting('gdriveRefreshToken', '')}>
                                         {isEn ? 'Disconnect Drive' : 'Отключить Drive'}
@@ -936,15 +1422,20 @@ export const MobileLayout = ({
                                 </>
                             )}
                             {driveStatus && <div className="mobile-drive-status">{driveStatus}</div>}
-                        </div>
+                        </div>}
 
-                        <div className="mobile-settings-section">
+                        {mobileSettingsSection === 'data' && <div className="mobile-settings-section">
                             <div className="mobile-section-title">{isEn ? 'Data' : 'Данные'}</div>
+                            <div className="mobile-settings-note mobile-starter-dicts-note">
+                                {isEn
+                                    ? 'Four tiny starter dictionaries are built in for immediate Japanese, grammar, and English lookup tests. Imported Yomitan dictionaries are added alongside them.'
+                                    : 'Для проверки уже встроены четыре маленьких словаря: JP-RU, JP-EN, грамматика и EN-RU. Импортированные Yomitan-словари добавляются рядом с ними.'}
+                            </div>
                             <div className="mobile-settings-actions">
-                                <button className="mobile-action" onClick={openImport}><IconImport /> {isEn ? 'Import dictionary' : 'Импорт словаря'}</button>
+                                <button className="mobile-action" onClick={openMobileDictionaryImport}><IconImport /> {isEn ? 'Import dictionary' : 'Импорт словаря'}</button>
                                 <button className="mobile-action danger" onClick={clearAll}><IconClear /> {isEn ? 'Clear current text' : 'Очистить текст'}</button>
                             </div>
-                        </div>
+                        </div>}
                     </div>
                 </div>
             )}
@@ -1180,14 +1671,23 @@ export const TopBar = ({
         const el = topbarRef.current;
         if (!el) return;
         const updateCompactMode = () => {
-            // A very narrow window always falls back to the compact state.
-            if (el.clientWidth < 900) setIsTopbarCollapsed(true);
+            const tabStrip = tabStripRef.current;
+            const tabsNeedSpace = visibleTabs.length > 0;
+            const tabStripIsCrushed = tabsNeedSpace && (tabStrip?.clientWidth || 0) < 190;
+            const contentIsClipped = el.scrollWidth > el.clientWidth + 1;
+            if (!isTopbarCollapsed && (el.clientWidth < 900 || tabStripIsCrushed || contentIsClipped)) {
+                setIsTopbarCollapsed(true);
+            }
         };
-        updateCompactMode();
+        const frame = window.requestAnimationFrame(updateCompactMode);
         const observer = new ResizeObserver(updateCompactMode);
         observer.observe(el);
-        return () => observer.disconnect();
-    }, []);
+        if (tabStripRef.current) observer.observe(tabStripRef.current);
+        return () => {
+            window.cancelAnimationFrame(frame);
+            observer.disconnect();
+        };
+    }, [isTopbarCollapsed, visibleTabs.length]);
     useEffect(() => {
         setTabWindowStart((start) => Math.max(0, Math.min(start, Math.max(0, visibleTabs.length - visibleTabSlots))));
     }, [visibleTabs.length, visibleTabSlots]);

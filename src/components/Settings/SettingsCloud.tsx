@@ -386,7 +386,13 @@ export default function SettingsCloud({
         try {
             const token = await accessToken();
             const data = await downloadFromDrive(token, file.id);
-            const normalized = Array.isArray(data) ? { tabs: data, oldFormat: true } : data;
+            const normalized = {
+                ...data,
+                tabs: [
+                    ...(data.tabs || []),
+                    ...(data.archive || []).map((tab: any) => ({ ...tab, archived: true })),
+                ],
+            };
             const selections: Record<string, boolean> = {};
             normalized.tabs?.forEach((tab: any) => { selections[String(tab.id)] = true; });
             setRestoreTabs(selections);

@@ -1,7 +1,7 @@
 {
   "name": "Setsuna",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "desktop:build": "tauri build",
     "desktop:release": "tauri build --config src-tauri/tauri.release.conf.json",
     "desktop:release:linux": "bash scripts/tauri-release-linux.sh",
-    "android:dev:phone": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android-dev-phone.ps1"
+    "android:dev:phone": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android-dev-phone.ps1",
+    "android:smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android-smoke.ps1"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

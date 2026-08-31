@@ -34,7 +34,9 @@ class AnkiDroidBridge(private val activity: Activity) {
     @JavascriptInterface
     fun requestPermission(): String = wrap {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !hasAnkiPermission()) {
-            ActivityCompat.requestPermissions(activity, arrayOf(READ_WRITE_PERMISSION), 7042)
+            activity.runOnUiThread {
+                ActivityCompat.requestPermissions(activity, arrayOf(READ_WRITE_PERMISSION), 7042)
+            }
         }
         JSONObject().put("requested", true).put("permissionGranted", hasAnkiPermission())
     }

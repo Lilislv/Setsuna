@@ -31,7 +31,6 @@ import {
     extractHookPayload,
     formatDiscordMode,
     formatDiscordStats,
-    MAX_LINES_PER_TAB,
     normalizeIncomingHookText,
     trimRuntimeLine,
     normalizeJapaneseFontStack,
@@ -101,6 +100,18 @@ const readStoredSettings = (): AppSettings => {
 
 const WORKSPACE_UPDATED_AT_STORAGE_KEY = "txthk-workspace-updated-at";
 const SKIPPED_UPDATE_VERSION_STORAGE_KEY = "setsuna-skipped-update-version";
+
+const countExportedTextLines = (value: unknown): number => {
+    if (Array.isArray(value)) {
+        return value.reduce((total, tab) => (
+            total + (Array.isArray(tab?.lines) ? tab.lines.length : 0)
+        ), 0);
+    }
+
+    if (!value || typeof value !== 'object') return 0;
+    const lineData = (value as Record<string, unknown>)["bannou-texthooker-lineData"];
+    return Array.isArray(lineData) ? lineData.length : 0;
+};
 
 const updaterBuildNumber = (version: string): string => {
     const match = /^0\.0\.(\d+)$/.exec(version);
@@ -311,6 +322,8 @@ export default function App() {
     const [searchResults, setSearchResults] = useState<{ lineIdx: number; matchIdx: number }[]>([]);
     const [currentSearchIdx, setCurrentSearchIdx] = useState(-1);
     const [searchTrigger, setSearchTrigger] = useState(0);
+    const searchContextRef = useRef<{ tabId: number | null; query: string }>({ tabId: null, query: '' });
+    const selectedSearchResultRef = useRef<{ lineIdx: number; matchIdx: number } | null>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
 
     const [floatingBtn, setFloatingBtn] = useState<{ x: number; y: number; text: string } | null>(null);
@@ -557,6 +570,8 @@ export default function App() {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
     const [lookupStack, setLookupStack] = useState<LookupData[]>([]);
+    const [mobileLookupNotice, setMobileLookupNotice] = useState('');
+    const [mobileSettingsRequest, setMobileSettingsRequest] = useState({ id: 0, section: 'reading' });
     const cambridgeLookupCacheRef = useRef<Map<string, { expiresAt: number; entries: DictEntry[] }>>(new Map());
     const [playerMiningClip, setPlayerMiningClip] = useState<PlayerMiningClip | null>(null);
     const [jsonImportProgress, setJsonImportProgress] = useState<{ current: number; total: number } | null>(null);
@@ -570,6 +585,12 @@ export default function App() {
     } | null>(null);
 
     const [isHelperSpaceReserved, setIsHelperSpaceReserved] = useState(false);
+
+    useEffect(() => {
+        if (!mobileLookupNotice) return;
+        const timer = window.setTimeout(() => setMobileLookupNotice(''), 4200);
+        return () => window.clearTimeout(timer);
+    }, [mobileLookupNotice]);
     const [reservedWidth, setReservedWidth] = useState(() => {
         const saved = localStorage.getItem("txthk-browser-width");
         const parsed = saved ? parseInt(saved, 10) : 450;
@@ -1023,43 +1044,68 @@ export default function App() {
         if (!searchQuery.trim() || !activeTab) {
             setSearchResults([]);
             setCurrentSearchIdx(-1);
+            searchContextRef.current = { tabId: activeTab?.id ?? null, query: '' };
+            selectedSearchResultRef.current = null;
             return;
         }
 
         const results: { lineIdx: number; matchIdx: number }[] = [];
-        const lowerQuery = searchQuery.toLowerCase();
+        const lowerQuery = searchQuery.trim().toLocaleLowerCase();
+        const previousContext = searchContextRef.current;
+        const contextChanged = previousContext.tabId !== activeTab.id || previousContext.query !== lowerQuery;
+        const previousSelection = contextChanged ? null : selectedSearchResultRef.current;
 
         activeTab.lines.forEach((line, lineIdx) => {
             let startIndex = 0;
-            let matchIdx = line.toLowerCase().indexOf(lowerQuery, startIndex);
+            const lowerLine = line.toLocaleLowerCase();
+            let matchIdx = lowerLine.indexOf(lowerQuery, startIndex);
 
             while (matchIdx !== -1) {
                 results.push({ lineIdx, matchIdx });
                 startIndex = matchIdx + lowerQuery.length;
-                matchIdx = line.toLowerCase().indexOf(lowerQuery, startIndex);
+                matchIdx = lowerLine.indexOf(lowerQuery, startIndex);
             }
         });
 
+        searchContextRef.current = { tabId: activeTab.id, query: lowerQuery };
         setSearchResults(results);
 
         if (results.length > 0) {
-            setCurrentSearchIdx(0);
-            setSearchTrigger((prev) => prev + 1);
+            const preservedIndex = previousSelection
+                ? results.findIndex((result) => (
+                    result.lineIdx === previousSelection.lineIdx && result.matchIdx === previousSelection.matchIdx
+                ))
+                : -1;
+            const nextIndex = preservedIndex >= 0 ? preservedIndex : 0;
+            selectedSearchResultRef.current = results[nextIndex];
+            setCurrentSearchIdx(nextIndex);
+            if (contextChanged || preservedIndex < 0) {
+                setSearchTrigger((prev) => prev + 1);
+            }
         } else {
             setCurrentSearchIdx(-1);
+            selectedSearchResultRef.current = null;
         }
-    }, [searchQuery, activeTab?.lines]);
+    }, [searchQuery, activeTab?.id, activeTab?.lines]);
 
     const handleSearchNext = () => {
         if (searchResults.length > 0) {
-            setCurrentSearchIdx((prev) => (prev + 1) % searchResults.length);
+            setCurrentSearchIdx((prev) => {
+                const next = (prev + 1) % searchResults.length;
+                selectedSearchResultRef.current = searchResults[next];
+                return next;
+            });
             setSearchTrigger((prev) => prev + 1);
         }
     };
 
     const handleSearchPrev = () => {
         if (searchResults.length > 0) {
-            setCurrentSearchIdx((prev) => (prev - 1 + searchResults.length) % searchResults.length);
+            setCurrentSearchIdx((prev) => {
+                const next = (prev - 1 + searchResults.length) % searchResults.length;
+                selectedSearchResultRef.current = searchResults[next];
+                return next;
+            });
             setSearchTrigger((prev) => prev + 1);
         }
     };
@@ -1412,6 +1458,43 @@ export default function App() {
         }
     }, [syncDictionaries]);
 
+    useEffect(() => {
+        const showMobileDictionaryCopyProgress = (event: Event) => {
+            const total = Math.max(1, Number((event as CustomEvent<unknown>).detail) || 1);
+            setDictImportProgress({
+                dict_name: t('app.importWaiting'),
+                total_dicts: total,
+                current_file: 0,
+                total_files: total,
+                words_added: 0,
+                status: t('app.importPreparing'),
+            });
+        };
+        const importMobileDictionaries = (event: Event) => {
+            const raw = String((event as CustomEvent<unknown>).detail ?? '');
+            try {
+                const paths = JSON.parse(raw);
+                if (Array.isArray(paths) && paths.length > 0 && paths.every((path) => typeof path === 'string')) {
+                    void runDictImport(paths);
+                }
+            } catch {
+                // Ignore malformed data from a third-party Android intent.
+            }
+        };
+        const failMobileDictionaryCopy = (event: Event) => {
+            setDictImportProgress(null);
+            alert(String((event as CustomEvent<unknown>).detail || t('app.importError', { error: 'unknown error' })));
+        };
+        window.addEventListener('setsuna-mobile-dictionaries-copying', showMobileDictionaryCopyProgress);
+        window.addEventListener('setsuna-mobile-dictionaries', importMobileDictionaries);
+        window.addEventListener('setsuna-mobile-dictionaries-copy-failed', failMobileDictionaryCopy);
+        return () => {
+            window.removeEventListener('setsuna-mobile-dictionaries-copying', showMobileDictionaryCopyProgress);
+            window.removeEventListener('setsuna-mobile-dictionaries', importMobileDictionaries);
+            window.removeEventListener('setsuna-mobile-dictionaries-copy-failed', failMobileDictionaryCopy);
+        };
+    }, [runDictImport, t]);
+
     const importEpubPath = useCallback(async (filePath: string, targetTabId?: number) => {
         void filePath;
         void targetTabId;
@@ -1549,7 +1632,7 @@ export default function App() {
             importedTabs.push({
                 id,
                 name,
-                lines: lines.slice(-MAX_LINES_PER_TAB),
+                lines,
                 stats,
                 status: "reading",
                 speedSamples: [],
@@ -1639,7 +1722,6 @@ export default function App() {
                                 if (text) {
                                     const parts = text.split('\n').filter((l: string) => l.trim() !== "");
                                     for (const p of parts) {
-                                        if (importedLines.length >= MAX_LINES_PER_TAB) importedLines.shift();
                                         const line = trimRuntimeLine(p.trim());
                                         importedLines.push(line);
                                         const s = calculateStats(line, settings.appLanguage);
@@ -1888,14 +1970,10 @@ export default function App() {
                         ? t.lineFurigana
                         : t.lines.map(() => null);
                     const nextFurigana = [...previousFurigana, suppliedFurigana ?? null];
-                    const trimCount = Math.max(0, nextLines.length - MAX_LINES_PER_TAB);
-                    const lines = trimCount ? nextLines.slice(trimCount) : nextLines;
-                    const lineFurigana = trimCount ? nextFurigana.slice(trimCount) : nextFurigana;
-
                     return {
                         ...t,
-                        lines,
-                        lineFurigana,
+                        lines: nextLines,
+                        lineFurigana: nextFurigana,
                         stats: {
                             chars: t.stats.chars + newStats.chars,
                             words: t.stats.words + newStats.words,
@@ -1940,6 +2018,15 @@ export default function App() {
         window.addEventListener('paste', handlePaste);
         return () => window.removeEventListener('paste', handlePaste);
     }, [settings.allowManualPaste, settings.allowManualPasteDuringPause, handleNewText, triggerFlash]);
+
+    useEffect(() => {
+        const receiveAndroidText = (event: Event) => {
+            const text = String((event as CustomEvent<unknown>).detail ?? '').trim();
+            if (text) handleNewText(text, true, false);
+        };
+        window.addEventListener('setsuna-mobile-text', receiveAndroidText);
+        return () => window.removeEventListener('setsuna-mobile-text', receiveAndroidText);
+    }, [handleNewText]);
 
     const deleteLine = useCallback((index: number) => {
         setTabs((prev) =>
@@ -2041,6 +2128,11 @@ export default function App() {
             }
         }
         setActiveWorkspace("texthooker");
+    };
+
+    const openMobileSettingsPanel = (section: string = 'reading') => {
+        openTextHookerWorkspace();
+        setMobileSettingsRequest((current) => ({ id: current.id + 1, section }));
     };
 
     const openEpubWorkspace = () => setActiveWorkspace("epub");
@@ -2455,13 +2547,42 @@ export default function App() {
             });
 
             if (filePath) {
+                const content = JSON.stringify(exportData, null, 2);
                 await invoke("save_sync_file", {
                     path: filePath,
-                    content: JSON.stringify(exportData, null, 2),
+                    content,
                 });
+
+                const writtenContent = await invoke<string>("load_sync_file", { path: filePath });
+                if (writtenContent !== content) {
+                    throw new Error(settings.appLanguage === 'en'
+                        ? 'The saved file does not match the exported data.'
+                        : 'Сохранённый файл не совпадает с экспортированными данными.');
+                }
+
+                const writtenData = JSON.parse(writtenContent);
+                const expectedLineCount = countExportedTextLines(exportData);
+                const writtenLineCount = countExportedTextLines(writtenData);
+                if (writtenLineCount !== expectedLineCount) {
+                    throw new Error(settings.appLanguage === 'en'
+                        ? `Expected ${expectedLineCount} lines, but the saved file contains ${writtenLineCount}.`
+                        : `Ожидалось строк: ${expectedLineCount}, в сохранённом файле: ${writtenLineCount}.`);
+                }
+
                 setIsExportModalOpen(false);
+                setNotice({
+                    title: settings.appLanguage === 'en' ? 'Export complete' : 'Экспорт завершён',
+                    message: settings.appLanguage === 'en'
+                        ? `${writtenLineCount.toLocaleString('en-US')} lines were written and verified.`
+                        : `Записано и проверено строк: ${writtenLineCount.toLocaleString('ru-RU')}.`,
+                });
             }
-        } catch {}
+        } catch (error) {
+            setNotice({
+                title: settings.appLanguage === 'en' ? 'Export failed' : 'Ошибка экспорта',
+                message: error instanceof Error ? error.message : String(error),
+            });
+        }
     };
 
     const handleImportJson = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2502,7 +2623,6 @@ export default function App() {
                             if (text) {
                                 const parts = text.split('\n').filter((l: string) => l.trim() !== "");
                                 for (const p of parts) {
-                                    if (importedLines.length >= MAX_LINES_PER_TAB) importedLines.shift();
                                     const line = trimRuntimeLine(p.trim());
                                     importedLines.push(line);
                                     const s = calculateStats(line, settings.appLanguage);
@@ -2718,10 +2838,20 @@ export default function App() {
                 ws.close();
             };
 
-            ws.onmessage = (e) => {
-                if (typeof e.data === 'string') {
-                    const payload = extractHookPayload(e.data);
-                    if (payload.text) handleNewText(payload.text, false, true, payload.furigana);
+            const receiveWsPayload = (raw: string) => {
+                const payload = extractHookPayload(raw);
+                if (payload.text) handleNewText(payload.text, false, true, payload.furigana);
+            };
+
+            ws.onmessage = (event) => {
+                // Android WebView and hook programs do not all agree on the message
+                // type. Treat text, Blob and binary frames as the same UTF-8 payload.
+                if (typeof event.data === 'string') {
+                    receiveWsPayload(event.data);
+                } else if (event.data instanceof Blob) {
+                    void event.data.text().then(receiveWsPayload).catch(() => undefined);
+                } else if (event.data instanceof ArrayBuffer) {
+                    receiveWsPayload(new TextDecoder().decode(event.data));
                 }
             };
         } catch {
@@ -2772,19 +2902,22 @@ export default function App() {
         return () => clearInterval(interval);
     }, [settings.websockets, connectWs]);
 
+    const setWsEnabled = (id: string, enabled: boolean) => {
+        const next = { ...wsIntentsRef.current, [id]: enabled };
+        wsIntentsRef.current = next;
+        if (enabled) {
+            wsFailureCountRef.current[id] = 0;
+            wsNextRetryAtRef.current[id] = 0;
+        } else if (wsRefs.current[id]) {
+            wsRefs.current[id].close();
+            delete wsRefs.current[id];
+            delete wsUrlsRef.current[id];
+        }
+        setWsIntents(next);
+    };
+
     const toggleWs = (id: string) => {
-        setWsIntents((prev) => {
-            const nextValue = !prev[id];
-            if (nextValue) {
-                wsFailureCountRef.current[id] = 0;
-                wsNextRetryAtRef.current[id] = 0;
-            } else if (wsRefs.current[id]) {
-                wsRefs.current[id].close();
-                delete wsRefs.current[id];
-                delete wsUrlsRef.current[id];
-            }
-            return { ...prev, [id]: nextValue };
-        });
+        setWsEnabled(id, !wsIntentsRef.current[id]);
     };
 
     useEffect(() => {
@@ -3137,6 +3270,7 @@ export default function App() {
     const runSentenceTokenLookup = useCallback((word: string, sentence: string, cursor?: number) => {
         const requestedWord = normalizeLookupText(word);
         if (!requestedWord) return;
+        setMobileLookupNotice('');
         const rect = new DOMRect(window.innerWidth / 2, Math.max(110, window.innerHeight * 0.3), 0, 0);
 
         void (async () => {
@@ -3147,12 +3281,14 @@ export default function App() {
                 try {
                     const result = await invoke<{
                         entries: DictEntry[];
-                        match_start: number;
-                        match_len: number;
+                        start: number;
+                        end: number;
                         word: string;
-                    }>('scan_cursor', { sentence, cursor });
-                    resolvedWord = normalizeLookupText(result.word) || requestedWord;
-                    localEntries = Array.isArray(result.entries) ? result.entries : [];
+                    } | null>('scan_cursor', { sentence, cursor });
+                    if (result) {
+                        resolvedWord = normalizeLookupText(result.word) || requestedWord;
+                        localEntries = Array.isArray(result.entries) ? result.entries : [];
+                    }
                 } catch {
                     // Direct lookup below remains useful for punctuation and incomplete text.
                 }
@@ -3172,16 +3308,37 @@ export default function App() {
                 ? []
                 : await lookupCambridgeForManualSearch(resolvedWord);
             const entries = [...localEntries, ...apiEntries];
-            if (entries.length === 0) return;
+            if (entries.length === 0) {
+                setMobileLookupNotice(settings.appLanguage === 'en'
+                    ? `No dictionary entry for “${resolvedWord}”. Tap another block or import a larger dictionary.`
+                    : `Для «${resolvedWord}» нет статьи. Нажми на соседний блок или импортируй более полный словарь.`);
+                return;
+            }
 
+            setMobileLookupNotice('');
             setLookupStack([{
                 rect,
                 entries,
                 word: resolvedWord,
                 sentence: sentence || resolvedWord,
             }]);
-        })();
-    }, [lookupCambridgeForManualSearch, settings.cambridgeApiOnlyWhenNoLocal]);
+        })().catch((error) => {
+            console.warn('Sentence token lookup failed', error);
+            setMobileLookupNotice(settings.appLanguage === 'en'
+                ? 'Lookup failed. Check the dictionary database and try again.'
+                : 'Лукап не сработал. Проверь базу словарей и попробуй ещё раз.');
+        });
+    }, [lookupCambridgeForManualSearch, settings.appLanguage, settings.cambridgeApiOnlyWhenNoLocal]);
+
+    useEffect(() => {
+        const receiveOverlayLookup = (event: Event) => {
+            const text = String((event as CustomEvent<unknown>).detail ?? '').trim();
+            if (!text) return;
+            runLookupAt(text, window.innerWidth / 2, Math.max(120, window.innerHeight * 0.3));
+        };
+        window.addEventListener('setsuna-mobile-lookup', receiveOverlayLookup);
+        return () => window.removeEventListener('setsuna-mobile-lookup', receiveOverlayLookup);
+    }, [runLookupAt]);
 
     if (!isAppLoaded) {
         return <StartupSplash />;
@@ -3621,8 +3778,8 @@ export default function App() {
                         onTextHooker={openTextHookerWorkspace}
                         onEpub={openEpubWorkspace}
                         onPlayer={openPlayerWorkspace}
-                        onAnki={() => openSettingsPanel('anki-cards')}
-                        onSettings={() => openSettingsPanel()}
+                        onAnki={() => isMobileLayout ? openMobileSettingsPanel('anki') : openSettingsPanel('anki-cards')}
+                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('reading') : openSettingsPanel()}
                     />
                 ) : resolvedWorkspace === "epub" ? (
                     <WorkspaceShell
@@ -3684,7 +3841,10 @@ export default function App() {
                         wsConnecting={wsConnecting}
                         wsIntents={wsIntents}
                         toggleWs={toggleWs}
+                        setWsEnabled={setWsEnabled}
                         lookupOpen={lookupStack.length > 0}
+                        lookupNotice={mobileLookupNotice}
+                        settingsRequest={mobileSettingsRequest}
                     />
                 ) : (
                 <>
@@ -3738,8 +3898,9 @@ export default function App() {
                     openSettings={() => openSettingsPanel()}
                 />
 
-                <main ref={mainContentRef} className="main-content" style={{ flex: 1, overflowY: 'auto' }}>
+                <main ref={mainContentRef} className="main-content" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                     <TextContainer
+                        contentKey={activeTab?.id ?? activeTabId}
                         lines={activeTab?.lines || EMPTY_LINES}
                         lineFurigana={activeTab?.lineFurigana || []}
                         onDelete={deleteLine}

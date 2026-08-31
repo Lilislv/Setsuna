@@ -2,7 +2,7 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
@@ -69,6 +69,7 @@ use windows::Win32::UI::Accessibility::{
 };
 
 mod dictionary_import;
+mod core;
 mod epub_import;
 #[cfg(target_os = "linux")]
 mod hover_lookup;
@@ -945,7 +946,6 @@ pub struct CursorLookupResult {
     word: String,
 }
 
-static DB_INDEXES_READY: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 static DIAGNOSTICS_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const DIAGNOSTICS_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const LOOKUP_NO_MATCH: &str = "\u{0000}SETSUNA_NO_MATCH";
@@ -1106,59 +1106,6 @@ fn start_diagnostics_logger(app: tauri::AppHandle) {
     });
 }
 
-fn ensure_db_indexes(db_path: &Path, db: &Connection) {
-    let ready = DB_INDEXES_READY.get_or_init(|| Mutex::new(HashSet::new()));
-    if ready
-        .lock()
-        .map(|paths| paths.contains(db_path))
-        .unwrap_or(false)
-    {
-        return;
-    }
-
-    db.execute("CREATE INDEX IF NOT EXISTS idx_term ON entries(term)", [])
-        .ok();
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_reading ON entries(reading)",
-        [],
-    )
-    .ok();
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_freq_term ON frequencies(term)",
-        [],
-    )
-    .ok();
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_freq_reading ON frequencies(reading)",
-        [],
-    )
-    .ok();
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pitch_term ON pitches(term)",
-        [],
-    )
-    .ok();
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pitch_reading ON pitches(reading)",
-        [],
-    )
-    .ok();
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pron_term ON pronunciations(term)",
-        [],
-    )
-    .ok();
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pron_reading ON pronunciations(reading)",
-        [],
-    )
-    .ok();
-
-    if let Ok(mut paths) = ready.lock() {
-        paths.insert(db_path.to_path_buf());
-    }
-}
-
 fn get_data_path(app: &tauri::AppHandle, filename: &str) -> Result<PathBuf, String> {
     if let Ok(current_exe) = env::current_exe() {
         if let Some(exe_dir) = current_exe.parent() {
@@ -1182,12 +1129,7 @@ fn get_data_path(app: &tauri::AppHandle, filename: &str) -> Result<PathBuf, Stri
 }
 
 fn dictionary_entry_count(path: &Path) -> Option<i64> {
-    if !path.exists() || path.metadata().ok()?.len() == 0 {
-        return None;
-    }
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
-    db.query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
-        .ok()
+    core::database::dictionary_entry_count(path)
 }
 
 fn is_usable_dictionary(path: &Path) -> bool {
@@ -1260,22 +1202,9 @@ fn install_panic_logger() {
 
 fn open_db(app: &tauri::AppHandle) -> Result<Connection, String> {
     let db_path = get_dictionary_db_path(app)?;
-    let db = if db_path.exists() {
-        Connection::open(&db_path).map_err(|e| e.to_string())?
-    } else {
-        Connection::open(&db_path).map_err(|e| e.to_string())?
-    };
-    db.execute("PRAGMA journal_mode = WAL;", []).ok();
-    db.execute("PRAGMA synchronous = NORMAL;", []).ok();
-    db.execute("PRAGMA busy_timeout = 15000;", []).ok();
-    db.execute("PRAGMA cache_size = -4096;", []).ok();
-    db.execute("PRAGMA temp_store = DEFAULT;", []).ok();
-    db.execute("CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY, term TEXT NOT NULL, reading TEXT, definition TEXT NOT NULL, dict_name TEXT DEFAULT 'Unknown', tags TEXT DEFAULT '')", []).map_err(|e| e.to_string())?;
-    db.execute("CREATE TABLE IF NOT EXISTS frequencies (id INTEGER PRIMARY KEY, term TEXT NOT NULL, reading TEXT, value INTEGER, display_value TEXT, dict_name TEXT)", []).map_err(|e| e.to_string())?;
-    db.execute("CREATE TABLE IF NOT EXISTS pitches (id INTEGER PRIMARY KEY, term TEXT NOT NULL, reading TEXT, position INTEGER, dict_name TEXT)", []).map_err(|e| e.to_string())?;
-    db.execute("CREATE TABLE IF NOT EXISTS pronunciations (id INTEGER PRIMARY KEY, term TEXT NOT NULL, reading TEXT, ipa TEXT NOT NULL, tags TEXT DEFAULT '', dict_name TEXT)", []).map_err(|e| e.to_string())?;
-    db.execute("CREATE TABLE IF NOT EXISTS dictionary_meta (title TEXT PRIMARY KEY, revision TEXT DEFAULT '', format INTEGER DEFAULT 0, index_url TEXT DEFAULT '', download_url TEXT DEFAULT '', is_updatable INTEGER DEFAULT 0, imported_at_ms INTEGER DEFAULT 0)", []).map_err(|e| e.to_string())?;
-    ensure_db_indexes(&db_path, &db);
+    let mut db = Connection::open(&db_path).map_err(|e| e.to_string())?;
+    core::database::configure_connection(&db)?;
+    core::database::ensure_canonical_schema(&mut db)?;
     Ok(db)
 }
 
@@ -1337,9 +1266,89 @@ fn push_unique_string(values: &mut Vec<String>, value: String) {
     }
 }
 
+fn irregular_english_base_form(lower: &str) -> Option<&'static str> {
+    match lower {
+        "arose" | "arisen" => Some("arise"),
+        "ate" | "eaten" => Some("eat"),
+        "became" => Some("become"),
+        "began" | "begun" => Some("begin"),
+        "bit" | "bitten" => Some("bite"),
+        "blew" | "blown" => Some("blow"),
+        "broke" | "broken" => Some("break"),
+        "brought" => Some("bring"),
+        "built" => Some("build"),
+        "bought" => Some("buy"),
+        "came" => Some("come"),
+        "caught" => Some("catch"),
+        "chose" | "chosen" => Some("choose"),
+        "dealt" => Some("deal"),
+        "did" | "done" => Some("do"),
+        "drew" | "drawn" => Some("draw"),
+        "drank" | "drunk" => Some("drink"),
+        "drove" | "driven" => Some("drive"),
+        "fell" | "fallen" => Some("fall"),
+        "felt" => Some("feel"),
+        "fled" => Some("flee"),
+        "flew" | "flown" => Some("fly"),
+        "forgot" | "forgotten" => Some("forget"),
+        "found" => Some("find"),
+        "gave" | "given" => Some("give"),
+        "got" | "gotten" => Some("get"),
+        "grew" | "grown" => Some("grow"),
+        "had" => Some("have"),
+        "heard" => Some("hear"),
+        "held" => Some("hold"),
+        "kept" => Some("keep"),
+        "knew" | "known" => Some("know"),
+        "laid" => Some("lay"),
+        "led" => Some("lead"),
+        "left" => Some("leave"),
+        "lent" => Some("lend"),
+        "lost" => Some("lose"),
+        "made" => Some("make"),
+        "met" => Some("meet"),
+        "paid" => Some("pay"),
+        "ran" => Some("run"),
+        "rang" | "rung" => Some("ring"),
+        "rode" | "ridden" => Some("ride"),
+        "rose" | "risen" => Some("rise"),
+        "said" => Some("say"),
+        "sang" | "sung" => Some("sing"),
+        "sat" => Some("sit"),
+        "saw" | "seen" => Some("see"),
+        "sent" => Some("send"),
+        "shook" | "shaken" => Some("shake"),
+        "shot" => Some("shoot"),
+        "slept" => Some("sleep"),
+        "sold" => Some("sell"),
+        "spoke" | "spoken" => Some("speak"),
+        "spent" => Some("spend"),
+        "stood" => Some("stand"),
+        "stole" | "stolen" => Some("steal"),
+        "swam" | "swum" => Some("swim"),
+        "taught" => Some("teach"),
+        "thought" => Some("think"),
+        "threw" | "thrown" => Some("throw"),
+        "told" => Some("tell"),
+        "took" | "taken" => Some("take"),
+        "understood" => Some("understand"),
+        "went" | "gone" => Some("go"),
+        "woke" | "woken" => Some("wake"),
+        "won" => Some("win"),
+        "wore" | "worn" => Some("wear"),
+        "wrote" | "written" => Some("write"),
+        "lying" => Some("lie"),
+        _ => None,
+    }
+}
+
 fn push_english_base_forms(values: &mut Vec<String>, lower: &str) {
     if !is_english_lookup_word(lower) {
         return;
+    }
+
+    if let Some(base) = irregular_english_base_form(lower) {
+        push_unique_string(values, base.to_string());
     }
 
     if lower.ends_with("ies") && lower.len() > 4 {
@@ -3339,6 +3348,169 @@ fn english_token_bounds(chars: &[char], cursor: usize) -> Option<(usize, usize)>
     }
 }
 
+#[derive(Debug, Clone)]
+struct EnglishPhraseWordSpan {
+    start: usize,
+    end: usize,
+    text: String,
+}
+
+fn collect_english_phrase_words(chars: &[char]) -> Vec<EnglishPhraseWordSpan> {
+    let mut words = Vec::new();
+    let mut index = 0usize;
+    while index < chars.len() {
+        if !is_english_word_letter(chars[index]) {
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        index += 1;
+        while index < chars.len() && is_english_word_inner(chars[index]) {
+            index += 1;
+        }
+        let mut end = index;
+        while end > start && !is_english_word_letter(chars[end - 1]) {
+            end -= 1;
+        }
+        if start < end {
+            words.push(EnglishPhraseWordSpan {
+                start,
+                end,
+                text: chars[start..end].iter().collect(),
+            });
+        }
+    }
+    words
+}
+
+fn is_english_phrase_gap(chars: &[char], start: usize, end: usize) -> bool {
+    start <= end
+        && chars[start..end].iter().all(|character| {
+            !matches!(character, '\n' | '\r')
+                && (character.is_whitespace() || matches!(character, ','))
+        })
+}
+
+fn push_english_phrase_form(forms: &mut Vec<String>, value: impl Into<String>) {
+    let normalized = value
+        .into()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_lowercase();
+    push_unique_string(forms, normalized.clone());
+    let ascii_apostrophe = normalized.replace('\u{2019}', "'");
+    push_unique_string(forms, ascii_apostrophe);
+}
+
+fn add_english_possessive_idiom_forms(forms: &mut Vec<String>) {
+    let originals = forms.clone();
+    for form in originals {
+        let words = form.split_whitespace().collect::<Vec<_>>();
+        if !words.iter().any(|word| {
+            matches!(
+                *word,
+                "my" | "your" | "his" | "her" | "our" | "their" | "its"
+            )
+        }) {
+            continue;
+        }
+        for replacement in ["one's", "someone's"] {
+            let replaced = words
+                .iter()
+                .map(|word| {
+                    if matches!(
+                        *word,
+                        "my" | "your" | "his" | "her" | "our" | "their" | "its"
+                    ) {
+                        replacement
+                    } else {
+                        *word
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            push_english_phrase_form(forms, replaced);
+        }
+    }
+}
+
+fn english_phrase_lookup_forms(
+    chars: &[char],
+    words: &[EnglishPhraseWordSpan],
+    left: usize,
+    right: usize,
+) -> Vec<String> {
+    let mut forms = Vec::new();
+    let surface: String = chars[words[left].start..words[right].end].iter().collect();
+    push_english_phrase_form(&mut forms, surface.clone());
+
+    let joined = words[left..=right]
+        .iter()
+        .map(|word| word.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    push_english_phrase_form(&mut forms, joined);
+
+    let first_word = &words[left].text;
+    let mut base_forms = vec![first_word.to_lowercase()];
+    push_english_base_forms(&mut base_forms, &first_word.to_lowercase());
+    let rest = words[left + 1..=right]
+        .iter()
+        .map(|word| word.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for base in base_forms {
+        push_english_phrase_form(&mut forms, format!("{base} {rest}"));
+        if let Some(surface_rest) = surface.strip_prefix(first_word.as_str()) {
+            push_english_phrase_form(&mut forms, format!("{base}{surface_rest}"));
+        }
+    }
+
+    add_english_possessive_idiom_forms(&mut forms);
+    forms
+}
+
+fn is_english_phrasal_particle(word: &str) -> bool {
+    matches!(
+        word.to_lowercase().as_str(),
+        "about"
+            | "across"
+            | "ahead"
+            | "along"
+            | "apart"
+            | "around"
+            | "aside"
+            | "away"
+            | "back"
+            | "by"
+            | "down"
+            | "forward"
+            | "in"
+            | "off"
+            | "on"
+            | "out"
+            | "over"
+            | "round"
+            | "through"
+            | "together"
+            | "up"
+    )
+}
+
+fn english_separable_phrasal_forms(verb: &str, particle: &str) -> Vec<String> {
+    let mut base_forms = vec![verb.to_lowercase()];
+    push_english_base_forms(&mut base_forms, &verb.to_lowercase());
+
+    let mut forms = Vec::new();
+    for base in base_forms {
+        push_english_phrase_form(&mut forms, format!("{base} {particle}"));
+    }
+    forms
+}
+
 fn english_token_near_cursor(text: &str, cursor: usize) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
@@ -3825,6 +3997,40 @@ fn lookup_numeric_prefix_fallback<'a>(
         pronunciation_stmt,
         stmt,
         &suffix,
+        rules,
+        source_len,
+        max_depth,
+    )
+}
+
+fn entries_have_definition(entries: &[DictEntry]) -> bool {
+    entries.iter().any(|entry| {
+        let definition = entry.definition.trim();
+        !definition.is_empty() && definition != "[]" && definition != "null" && definition != "\"\""
+    })
+}
+
+fn lookup_emphatic_do_prefix_fallback<'a>(
+    freq_stmt: &mut rusqlite::Statement<'a>,
+    pitch_stmt: &mut rusqlite::Statement<'a>,
+    pronunciation_stmt: &mut rusqlite::Statement<'a>,
+    stmt: &mut rusqlite::Statement<'a>,
+    chars: &[char],
+    rules: &Vec<(Value, Value, String, String)>,
+    source_len: usize,
+    max_depth: usize,
+) -> Vec<DictEntry> {
+    if chars.first().copied() != Some('\u{30c9}') || chars.len() < 3 {
+        return Vec::new();
+    }
+
+    let base: String = chars[1..].iter().collect();
+    internal_lookup(
+        freq_stmt,
+        pitch_stmt,
+        pronunciation_stmt,
+        stmt,
+        &base,
         rules,
         source_len,
         max_depth,
@@ -4350,6 +4556,21 @@ async fn lookup_word(app: tauri::AppHandle, word: String) -> Result<Vec<DictEntr
                 LOOKUP_DIRECT_DEINFLECT_DEPTH,
             );
         }
+        if entries.is_empty() || !entries_have_definition(&entries) {
+            let fallback = lookup_emphatic_do_prefix_fallback(
+                &mut freq_stmt,
+                &mut pitch_stmt,
+                &mut pronunciation_stmt,
+                &mut stmt,
+                &chars[0..len],
+                &rules,
+                len,
+                LOOKUP_DIRECT_DEINFLECT_DEPTH,
+            );
+            if entries.is_empty() || entries_have_definition(&fallback) {
+                entries = fallback;
+            }
+        }
         if is_plain_katakana_lookup(&sub) {
             entries = keep_literal_kana_entries(entries, &sub);
         }
@@ -4737,6 +4958,160 @@ async fn lookup_cambridge_api(
     Ok(entries)
 }
 
+fn scan_english_phrase_in_db<'a>(
+    chars: &[char],
+    cursor: usize,
+    freq_stmt: &mut rusqlite::Statement<'a>,
+    pitch_stmt: &mut rusqlite::Statement<'a>,
+    pronunciation_stmt: &mut rusqlite::Statement<'a>,
+    stmt: &mut rusqlite::Statement<'a>,
+    rules: &Vec<(Value, Value, String, String)>,
+) -> Option<CursorLookupResult> {
+    const MAX_PHRASE_WORDS: usize = 8;
+
+    let words = collect_english_phrase_words(chars);
+    let hit_index = words
+        .iter()
+        .position(|word| word.start <= cursor && cursor < word.end)?;
+
+    let mut component_start = hit_index;
+    while component_start > 0
+        && hit_index - component_start + 1 < MAX_PHRASE_WORDS
+        && is_english_phrase_gap(
+            chars,
+            words[component_start - 1].end,
+            words[component_start].start,
+        )
+    {
+        component_start -= 1;
+    }
+
+    let mut component_end = hit_index;
+    while component_end + 1 < words.len()
+        && component_end - hit_index + 1 < MAX_PHRASE_WORDS
+        && is_english_phrase_gap(
+            chars,
+            words[component_end].end,
+            words[component_end + 1].start,
+        )
+    {
+        component_end += 1;
+    }
+
+    let max_words = MAX_PHRASE_WORDS.min(component_end - component_start + 1);
+    for word_count in (2..=max_words).rev() {
+        for left in component_start..=hit_index {
+            let right = left + word_count - 1;
+            if right > component_end || hit_index > right {
+                continue;
+            }
+
+            let source_length = words[right].end - words[left].start;
+            for form in english_phrase_lookup_forms(chars, &words, left, right) {
+                let mut entries = internal_lookup(
+                    freq_stmt,
+                    pitch_stmt,
+                    pronunciation_stmt,
+                    stmt,
+                    &form,
+                    rules,
+                    source_length,
+                    0,
+                );
+                if entries.is_empty() {
+                    continue;
+                }
+
+                let query_forms = lookup_forms(&form);
+                entries.sort_by(|left_entry, right_entry| {
+                    right_entry
+                        .source_length
+                        .cmp(&left_entry.source_length)
+                        .then_with(|| {
+                            lookup_entry_rank(left_entry, &query_forms)
+                                .cmp(&lookup_entry_rank(right_entry, &query_forms))
+                        })
+                        .then_with(|| {
+                            best_frequency_value(left_entry)
+                                .cmp(&best_frequency_value(right_entry))
+                        })
+                });
+                let word = entries
+                    .first()
+                    .map(|entry| entry.term.clone())
+                    .filter(|term| !term.is_empty())
+                    .unwrap_or(form);
+                return Some(CursorLookupResult {
+                    entries,
+                    match_start: words[left].start,
+                    match_len: source_length,
+                    word,
+                });
+            }
+        }
+    }
+
+    const MAX_INTERVENING_WORDS: usize = 4;
+    for span_word_count in 3..=MAX_INTERVENING_WORDS + 2 {
+        for left in component_start..=hit_index {
+            let right = left + span_word_count - 1;
+            if right > component_end || hit_index > right {
+                continue;
+            }
+            if !is_english_phrasal_particle(&words[right].text) {
+                continue;
+            }
+
+            let source_length = words[right].end - words[left].start;
+            for form in
+                english_separable_phrasal_forms(&words[left].text, &words[right].text)
+            {
+                let mut entries = internal_lookup(
+                    freq_stmt,
+                    pitch_stmt,
+                    pronunciation_stmt,
+                    stmt,
+                    &form,
+                    rules,
+                    source_length,
+                    0,
+                );
+                if entries.is_empty() {
+                    continue;
+                }
+
+                let query_forms = lookup_forms(&form);
+                entries.sort_by(|left_entry, right_entry| {
+                    right_entry
+                        .source_length
+                        .cmp(&left_entry.source_length)
+                        .then_with(|| {
+                            lookup_entry_rank(left_entry, &query_forms)
+                                .cmp(&lookup_entry_rank(right_entry, &query_forms))
+                        })
+                        .then_with(|| {
+                            best_frequency_value(left_entry)
+                                .cmp(&best_frequency_value(right_entry))
+                        })
+                });
+                let word = entries
+                    .first()
+                    .map(|entry| entry.term.clone())
+                    .filter(|term| !term.is_empty())
+                    .unwrap_or(form);
+                return Some(CursorLookupResult {
+                    entries,
+                    match_start: words[left].start,
+                    match_len: source_length,
+                    word,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 #[tauri::command]
 async fn scan_cursor(
     app: tauri::AppHandle,
@@ -4759,7 +5134,7 @@ fn scan_cursor_in_db(
     }
     let cursor = std::cmp::min(cursor, chars.len().saturating_sub(1));
     let mut best_start = cursor;
-    let mut best_score: Option<(u8, u8, usize, u8, usize, std::cmp::Reverse<usize>)> = None;
+    let mut best_score: Option<(u8, u8, u8, usize, u8, usize, std::cmp::Reverse<usize>)> = None;
     let mut best_entries = Vec::new();
     let starts = scan_start_candidates(&chars, cursor);
 
@@ -4767,6 +5142,18 @@ fn scan_cursor_in_db(
     let mut pitch_stmt = db.prepare("SELECT dict_name, position, reading FROM pitches WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') LIMIT 16").map_err(|e| e.to_string())?;
     let mut pronunciation_stmt = db.prepare("SELECT dict_name, reading, ipa, tags FROM pronunciations WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') LIMIT 32").map_err(|e| e.to_string())?;
     let mut stmt = db.prepare("SELECT e.term, e.reading, e.definition, e.dict_name, e.tags FROM entries e WHERE e.term != '' AND (e.term IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) OR (e.reading != '' AND e.reading IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8))) ORDER BY CASE WHEN e.term = ?1 THEN 0 WHEN e.reading = ?1 THEN 1 WHEN e.term IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 2 WHEN e.reading IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 3 ELSE 4 END, e.id ASC LIMIT 80").map_err(|e| e.to_string())?;
+
+    if let Some(result) = scan_english_phrase_in_db(
+        &chars,
+        cursor,
+        &mut freq_stmt,
+        &mut pitch_stmt,
+        &mut pronunciation_stmt,
+        &mut stmt,
+        &rules,
+    ) {
+        return Ok(result);
+    }
 
     if let Some((start, len)) = english_token_bounds(&chars, cursor) {
         let word: String = chars[start..start + len].iter().collect();
@@ -4818,7 +5205,15 @@ fn scan_cursor_in_db(
         let max_len = std::cmp::min(12, chars.len() - start);
         let mut current_start_entries = Vec::new();
         let mut current_len = 0;
-        let mut current_score: Option<(u8, u8, usize, u8, usize, std::cmp::Reverse<usize>)> = None;
+        let mut current_score: Option<(
+            u8,
+            u8,
+            u8,
+            usize,
+            u8,
+            usize,
+            std::cmp::Reverse<usize>,
+        )> = None;
         for len in 1..=max_len {
             if start + len <= cursor {
                 continue;
@@ -4853,6 +5248,21 @@ fn scan_cursor_in_db(
                     LOOKUP_SCAN_DEINFLECT_DEPTH,
                 );
             }
+            if entries.is_empty() || !entries_have_definition(&entries) {
+                let fallback = lookup_emphatic_do_prefix_fallback(
+                    &mut freq_stmt,
+                    &mut pitch_stmt,
+                    &mut pronunciation_stmt,
+                    &mut stmt,
+                    sub_chars,
+                    &rules,
+                    len,
+                    LOOKUP_SCAN_DEINFLECT_DEPTH,
+                );
+                if entries.is_empty() || entries_have_definition(&fallback) {
+                    entries = fallback;
+                }
+            }
             if is_plain_katakana_lookup(&sub) {
                 entries = keep_literal_kana_entries(entries, &sub);
             }
@@ -4865,6 +5275,11 @@ fn scan_cursor_in_db(
                     .min()
                     .unwrap_or(usize::MAX);
                 let score = (
+                    if entries_have_definition(&entries) {
+                        0
+                    } else {
+                        1
+                    },
                     single_kanji_penalty,
                     scan_end_boundary_penalty(&chars, start, len, cursor),
                     deinflection_depth,
@@ -4881,6 +5296,7 @@ fn scan_cursor_in_db(
         }
         if current_len > 0 {
             let score = current_score.unwrap_or((
+                1,
                 3,
                 3,
                 usize::MAX,
@@ -4895,7 +5311,7 @@ fn scan_cursor_in_db(
             }
         }
     }
-    if let Some((_, _, _, _, _, std::cmp::Reverse(best_len))) = best_score {
+    if let Some((_, _, _, _, _, _, std::cmp::Reverse(best_len))) = best_score {
         let best_word: String = chars[best_start..best_start + best_len].iter().collect();
         let query_forms = lookup_forms(&best_word);
         best_entries.sort_by(|a, b| {
@@ -7066,6 +7482,15 @@ mod tests {
         db
     }
 
+    fn insert_english_test_entry(db: &Connection, term: &str) {
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags)
+             VALUES (?1, '', 'test definition', 'English test', '')",
+            params![term],
+        )
+        .unwrap();
+    }
+
     fn lookup_in_test_db(
         db: &Connection,
         word: &str,
@@ -7819,6 +8244,37 @@ mod tests {
     }
 
     #[test]
+    fn scan_cursor_falls_back_from_emphatic_do_when_exact_hit_has_only_metadata() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO frequencies (term, reading, value, display_value, dict_name) VALUES (?1, '', 22740, '22740', 'frequency')",
+            params!["\u{30C9}\u{5909}\u{614B}"],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, 'test', 'n')",
+            params![
+                "\u{5909}\u{614B}",
+                "\u{3078}\u{3093}\u{305F}\u{3044}",
+                "pervert"
+            ],
+        )
+        .unwrap();
+
+        let sentence = "\u{30C9}\u{5909}\u{614B}\u{304C}\u{3042}\u{3063}\u{305F}";
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
+
+        assert_eq!(result.match_start, 0);
+        assert_eq!(result.match_len, 3);
+        assert_eq!(result.word, "\u{30C9}\u{5909}\u{614B}");
+        assert!(result.entries.iter().any(|entry| {
+            entry.term == "\u{5909}\u{614B}"
+                && entry.definition == "pervert"
+                && entry.source_length == 3
+        }));
+    }
+
+    #[test]
     fn english_token_bounds_handles_contractions_and_hyphens() {
         let chars: Vec<char> = "I don't want a half-baked fix.".chars().collect();
 
@@ -7863,6 +8319,62 @@ mod tests {
         assert!(lookup_forms("studies").contains(&"study".to_string()));
         assert!(lookup_forms("liked").contains(&"like".to_string()));
         assert!(lookup_forms("dogs").contains(&"dog".to_string()));
+        assert!(lookup_forms("went").contains(&"go".to_string()));
+        assert!(lookup_forms("got").contains(&"get".to_string()));
+    }
+
+    #[test]
+    fn scan_cursor_prefers_english_phrasal_verb_over_single_word() {
+        let db = test_db();
+        insert_english_test_entry(&db, "get out");
+        insert_english_test_entry(&db, "out");
+
+        let result = scan_cursor_in_db(&db, "Please get out now.", 12).unwrap();
+        assert_eq!(result.word, "get out");
+        assert_eq!((result.match_start, result.match_len), (7, 7));
+        assert!(result.entries.iter().all(|entry| entry.term == "get out"));
+    }
+
+    #[test]
+    fn scan_cursor_resolves_inflected_english_phrasal_verb() {
+        let db = test_db();
+        insert_english_test_entry(&db, "space out");
+
+        let result = scan_cursor_in_db(&db, "I spaced out again.", 10).unwrap();
+        assert_eq!(result.word, "space out");
+        assert_eq!((result.match_start, result.match_len), (2, 10));
+    }
+
+    #[test]
+    fn scan_cursor_resolves_separable_english_phrasal_verb() {
+        let db = test_db();
+        insert_english_test_entry(&db, "space out");
+
+        let sentence = "She spaced the cards out evenly.";
+        let cursor = sentence.find("cards").unwrap() + 2;
+        let result = scan_cursor_in_db(&db, sentence, cursor).unwrap();
+        assert_eq!(result.word, "space out");
+        assert_eq!((result.match_start, result.match_len), (4, 20));
+    }
+
+    #[test]
+    fn scan_cursor_resolves_inflected_english_idiom() {
+        let db = test_db();
+        insert_english_test_entry(&db, "kick the bucket");
+
+        let result = scan_cursor_in_db(&db, "He kicked the bucket yesterday.", 16).unwrap();
+        assert_eq!(result.word, "kick the bucket");
+        assert_eq!((result.match_start, result.match_len), (3, 17));
+    }
+
+    #[test]
+    fn scan_cursor_resolves_english_idiom_possessive_placeholder() {
+        let db = test_db();
+        insert_english_test_entry(&db, "pull one's leg");
+
+        let result = scan_cursor_in_db(&db, "Stop pulling my leg.", 17).unwrap();
+        assert_eq!(result.word, "pull one's leg");
+        assert_eq!((result.match_start, result.match_len), (5, 14));
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { getTranslator } from '../utils/i18n';
+import { tokenizeLookupText } from '../utils/appRuntime';
 
 const IconCopy = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>;
 const IconCheck = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4CAF50" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>;
@@ -223,9 +224,13 @@ const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none'
         const nodes: ReactNode[] = tokens.map((tk, index) => {
             const surface = typeof tk?.text === 'string' ? tk.text : String(tk?.text ?? '');
             if (!surface) return null;
-            // Align the token to its real position in the line so scan_cursor resolves correctly.
+            // Native segmentation returns Unicode character offsets. Falling back to
+            // indexOf is only needed for older backends and cached legacy results.
+            const nativeStart = Number(tk?.start);
             const found = text.indexOf(surface, searchFrom);
-            const cursor = found >= 0 ? found : searchFrom;
+            const cursor = Number.isInteger(nativeStart) && nativeStart >= 0
+                ? nativeStart
+                : (found >= 0 ? found : searchFrom);
             searchFrom = (found >= 0 ? found : searchFrom) + surface.length;
 
             const tappable = JAPANESE_TOKEN_RE.test(surface) || LATIN_TOKEN_RE.test(surface);
@@ -258,10 +263,28 @@ const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none'
         return <>{nodes}</>;
     }
 
-    // While tokens load, render plain text (one stable node). Swapping in a full
-    // char-level button tree and then replacing it with word chips a moment later
-    // thrashes the virtualized row height and React reconciliation (grey-screen crash).
-    return <>{highlightText(text, searchQuery)}</>;
+    // Keep lookup available while Rust segmentation loads or when it returns no
+    // tokens. The fallback groups scripts into stable word-like chunks rather
+    // than creating a button for every character.
+    return <>{tokenizeLookupText(text).map((part, index) => {
+        if (!part.lookup) {
+            return <span key={`fallback-plain-${part.cursor}-${index}`}>{highlightText(part.text, searchQuery)}</span>;
+        }
+        const isActive = activeCursor != null && part.cursor === activeCursor;
+        return (
+            <button
+                key={`fallback-word-${part.cursor}-${index}-${part.text}`}
+                type="button"
+                className={isActive ? "lookup-word active" : "lookup-word"}
+                onClick={(event) => {
+                    event.stopPropagation();
+                    onLookupToken(part.text, text, part.cursor);
+                }}
+            >
+                {highlightText(part.text, searchQuery)}
+            </button>
+        );
+    })}</>;
 };
 
 const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana, onDelete, onEdit, furiganaMode, searchQuery, isActiveSearchMatch, contextBefore = "", contextAfter = "", language = 'ru', onLookupToken, onTokenTap, activeToken }: any) {
@@ -358,7 +381,7 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
     );
 });
 
-const TextContainer = memo(function TextContainer({ lines = [], lineFurigana = [], isFlashing = false, onDelete, onEdit, furiganaMode, autoScrollOffset = 80, searchQuery = "", activeSearchLineIdx = -1, searchTrigger = 0, panelPosition = 'bottom', language = 'ru', textOrientation = 'horizontal', readerProgress = 0, onReaderProgress, onLookupToken, lookupActive = false }: any) {
+const TextContainer = memo(function TextContainer({ contentKey, lines = [], lineFurigana = [], isFlashing = false, onDelete, onEdit, furiganaMode, autoScrollOffset = 80, searchQuery = "", activeSearchLineIdx = -1, searchTrigger = 0, panelPosition = 'bottom', language = 'ru', textOrientation = 'horizontal', readerProgress = 0, onReaderProgress, onLookupToken, lookupActive = false }: any) {
   const parentRef = useRef<HTMLDivElement>(null);
   // Which word is currently looked up — held highlighted while the popup is open, cleared on close.
   const [activeToken, setActiveToken] = useState<{ line: number; cursor: number } | null>(null);
@@ -393,6 +416,8 @@ const TextContainer = memo(function TextContainer({ lines = [], lineFurigana = [
       return () => cancelAnimationFrame(raf);
   }, [activeToken, lookupActive]);
   const prevLinesLengthRef = useRef(lines.length);
+  const previousContentKeyRef = useRef<any>(null);
+  const shouldFollowTailRef = useRef(true);
   const lastProgressUpdateRef = useRef(0);
   const lastShowScrollBottomRef = useRef(false);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -418,7 +443,8 @@ const TextContainer = memo(function TextContainer({ lines = [], lineFurigana = [
     overscan: 10,
     getItemKey: (index) => {
         if (index === lines.length) return 'spacer';
-        return index;
+        const line = String(lines[index] || '');
+        return `${index}:${line.length}:${line.slice(0, 48)}`;
     },
     enabled: !isVertical
   });
@@ -433,33 +459,36 @@ const TextContainer = memo(function TextContainer({ lines = [], lineFurigana = [
       return () => window.clearTimeout(timer);
   }, [isVertical, lines.length, rowVirtualizer]);
 
-  // Запоминаем первую строчку текста, чтобы понимать, когда мы переключаем вкладки
-    const prevFirstLineRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+      if (isVertical) return;
+      const el = parentRef.current;
+      if (!el) return;
+      let frame = 0;
+      const observer = new ResizeObserver(() => {
+          window.cancelAnimationFrame(frame);
+          frame = window.requestAnimationFrame(() => rowVirtualizer.measure());
+      });
+      observer.observe(el);
+      return () => {
+          window.cancelAnimationFrame(frame);
+          observer.disconnect();
+      };
+  }, [isVertical, rowVirtualizer]);
 
-    useEffect(() => {
-        if (isVertical) {
-            prevFirstLineRef.current = lines[0];
-            return;
-        }
+  useLayoutEffect(() => {
+      if (previousContentKeyRef.current === contentKey) return;
+      previousContentKeyRef.current = contentKey;
+      shouldFollowTailRef.current = true;
+      prevLinesLengthRef.current = lines.length;
 
-        if (lines.length === 0) {
-            prevFirstLineRef.current = undefined;
-            return;
-        }
-
-        // Если первая строка изменилась (или мы только открыли прогу) — значит это смена вкладки
-        if (lines[0] !== prevFirstLineRef.current) {
-            // Даем виртуализатору 50мс на отрисовку интерфейса и командуем прыжок к автоскролл-якорю
-            setTimeout(() => {
-                try {
-                    const el = parentRef.current;
-                    if (el) el.scrollTop = el.scrollHeight;
-                } catch (e) {}
-            }, 50);
-        }
-
-        prevFirstLineRef.current = lines[0];
-    }, [lines, rowVirtualizer, isVertical, autoScrollOffset]);
+      const frame = window.requestAnimationFrame(() => {
+          const el = parentRef.current;
+          if (!el) return;
+          if (isVertical) el.scrollLeft = -(el.scrollWidth - el.clientWidth);
+          else el.scrollTop = el.scrollHeight;
+      });
+      return () => window.cancelAnimationFrame(frame);
+  }, [contentKey, isVertical, lines.length]);
 
   const updateShowScrollBottom = (value: boolean) => {
       if (lastShowScrollBottomRef.current === value) return;
@@ -478,17 +507,20 @@ const TextContainer = memo(function TextContainer({ lines = [], lineFurigana = [
       if (isVertical) {
           const max = Math.max(1, target.scrollWidth - target.clientWidth);
           const progress = Math.min(1, Math.max(0, Math.abs(target.scrollLeft) / max));
+          shouldFollowTailRef.current = progress >= 0.98;
           emitProgress(progress);
           updateShowScrollBottom(progress < 0.98 && lines.length > 0);
           return;
       }
       const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 150;
+      shouldFollowTailRef.current = isNearBottom;
       const max = Math.max(1, target.scrollHeight - target.clientHeight);
       emitProgress(Math.min(1, Math.max(0, target.scrollTop / max)));
       updateShowScrollBottom(!isNearBottom && lines.length > 0);
   };
 
   const scrollToBottom = () => {
+      shouldFollowTailRef.current = true;
       if (isVertical) {
           const el = parentRef.current;
           if (!el) return;
@@ -512,7 +544,7 @@ const TextContainer = memo(function TextContainer({ lines = [], lineFurigana = [
 
       if (isVertical) return;
 
-      if (isNewText && activeSearchLineIdx === -1) {
+      if (isNewText && activeSearchLineIdx === -1 && shouldFollowTailRef.current) {
           const timer = setTimeout(() => {
               const el = parentRef.current;
               if (el) el.scrollTop = el.scrollHeight;
@@ -522,15 +554,22 @@ const TextContainer = memo(function TextContainer({ lines = [], lineFurigana = [
   }, [lines.length, activeSearchLineIdx, isVertical, rowVirtualizer, autoScrollOffset]);
 
   useLayoutEffect(() => {
-      if (isVertical) return;
-
       if (activeSearchLineIdx >= 0 && activeSearchLineIdx < lines.length) {
+          shouldFollowTailRef.current = false;
+          if (isVertical) {
+              const timer = window.setTimeout(() => {
+                  const target = parentRef.current?.querySelector(`[data-index="${activeSearchLineIdx}"]`) as HTMLElement | null;
+                  target?.scrollIntoView({ block: 'nearest', inline: 'center' });
+              }, 0);
+              return () => window.clearTimeout(timer);
+          }
           rowVirtualizer.scrollToIndex(activeSearchLineIdx, { align: 'center' });
-          const timer = setTimeout(() => {
+          const timer = window.setTimeout(() => {
+              rowVirtualizer.scrollToIndex(activeSearchLineIdx, { align: 'center' });
               const retryTarget = parentRef.current?.querySelector(`[data-index="${activeSearchLineIdx}"]`) as HTMLElement | null;
               retryTarget?.scrollIntoView({ block: 'center' });
-          }, 50);
-          return () => clearTimeout(timer);
+          }, 80);
+          return () => window.clearTimeout(timer);
       }
   }, [activeSearchLineIdx, searchTrigger, lines.length, isVertical, rowVirtualizer]);
 
@@ -552,7 +591,7 @@ const TextContainer = memo(function TextContainer({ lines = [], lineFurigana = [
   }, [isVertical, lines.length]);
 
   useEffect(() => {
-      if (!isVertical || lines.length === 0 || activeSearchLineIdx >= 0) return;
+      if (!isVertical || lines.length === 0 || activeSearchLineIdx >= 0 || !shouldFollowTailRef.current) return;
       const el = parentRef.current;
       if (!el) return;
       const frame = requestAnimationFrame(() => {
@@ -563,17 +602,14 @@ const TextContainer = memo(function TextContainer({ lines = [], lineFurigana = [
   }, [isVertical, lines.length, activeSearchLineIdx]);
 
   if (isVertical) {
-      const verticalWindowStart = Math.max(0, lines.length - 120);
-      const verticalLines = lines.slice(verticalWindowStart);
       const verticalFuriganaMode = 'none';
 
       return (
         <div ref={parentRef} onScroll={handleScroll} className={`text-container ${isFlashing ? 'flash' : ''}`} style={{ padding: panelPosition === 'top-right' ? '28px 28px 28px 190px' : '28px', overflowX: 'auto', overflowY: 'hidden', flex: 1, position: 'relative', direction: 'rtl' }}>
             <div style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', height: '100%', display: 'flex', flexDirection: 'column', flexWrap: 'wrap', alignContent: 'flex-start', gap: '18px', direction: 'ltr' }}>
-                {verticalLines.map((line: string, localIndex: number) => {
-                    const index = verticalWindowStart + localIndex;
+                {lines.map((line: string, index: number) => {
                     return (
-                    <div className="text-line" data-raw-text={line} key={`${index}-${line.slice(0, 12)}`} style={{ minHeight: '40px', maxHeight: '100%', padding: '8px 2px', borderRadius: '6px', color: 'var(--text-main)', fontSize: 'var(--txt-font-size, 26px)', fontFamily: `var(--txt-font-family, 'Noto Serif JP'), ${jpSerifFallback}`, lineHeight: 1.9, letterSpacing: '0', fontSynthesis: 'none', fontVariantNumeric: 'tabular-nums', textRendering: 'optimizeLegibility', background: index === activeSearchLineIdx ? 'rgba(79, 166, 255, 0.15)' : 'transparent' }}>
+                    <div className="text-line" data-index={index} data-raw-text={line} key={`${index}-${line.slice(0, 12)}`} style={{ minHeight: '40px', maxHeight: '100%', padding: '8px 2px', borderRadius: '6px', color: 'var(--text-main)', fontSize: 'var(--txt-font-size, 26px)', fontFamily: `var(--txt-font-family, 'Noto Serif JP'), ${jpSerifFallback}`, lineHeight: 1.9, letterSpacing: '0', fontSynthesis: 'none', fontVariantNumeric: 'tabular-nums', textRendering: 'optimizeLegibility', background: index === activeSearchLineIdx ? 'rgba(79, 166, 255, 0.15)' : 'transparent' }}>
                         <FuriganaLine
                             text={line}
                             mode={verticalFuriganaMode}

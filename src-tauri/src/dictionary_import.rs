@@ -124,14 +124,6 @@ fn import_dictionaries_blocking(
     db.busy_timeout(Duration::from_secs(5))
         .map_err(|e| format!("Failed to configure dictionary database: {}", e))?;
     db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY, term TEXT NOT NULL, reading TEXT, definition TEXT NOT NULL, dict_name TEXT DEFAULT 'Unknown', tags TEXT DEFAULT '');
-         CREATE TABLE IF NOT EXISTS frequencies (id INTEGER PRIMARY KEY, term TEXT NOT NULL, reading TEXT, value INTEGER, display_value TEXT, dict_name TEXT);
-         CREATE TABLE IF NOT EXISTS pitches (id INTEGER PRIMARY KEY, term TEXT NOT NULL, reading TEXT, position INTEGER, dict_name TEXT);
-         CREATE TABLE IF NOT EXISTS pronunciations (id INTEGER PRIMARY KEY, term TEXT NOT NULL, reading TEXT, ipa TEXT NOT NULL, tags TEXT DEFAULT '', dict_name TEXT);
-         CREATE TABLE IF NOT EXISTS dictionary_meta (title TEXT PRIMARY KEY, revision TEXT DEFAULT '', format INTEGER DEFAULT 0, index_url TEXT DEFAULT '', download_url TEXT DEFAULT '', is_updatable INTEGER DEFAULT 0, imported_at_ms INTEGER DEFAULT 0);",
-    )
-    .map_err(|e| format!("Failed to prepare dictionary database: {}", e))?;
-    db.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = OFF;
          PRAGMA temp_store = MEMORY;

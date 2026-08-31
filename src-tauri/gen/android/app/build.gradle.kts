@@ -17,7 +17,10 @@ android {
     compileSdk = 36
     namespace = "com.serichka.setsuna"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // Text hookers normally expose a local ws:// endpoint. Keep it available
+        // in release builds too; Setsuna only connects to an address explicitly
+        // supplied by the user.
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "com.serichka.setsuna"
         minSdk = 24
         targetSdk = 36
@@ -58,6 +61,7 @@ rust {
 }
 
 dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")

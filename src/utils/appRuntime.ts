@@ -1,9 +1,7 @@
 import type { AppSettings } from "../components/SettingsModal";
 import { defaultStats, type Tab } from "./constants";
 
-export const MAX_LINES_PER_TAB = 1500;
 export const MAX_EPUB_LINES_PER_TAB = 8000;
-export const MAX_CHARS_PER_LINE = 2000;
 export const TAB_ORDER_STORAGE_KEY = "txthk-tab-order";
 
 export const applyTabOrder = (tabs: Tab[], order: number[]): Tab[] => {
@@ -40,9 +38,7 @@ export const readStoredTabOrder = (): number[] => {
 };
 
 export const trimRuntimeLine = (line: unknown): string => {
-    const text = typeof line === "string" ? line : String(line ?? "");
-    if (text.length <= MAX_CHARS_PER_LINE) return text;
-    return text.slice(0, MAX_CHARS_PER_LINE);
+    return typeof line === "string" ? line : String(line ?? "");
 };
 
 const LATIN_LETTER_RE = /[A-Za-z\u00c0-\u024f]/;
@@ -70,17 +66,16 @@ export const normalizeIncomingHookText = (value: string, removeWhitespace: boole
 
 export const trimTabForRuntime = (tab: Tab): Tab => {
     const sourceLines = Array.isArray(tab.lines) ? tab.lines : [];
-    const trimCount = Math.max(0, sourceLines.length - MAX_LINES_PER_TAB);
-    const trimmedLines = sourceLines.slice(trimCount).map(trimRuntimeLine);
+    const runtimeLines = sourceLines.map(trimRuntimeLine);
     const sourceFurigana = Array.isArray(tab.lineFurigana) ? tab.lineFurigana : [];
-    const trimmedFurigana = sourceFurigana.length === sourceLines.length
-        ? sourceFurigana.slice(trimCount)
+    const runtimeFurigana = sourceFurigana.length === sourceLines.length
+        ? sourceFurigana
         : [];
     const epubLines = Array.isArray(tab.epub?.lines) ? tab.epub.lines : [];
     return {
         ...tab,
-        lines: trimmedLines,
-        lineFurigana: trimmedFurigana,
+        lines: runtimeLines,
+        lineFurigana: runtimeFurigana,
         epub: tab.epub
             ? {
                   ...tab.epub,
@@ -218,34 +213,93 @@ export type CursorLookupToken = {
     cursor: number;
 };
 
-const LOOKUP_TOKEN_RE = /[A-Za-z\u00c0-\u024f]+(?:['\u2019-][A-Za-z\u00c0-\u024f]+)*|[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff66-\uff9f\u30fc\u3005\u3006\u30f6]/gu;
+const LATIN_LOOKUP_CHAR_RE = /[A-Za-z\u00c0-\u024f]/u;
+const JAPANESE_LOOKUP_CHAR_RE = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff66-\uff9f\u3005\u3006]/u;
+const KANJI_LOOKUP_CHAR_RE = /[\u3400-\u9fff\uf900-\ufaff]/u;
+const HIRAGANA_LOOKUP_CHAR_RE = /[\u3040-\u309f]/u;
+const KATAKANA_LOOKUP_CHAR_RE = /[\u30a0-\u30ff\uff66-\uff9f]/u;
+const SINGLE_HIRAGANA_PARTICLES = new Set(Array.from(
+    "\u306f\u304c\u3092\u306b\u3078\u3067\u3068\u306e\u3082\u3084\u304b\u306d\u3088\u305e\u3055",
+));
+
+const fallbackJapaneseSegmentLength = (chars: string[], start: number) => {
+    const first = chars[start];
+    if (!first) return 0;
+
+    if (KANJI_LOOKUP_CHAR_RE.test(first)) {
+        let end = start;
+        while (end < chars.length && KANJI_LOOKUP_CHAR_RE.test(chars[end]) && end - start < 4) end += 1;
+        const kanjiEnd = end;
+        while (end < chars.length && HIRAGANA_LOOKUP_CHAR_RE.test(chars[end]) && end - kanjiEnd < 4) {
+            if (end === kanjiEnd && SINGLE_HIRAGANA_PARTICLES.has(chars[end])) break;
+            end += 1;
+        }
+        return Math.max(1, end - start);
+    }
+
+    if (KATAKANA_LOOKUP_CHAR_RE.test(first)) {
+        let end = start + 1;
+        while (end < chars.length && KATAKANA_LOOKUP_CHAR_RE.test(chars[end]) && end - start < 12) end += 1;
+        return end - start;
+    }
+
+    if (HIRAGANA_LOOKUP_CHAR_RE.test(first)) {
+        if (SINGLE_HIRAGANA_PARTICLES.has(first)) return 1;
+        let end = start + 1;
+        while (end < chars.length && HIRAGANA_LOOKUP_CHAR_RE.test(chars[end]) && end - start < 6) {
+            if (SINGLE_HIRAGANA_PARTICLES.has(chars[end])) break;
+            end += 1;
+        }
+        return end - start;
+    }
+
+    return 1;
+};
 
 export const tokenizeLookupText = (text: string): CursorLookupToken[] => {
+    const chars = Array.from(text);
     const parts: CursorLookupToken[] = [];
-    let lastIndex = 0;
-    for (const match of text.matchAll(LOOKUP_TOKEN_RE)) {
-        const index = match.index ?? 0;
-        if (index > lastIndex) {
-            parts.push({
-                text: text.slice(lastIndex, index),
-                lookup: false,
-                cursor: Array.from(text.slice(0, lastIndex)).length,
-            });
+    let cursor = 0;
+
+    while (cursor < chars.length) {
+        const start = cursor;
+        const first = chars[cursor];
+
+        if (LATIN_LOOKUP_CHAR_RE.test(first)) {
+            cursor += 1;
+            while (cursor < chars.length) {
+                if (LATIN_LOOKUP_CHAR_RE.test(chars[cursor])) {
+                    cursor += 1;
+                    continue;
+                }
+                const isJoiner = chars[cursor] === "'" || chars[cursor] === "\u2019" || chars[cursor] === '-';
+                if (isJoiner && LATIN_LOOKUP_CHAR_RE.test(chars[cursor + 1] || '')) {
+                    cursor += 1;
+                    continue;
+                }
+                break;
+            }
+            parts.push({ text: chars.slice(start, cursor).join(''), lookup: true, cursor: start });
+            continue;
         }
-        parts.push({
-            text: match[0],
-            lookup: true,
-            cursor: Array.from(text.slice(0, index)).length,
-        });
-        lastIndex = index + match[0].length;
+
+        if (JAPANESE_LOOKUP_CHAR_RE.test(first)) {
+            cursor += Math.max(1, fallbackJapaneseSegmentLength(chars, cursor));
+            parts.push({ text: chars.slice(start, cursor).join(''), lookup: true, cursor: start });
+            continue;
+        }
+
+        cursor += 1;
+        while (
+            cursor < chars.length
+            && !LATIN_LOOKUP_CHAR_RE.test(chars[cursor])
+            && !JAPANESE_LOOKUP_CHAR_RE.test(chars[cursor])
+        ) {
+            cursor += 1;
+        }
+        parts.push({ text: chars.slice(start, cursor).join(''), lookup: false, cursor: start });
     }
-    if (lastIndex < text.length) {
-        parts.push({
-            text: text.slice(lastIndex),
-            lookup: false,
-            cursor: Array.from(text.slice(0, lastIndex)).length,
-        });
-    }
+
     return parts;
 };
 

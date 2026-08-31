@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "description": "Cross-platform fixtures for Setsuna Mobile segmentation, text ingress, and lookup regression tests.",
+  "segmentationCases": [
+    {
+      "id": "jardic-manual-sentence",
+      "text": "さて、確か何かをしなくてはいけないはずだったのだが？",
+      "expectedLookupSurfaces": ["確か", "何か", "しなくてはいけない", "はず", "だった"],
+      "notes": "Jardic-style manual input. Ranges must cover the source without rebuilding offsets in React."
+    },
+    {
+      "id": "conjugated-compound",
+      "text": "突っ張りの回転速度を上げた。",
+      "expectedLookupSurfaces": ["突っ張り", "回転速度", "上げた"],
+      "notes": "Do not split the compound into a single kanji hit."
+    },
+    {
+      "id": "dictionary-deinflection",
+      "text": "受け取りを行います。見えないんだけど。",
+      "expectedLookupSurfaces": ["受け取り", "行います", "見えない"],
+      "notes": "Surface ranges and deinflected dictionary forms are different values."
+    },
+    {
+      "id": "latin-inside-long-line",
+      "text": "The individuals fell into the grip of the crowd's psychology, while 東京で読んでいた。",
+      "expectedLookupSurfaces": ["individuals", "grip", "crowd's", "東京", "読んでいた"],
+      "notes": "English must remain lookupable in a long mixed-language line."
+    },
+    {
+      "id": "unicode-and-repeated-words",
+      "text": "😀 東京で東京の本を読む。",
+      "expectedLookupSurfaces": ["東京", "東京", "本", "読む"],
+      "notes": "Repeated surfaces need distinct code-point ranges after an emoji."
+    }
+  ],
+  "textIngressCases": [
+    {
+      "id": "websocket-rubi",
+      "sourceType": "websocket",
+      "text": "では、今宵の恐怖劇を始めよう。",
+      "furigana": {
+        "今宵": "こよい",
+        "恐怖劇": "きょうふげき",
+        "始めよう": "はじめよう"
+      },
+      "notes": "The raw furigana payload must survive the ingress queue even if the feed cannot render it yet."
+    },
+    {
+      "id": "share-plain-text",
+      "sourceType": "share",
+      "text": "Donnez le sang de guillotine.",
+      "notes": "Incoming shared text must create one event and never duplicate on Activity resume."
+    }
+  ]
+}

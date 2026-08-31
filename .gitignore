@@ -59,3 +59,9 @@ packaging/arch/*.log
 yomitan-master/
 JL-master/
 ebook-reader-main/
+jidou/
+
+# Local QA captures and generated extraction output
+setsuna-*.png
+dictionary.db-*
+output/
