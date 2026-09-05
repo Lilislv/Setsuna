@@ -25,6 +25,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { readText as readClipboardText } from '@tauri-apps/plugin-clipboard-manager';
 import { listen } from '@tauri-apps/api/event';
 import {
+    assertGoogleOAuthConfigured,
     createDictFileMetadata,
     createGooglePkceSession,
     bytesAvailableInDrive,
@@ -866,6 +867,9 @@ export const MobileLayout = ({
         if (!GOOGLE_DRIVE_AVAILABLE) return;
         setDriveStatus(isEn ? 'Opening Google…' : 'Открываю Google…');
         try {
+            assertGoogleOAuthConfigured();
+            setDriveAuthInput('');
+            drivePkceRef.current = null;
             // Start the on-device OAuth catch server; the browser's redirect to 127.0.0.1
             // hits this app and fires the "oauth_code" event, which we exchange automatically.
             const start = await invoke<{ port: number; redirect_uri: string; reused: boolean }>('start_oauth_server');

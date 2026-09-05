@@ -35,6 +35,18 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Verify Google OAuth release configuration
+        shell: pwsh
+        env:
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:VITE_GOOGLE_CLIENT_ID)) {
+            throw "VITE_GOOGLE_CLIENT_ID is required for release builds"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:VITE_GOOGLE_CLIENT_SECRET)) {
+            throw "VITE_GOOGLE_CLIENT_SECRET is required for release builds"
+          }
+
       - name: Read and verify release metadata
         id: release_meta
         shell: pwsh
@@ -67,6 +79,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
         with:
           args: --config src-tauri/tauri.release.conf.json
           tagName: ${{ github.ref_name }}
@@ -134,12 +147,20 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Verify Google OAuth release configuration
+        env:
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+        run: |
+          test -n "$VITE_GOOGLE_CLIENT_ID" || { echo "VITE_GOOGLE_CLIENT_ID is required for release builds"; exit 1; }
+          test -n "$VITE_GOOGLE_CLIENT_SECRET" || { echo "VITE_GOOGLE_CLIENT_SECRET is required for release builds"; exit 1; }
+
       - name: Build signed Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
         with:
           args: --config src-tauri/tauri.release.conf.json
           tagName: ${{ github.ref_name }}

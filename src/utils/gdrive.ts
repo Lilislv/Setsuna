@@ -232,9 +232,17 @@ export const normalizeDriveBackup = (rawValue: unknown): NormalizedDriveBackup =
     };
 };
 
-const ensureGoogleConfig = () => {
-    if (!CLIENT_ID) {
-        throw new Error('Google OAuth is not configured. Check VITE_GOOGLE_CLIENT_ID.');
+export const getGoogleOAuthConfiguration = () => ({
+    clientIdConfigured: Boolean(CLIENT_ID.trim()),
+    clientSecretConfigured: Boolean(CLIENT_SECRET.trim()),
+});
+
+export const assertGoogleOAuthConfigured = () => {
+    const config = getGoogleOAuthConfiguration();
+    if (!config.clientIdConfigured || !config.clientSecretConfigured) {
+        throw new Error(
+            'Google Drive недоступен в этой сборке Setsuna: отсутствует конфигурация OAuth. Обновите приложение.',
+        );
     }
 };
 
@@ -297,7 +305,7 @@ const callbackData = (codeOrUrl: string, fallbackRedirectUri = DEFAULT_REDIRECT_
 };
 
 export function getAuthUrl(redirectUri = DEFAULT_REDIRECT_URI, pkce?: Pick<GooglePkceSession, 'challenge' | 'state'>) {
-    ensureGoogleConfig();
+    assertGoogleOAuthConfigured();
     const params = new URLSearchParams({
         client_id: CLIENT_ID,
         redirect_uri: redirectUri,
@@ -321,7 +329,7 @@ export async function exchangeCodeForToken(
     codeVerifier?: string,
     expectedState?: string,
 ) {
-    ensureGoogleConfig();
+    assertGoogleOAuthConfigured();
     const { code, redirectUri, state } = callbackData(codeOrUrl, fallbackRedirectUri);
     if (!code) throw new Error('Google did not return an authorization code.');
     if (expectedState && state !== expectedState) throw new Error('OAuth state mismatch. Start sign-in again.');
@@ -335,7 +343,7 @@ export async function exchangeCodeForToken(
     // Google still requires the secret for some Desktop OAuth clients. Native app
     // secrets are not confidential, but including the configured value keeps both
     // the approved legacy client and PKCE-based sign-in working.
-    if (CLIENT_SECRET) body.set('client_secret', CLIENT_SECRET);
+    body.set('client_secret', CLIENT_SECRET);
     if (codeVerifier) body.set('code_verifier', codeVerifier);
     const res = await driveFetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
@@ -346,13 +354,13 @@ export async function exchangeCodeForToken(
 }
 
 export async function getAccessToken(refreshToken: string) {
-    ensureGoogleConfig();
+    assertGoogleOAuthConfigured();
     const body = new URLSearchParams({
         client_id: CLIENT_ID,
         refresh_token: refreshToken,
         grant_type: 'refresh_token',
     });
-    if (CLIENT_SECRET) body.set('client_secret', CLIENT_SECRET);
+    body.set('client_secret', CLIENT_SECRET);
     const res = await driveFetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

@@ -130,7 +130,7 @@ async fn start_oauth_server(app: tauri::AppHandle) -> Result<OAuthServerStart, S
                                     if has_code_or_error {
                                         let callback_url = format!("http://127.0.0.1:{}{}", port, path);
                                         let _ = app.emit("oauth_code", callback_url);
-                                        let html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Setsuna</title></head><body style=\"background:#1a1a1a;color:#fff;text-align:center;padding:48px 24px;font-family:sans-serif;\"><h2>Готово ✓</h2><p>Setsuna получил доступ. Можно вернуться в приложение.</p></body></html>";
+                                        let html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Setsuna</title></head><body style=\"background:#1a1a1a;color:#fff;text-align:center;padding:48px 24px;font-family:sans-serif;\"><h1>Code received</h1><p>Return to Setsuna to finish connecting Google Drive.</p><p style=\"color:#999\">Код получен. Вернитесь в Setsuna для завершения подключения.</p></body></html>";
                                         let _ = stream.write_all(
                                             format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}", html.len(), html).as_bytes(),
                                         );

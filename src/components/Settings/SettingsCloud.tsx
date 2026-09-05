@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
+    assertGoogleOAuthConfigured,
     bytesAvailableInDrive,
     createDictFileMetadata,
     createGooglePkceSession,
@@ -293,6 +294,10 @@ export default function SettingsCloud({
         setBusy(true);
         setStatus(t.opening);
         try {
+            assertGoogleOAuthConfigured();
+            setAuthUrl('');
+            setManualCallback('');
+            pkceRef.current = null;
             const server = await invoke<OAuthServerStart>('start_oauth_server');
             const pkce = await createGooglePkceSession();
             pkceRef.current = pkce;
