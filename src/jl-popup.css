@@ -2,5 +2,23 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; back
 .jl-popup-root { position: fixed; inset: 0; color: var(--text-main); background: var(--bg-main); border: 1px solid var(--border-main); border-radius: 6px; overflow: hidden; }
 .jl-popup-content { position: absolute; inset: 0; overflow: hidden; }
 .jl-popup-empty { padding: 18px; color: var(--text-muted); font: 500 13px/1.5 "Segoe UI", sans-serif; overflow-wrap: anywhere; }
+.jl-popup-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 30;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-main);
+  border-radius: 5px;
+  font: 500 20px/1 "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+.jl-popup-close:hover { color: #ff7777; border-color: rgba(255, 90, 90, 0.5); }
 .jl-popup-content .dict-popup { position: absolute !important; inset: 0 !important; width: 100% !important; max-width: none !important; max-height: 100% !important; height: 100%; border: 0; border-radius: 0; box-shadow: none; padding: 14px 16px 24px; zoom: 1 !important; }
 .jl-popup-content .dict-popup + .dict-popup { left: 12px !important; top: 12px !important; width: calc(100% - 24px) !important; height: calc(100% - 24px); border: 1px solid var(--border-main); border-radius: 6px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45); }

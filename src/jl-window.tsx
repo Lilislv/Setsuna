@@ -66,6 +66,7 @@ function JlWindow() {
     const [frozen, setFrozen] = useState(false);
     const [copied, setCopied] = useState(false);
     const [timerPaused, setTimerPaused] = useState(true);
+    const [appearanceOpen, setAppearanceOpen] = useState(false);
     const [flashKey, setFlashKey] = useState(0);
     const textRef = useRef<HTMLDivElement>(null);
     const backlogRef = useRef(backlog);
@@ -110,7 +111,18 @@ function JlWindow() {
 
     const hideLookup = useCallback(() => {
         lastLookupRef.current = "";
+        window.getSelection()?.removeAllRanges();
         void invoke("hide_jl_lookup_window").catch(() => {});
+    }, []);
+
+    const persistSettings = useCallback((patch: Partial<AppSettings>) => {
+        setSettings((current) => {
+            const next = { ...current, ...patch };
+            const raw = JSON.stringify(next);
+            settingsRawRef.current = raw;
+            localStorage.setItem(SETTINGS_KEY, raw);
+            return next;
+        });
     }, []);
 
     const appendLine = useCallback((raw: unknown) => {
@@ -182,6 +194,23 @@ function JlWindow() {
             consumed += current.textContent?.length || 0;
         }
         return null;
+    }, []);
+
+    const pointTouchesText = useCallback((x: number, y: number) => {
+        const host = textRef.current;
+        if (!host) return false;
+        const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (!node.textContent?.trim()) continue;
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            for (const rect of Array.from(range.getClientRects())) {
+                if (x >= rect.left - 3 && x <= rect.right + 3 && y >= rect.top - 3 && y <= rect.bottom + 3) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }, []);
 
     const selectMatch = useCallback((start: number, length: number) => {
@@ -260,11 +289,7 @@ function JlWindow() {
     }, [currentLine, historyIndex, backlog.length, settings.jlModeAutoLookupFirstWord, runLookupAt]);
 
     const changeFont = (delta: number) => {
-        const next = { ...settings, jlModeFontSize: clamp((Number(settings.jlModeFontSize) || 42) + delta, 12, 160) };
-        const raw = JSON.stringify(next);
-        settingsRawRef.current = raw;
-        localStorage.setItem(SETTINGS_KEY, raw);
-        setSettings(next);
+        persistSettings({ jlModeFontSize: clamp((Number(settings.jlModeFontSize) || 42) + delta, 12, 160) });
     };
 
     const navigate = (delta: number) => {
@@ -301,7 +326,7 @@ function JlWindow() {
     const controlsVisible = settings.jlModeShowControls !== false;
 
     return (
-        <main className="jl-shell" data-flash={flashKey} onMouseDown={hideLookup}>
+        <main className="jl-shell" data-flash={flashKey}>
             <header className="jl-titlebar">
                 <div className="jl-identity" data-tauri-drag-region>
                     <span className="jl-mark">FLOW</span>
@@ -331,11 +356,39 @@ function JlWindow() {
                             <button onClick={() => changeFont(-2)} title={language === "en" ? "Smaller text" : "Уменьшить текст"}>A−</button>
                             <button onClick={() => changeFont(2)} title={language === "en" ? "Larger text" : "Увеличить текст"}>A+</button>
                         </div>
+                        <button
+                            className={appearanceOpen ? "active" : ""}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                setAppearanceOpen((value) => !value);
+                            }}
+                            aria-label={language === "en" ? "Window opacity" : "Прозрачность окна"}
+                            title={language === "en" ? "Window opacity" : "Прозрачность окна"}
+                        >
+                            ◐
+                        </button>
                         <button onClick={() => { if (windowApi) void windowApi.minimize(); }} title={language === "en" ? "Minimize" : "Свернуть"}>−</button>
                         <button className="danger" onClick={() => void invoke("close_jl_mode_window")} title={language === "en" ? "Close" : "Закрыть"}>×</button>
                     </nav>
                 )}
             </header>
+            {appearanceOpen && (
+                <section className="jl-appearance" onMouseDown={(event) => event.stopPropagation()}>
+                    <div className="jl-appearance-label">
+                        <span>{language === "en" ? "Opacity" : "Прозрачность"}</span>
+                        <strong>{clamp(Number(settings.jlModeOpacity) || 72, 5, 100)}%</strong>
+                    </div>
+                    <input
+                        type="range"
+                        min="5"
+                        max="100"
+                        step="1"
+                        value={clamp(Number(settings.jlModeOpacity) || 72, 5, 100)}
+                        onChange={(event) => persistSettings({ jlModeOpacity: Number(event.target.value) })}
+                        aria-label={language === "en" ? "Window opacity" : "Прозрачность окна"}
+                    />
+                </section>
+            )}
             <div
                 ref={textRef}
                 className={`jl-text ${currentLine ? "" : "empty"}`}
@@ -349,7 +402,14 @@ function JlWindow() {
                 onMouseLeave={() => {
                     if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current);
                 }}
-                onClick={(event) => { if (canClick) void runLookupAt(event.clientX, event.clientY); }}
+                onClick={(event) => {
+                    setAppearanceOpen(false);
+                    if (!canClick || !pointTouchesText(event.clientX, event.clientY)) {
+                        hideLookup();
+                        return;
+                    }
+                    void runLookupAt(event.clientX, event.clientY);
+                }}
                 onWheel={(event) => {
                     if (!event.ctrlKey) return;
                     event.preventDefault();

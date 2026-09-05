@@ -36,6 +36,7 @@ import {
     getDictDriveInfo,
     getDriveQuota,
     listBackups,
+    startDictionaryResumableUpload,
     uploadToDrive,
     type DriveFileInfo,
     type DriveQuotaInfo,
@@ -207,11 +208,23 @@ type MobileLookupToken = {
     text: string;
     reading?: string | null;
     lemma?: string | null;
+    lookupTerm?: string | null;
+    lookupReading?: string | null;
+    lookupFound?: boolean;
     start?: number;
     end?: number;
     lookup?: boolean;
 };
 type MobileSettingsSection = 'reading' | 'flow' | 'source' | 'anki' | 'drive' | 'data';
+type MobileDriveTransfer = {
+    operation: 'backup-upload' | 'backup-download' | 'upload' | 'download';
+    label: string;
+    transferred: number;
+    total: number;
+    percent: number;
+    startedAt: number;
+};
+type MobileDictionaryStorage = { path: string; size: number; availableBytes?: number | null };
 
 const MOBILE_JAPANESE_RE = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff66-\uff9f]/;
 const MOBILE_LATIN_RE = /[A-Za-z\u00c0-\u024f]/;
@@ -223,6 +236,14 @@ const formatMobileBytes = (raw?: string | number | null) => {
     const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
     const number = value / Math.pow(1024, index);
     return `${number >= 10 || index === 0 ? number.toFixed(0) : number.toFixed(1)} ${units[index]}`;
+};
+
+const formatMobileDuration = (seconds: number) => {
+    if (!Number.isFinite(seconds) || seconds <= 0) return '—';
+    if (seconds < 60) return `${Math.ceil(seconds)} s`;
+    const minutes = Math.floor(seconds / 60);
+    const rest = Math.ceil(seconds % 60);
+    return `${minutes}m ${rest}s`;
 };
 
 const MobileSentenceTokens = ({
@@ -327,6 +348,7 @@ export const MobileLayout = ({
     wsIntents,
     setWsEnabled,
     lookupOpen,
+    onCloseLookup,
     lookupNotice,
     settingsRequest,
 }: any) => {
@@ -342,10 +364,16 @@ export const MobileLayout = ({
     const [driveBusy, setDriveBusy] = useState(false);
     const [driveQuota, setDriveQuota] = useState<DriveQuotaInfo | null>(null);
     const [driveBackups, setDriveBackups] = useState<DriveFileInfo[]>([]);
+    const [driveDictionary, setDriveDictionary] = useState<DriveFileInfo | null>(null);
+    const [localDictionary, setLocalDictionary] = useState<MobileDictionaryStorage | null>(null);
+    const [driveTransfer, setDriveTransfer] = useState<MobileDriveTransfer | null>(null);
+    const [isDriveArchiveOpen, setIsDriveArchiveOpen] = useState(false);
+    const [driveClock, setDriveClock] = useState(Date.now());
     const [overlayStatus, setOverlayStatus] = useState('');
     const [overlayResumeTick, setOverlayResumeTick] = useState(0);
     const drivePkceRef = useRef<GooglePkceSession | null>(null);
     const driveRedirectRef = useRef('http://127.0.0.1:1337');
+    const mobileSettingsNavRef = useRef<HTMLDivElement | null>(null);
     const [ankiStatusText, setAnkiStatusText] = useState('');
     const [ankiDecks, setAnkiDecks] = useState<string[]>([]);
     const [ankiModels, setAnkiModels] = useState<string[]>([]);
@@ -363,6 +391,15 @@ export const MobileLayout = ({
         backgroundColor: settings.mobileOverlayBackgroundColor || '#15181d',
         width: settings.mobileOverlayWidth ?? 340,
         height: settings.mobileOverlayHeight ?? 160,
+        language: settings.appLanguage || 'ru',
+        ankiDeck: activeTab?.ankiDeck || settings.ankiDeck || '',
+        ankiModel: settings.ankiModel || '',
+        ankiFieldWord: settings.ankiFieldWord || '',
+        ankiFieldReading: settings.ankiFieldReading || '',
+        ankiFieldMeaning: settings.ankiFieldMeaning || '',
+        ankiFieldSentence: settings.ankiFieldSentence || '',
+        ankiFieldDict: settings.ankiFieldDict || '',
+        ankiFieldScreenshot: settings.ankiFieldScreenshot || '',
     };
     const openMobileDictionaryImport = () => {
         try {
@@ -377,6 +414,93 @@ export const MobileLayout = ({
         if (settingsRequest.section) setMobileSettingsSection(settingsRequest.section);
         setIsMobileSettingsOpen(true);
     }, [settingsRequest?.id, settingsRequest?.section]);
+
+    useEffect(() => {
+        if (!isMobileSettingsOpen) return;
+        const frame = window.requestAnimationFrame(() => {
+            const active = mobileSettingsNavRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+            active?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [isMobileSettingsOpen, mobileSettingsSection]);
+
+    useEffect(() => {
+        let unlisten: (() => void) | undefined;
+        listen<{ operation: 'upload' | 'download'; transferred: number; total: number; percent: number }>(
+            'drive_dictionary_progress',
+            (event) => {
+                const payload = event.payload;
+                setDriveTransfer((current) => ({
+                    operation: payload.operation,
+                    label: payload.operation === 'upload'
+                        ? (isEn ? 'Uploading dictionaries' : 'Загрузка словарей в Drive')
+                        : (isEn ? 'Downloading dictionaries' : 'Скачивание словарей из Drive'),
+                    transferred: Number(payload.transferred || 0),
+                    total: Number(payload.total || 0),
+                    percent: Number(payload.percent || 0),
+                    startedAt: current?.operation === payload.operation ? current.startedAt : Date.now(),
+                }));
+            },
+        ).then((dispose) => { unlisten = dispose; });
+        return () => unlisten?.();
+    }, [isEn]);
+
+    useEffect(() => {
+        if (!driveBusy || !driveTransfer) return;
+        const timer = window.setInterval(() => setDriveClock(Date.now()), 1000);
+        return () => window.clearInterval(timer);
+    }, [driveBusy, driveTransfer?.startedAt]);
+
+    const mobileBackStateRef = useRef({
+        lookupOpen,
+        isMobileSettingsOpen,
+        tabsOpen,
+        isStatsOpen,
+        activeMobileView,
+        onCloseLookup,
+    });
+    mobileBackStateRef.current = {
+        lookupOpen,
+        isMobileSettingsOpen,
+        tabsOpen,
+        isStatsOpen,
+        activeMobileView,
+        onCloseLookup,
+    };
+
+    const hasMobileBackLayer = Boolean(
+        lookupOpen
+        || isMobileSettingsOpen
+        || tabsOpen
+        || isStatsOpen
+        || activeMobileView === 'lookup'
+    );
+
+    useEffect(() => {
+        if (!hasMobileBackLayer) return;
+        const state = window.history.state as Record<string, unknown> | null;
+        if (state?.setsunaMobileLayer) return;
+        window.history.pushState({ ...(state || {}), setsunaMobileLayer: true }, '', window.location.href);
+    }, [hasMobileBackLayer]);
+
+    useEffect(() => {
+        const handleMobileBack = () => {
+            const current = mobileBackStateRef.current;
+            if (current.lookupOpen) {
+                current.onCloseLookup?.();
+            } else if (current.isMobileSettingsOpen) {
+                setIsMobileSettingsOpen(false);
+            } else if (current.tabsOpen) {
+                setTabsOpen(false);
+            } else if (current.isStatsOpen) {
+                setIsStatsOpen(false);
+            } else if (current.activeMobileView === 'lookup') {
+                setActiveMobileView('text');
+            }
+        };
+        window.addEventListener('popstate', handleMobileBack);
+        return () => window.removeEventListener('popstate', handleMobileBack);
+    }, []);
 
     const refreshOverlayStatus = () => {
         try {
@@ -409,16 +533,26 @@ export const MobileLayout = ({
         if (!overlayText) return;
         let cancelled = false;
         void (async () => {
-            let tokenData: Array<{ text: string; lookup: boolean }> = [];
+            let tokenData: Array<{
+                text: string;
+                lookup: boolean;
+                lemma?: string | null;
+                reading?: string | null;
+                lookupTerm?: string | null;
+                lookupReading?: string | null;
+            }> = [];
             try {
-                const tokens = await invoke<MobileLookupToken[]>('get_furigana', {
+                const tokens = await invoke<MobileLookupToken[]>('get_flow_tokens', {
                     text: overlayText,
-                    contextBefore: '',
-                    contextAfter: '',
                 });
                 tokenData = (Array.isArray(tokens) ? tokens : []).map((token) => ({
                     text: token.text,
-                    lookup: MOBILE_JAPANESE_RE.test(token.text) || MOBILE_LATIN_RE.test(token.text),
+                    lookup: token.lookup !== false
+                        && (MOBILE_JAPANESE_RE.test(token.text) || MOBILE_LATIN_RE.test(token.text)),
+                    lemma: token.lemma,
+                    reading: token.reading,
+                    lookupTerm: token.lookupTerm,
+                    lookupReading: token.lookupReading,
                 }));
             } catch {
                 // The overlay can still display the raw line when tokenization is unavailable.
@@ -441,6 +575,15 @@ export const MobileLayout = ({
         settings.mobileOverlayBackgroundColor,
         settings.mobileOverlayWidth,
         settings.mobileOverlayHeight,
+        activeTab?.ankiDeck,
+        settings.ankiDeck,
+        settings.ankiModel,
+        settings.ankiFieldWord,
+        settings.ankiFieldReading,
+        settings.ankiFieldMeaning,
+        settings.ankiFieldSentence,
+        settings.ankiFieldDict,
+        settings.ankiFieldScreenshot,
         overlayResumeTick,
     ]);
     const pasteAndConnectDrive = async () => {
@@ -496,6 +639,13 @@ export const MobileLayout = ({
         if (updateSettings) {
             updateSettings({ ...settings, ...patch });
         }
+    };
+
+    const updateActiveTabDeck = (deck: string) => {
+        setTabs?.((currentTabs: Tab[]) => currentTabs.map((tab) => (
+            tab.id === activeTabId ? { ...tab, ankiDeck: deck || null } : tab
+        )));
+        if (settings.ankiDeckMode !== 'contextual') updateSetting('ankiDeckMode', 'contextual');
     };
 
     const toggleMobileFlow = () => {
@@ -667,11 +817,14 @@ export const MobileLayout = ({
     };
 
     useEffect(() => {
-        if (isMobileSettingsOpen) {
-            loadMobileAnki(false);
+        if (isMobileSettingsOpen) loadMobileAnki(false);
+    }, [isMobileSettingsOpen]);
+
+    useEffect(() => {
+        if (isMobileSettingsOpen && settings.gdriveRefreshToken) {
             void refreshDriveOverview(true);
         }
-    }, [isMobileSettingsOpen]);
+    }, [isMobileSettingsOpen, settings.gdriveRefreshToken]);
 
     useEffect(() => {
         if (!isMobileSettingsOpen || !settings.ankiModel) return;
@@ -691,9 +844,16 @@ export const MobileLayout = ({
         if (!quiet) setDriveBusy(true);
         try {
             const token = await getAccessToken(settings.gdriveRefreshToken);
-            const [quota, backups] = await Promise.all([getDriveQuota(token), listBackups(token)]);
+            const [quota, backups, dictionary, local] = await Promise.all([
+                getDriveQuota(token),
+                listBackups(token),
+                getDictDriveInfo(token),
+                invoke<MobileDictionaryStorage>('get_dictionary_storage_info').catch(() => null),
+            ]);
             setDriveQuota(quota);
             setDriveBackups(backups);
+            setDriveDictionary(dictionary);
+            setLocalDictionary(local);
             if (!quiet) setDriveStatus(isEn ? 'Google Drive is ready.' : 'Google Drive готов.');
         } catch (error: any) {
             setDriveStatus(error?.message || String(error));
@@ -766,7 +926,7 @@ export const MobileLayout = ({
         setDriveStatus(isEn ? 'Uploading backup...' : 'Загружаю бэкап...');
         try {
             const token = await getAccessToken(settings.gdriveRefreshToken);
-            await uploadToDrive(token, {
+            const payload = {
                 metadata: { date: new Date().toISOString(), source: 'setsuna-mobile' },
                 settings: cleanSettingsForBackup(),
                 activeTabId,
@@ -780,7 +940,21 @@ export const MobileLayout = ({
                     delete clean.captureSource;
                     return clean;
                 }),
+            };
+            const estimatedSize = new Blob([JSON.stringify(payload)]).size;
+            setDriveTransfer({
+                operation: 'backup-upload',
+                label: isEn ? 'Uploading windows and settings' : 'Загрузка окон и настроек',
+                transferred: 0,
+                total: estimatedSize,
+                percent: 0,
+                startedAt: Date.now(),
             });
+            await uploadToDrive(token, payload, (percent) => setDriveTransfer((current) => current ? {
+                ...current,
+                percent,
+                transferred: Math.round(estimatedSize * percent / 100),
+            } : current));
             setDriveStatus(isEn ? 'Backup uploaded.' : 'Бэкап загружен.');
             await refreshDriveOverview(true);
         } catch (error: any) {
@@ -799,7 +973,20 @@ export const MobileLayout = ({
             const token = await getAccessToken(settings.gdriveRefreshToken);
             const selected = backup || driveBackups[0] || (await listBackups(token))[0];
             if (!selected) throw new Error(isEn ? 'No backups in Google Drive.' : 'В Google Drive нет бэкапов.');
-            const data = await downloadFromDrive(token, selected.id);
+            const total = Number(selected.size || 0);
+            setDriveTransfer({
+                operation: 'backup-download',
+                label: isEn ? 'Downloading windows and settings' : 'Скачивание окон и настроек',
+                transferred: 0,
+                total,
+                percent: 0,
+                startedAt: Date.now(),
+            });
+            const data = await downloadFromDrive(token, selected.id, (percent) => setDriveTransfer((current) => current ? {
+                ...current,
+                percent,
+                transferred: total ? Math.round(total * percent / 100) : current.transferred,
+            } : current));
             const restoredTabs = [
                 ...(Array.isArray(data.tabs) ? data.tabs : []),
                 ...(Array.isArray(data.archive) ? data.archive.map((tab: any) => ({ ...tab, archived: true })) : []),
@@ -831,6 +1018,14 @@ export const MobileLayout = ({
                     ? requestedId
                     : restoredTabs.find((tab: any) => !tab.archived)?.id ?? restoredTabs[0].id;
                 window.setTimeout(() => switchTab(nextActiveId), 0);
+                await invoke('save_workspace_state', {
+                    content: JSON.stringify({
+                        version: 1,
+                        updatedAt: Date.now(),
+                        activeTabId: nextActiveId,
+                        tabs: restoredTabs,
+                    }),
+                });
             }
             const restoredParts = [
                 data.settings ? (isEn ? 'settings' : 'настройки') : '',
@@ -868,13 +1063,29 @@ export const MobileLayout = ({
         setDriveStatus(isEn ? 'Uploading dictionary.db...' : 'Загружаю dictionary.db...');
         try {
             const token = await getAccessToken(settings.gdriveRefreshToken);
+            const local = localDictionary || await invoke<MobileDictionaryStorage>('get_dictionary_storage_info');
+            const available = driveQuota ? bytesAvailableInDrive(driveQuota) : null;
+            const replacedSize = Number(driveDictionary?.size || 0);
+            if (available != null && available + replacedSize < local.size + Math.max(32 * 1024 * 1024, local.size * 0.02)) {
+                throw new Error(isEn ? 'Not enough free space in Google Drive.' : 'В Google Drive недостаточно свободного места.');
+            }
             const info = await getDictDriveInfo(token);
             const fileId = info?.id || await createDictFileMetadata(token);
+            const sessionUrl = await startDictionaryResumableUpload(token, fileId, local.size);
+            setDriveTransfer({
+                operation: 'upload',
+                label: isEn ? 'Uploading dictionaries' : 'Загрузка словарей в Drive',
+                transferred: 0,
+                total: local.size,
+                percent: 0,
+                startedAt: Date.now(),
+            });
             await invoke('upload_db_to_drive', {
-                url: `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+                url: sessionUrl,
                 token,
             });
             setDriveStatus(isEn ? 'Dictionary uploaded.' : 'Словарь загружен.');
+            await refreshDriveOverview(true);
         } catch (error: any) {
             setDriveStatus(error?.message || String(error));
         } finally {
@@ -891,18 +1102,43 @@ export const MobileLayout = ({
             const token = await getAccessToken(settings.gdriveRefreshToken);
             const info = await getDictDriveInfo(token);
             if (!info?.id) throw new Error(isEn ? 'No dictionary.db in Google Drive.' : 'В Google Drive нет dictionary.db.');
+            const expectedSize = Number(info.size || 0);
+            if (expectedSize && localDictionary?.availableBytes != null) {
+                const margin = Math.max(32 * 1024 * 1024, Math.ceil(expectedSize * 0.02));
+                if (localDictionary.availableBytes < expectedSize + margin) {
+                    throw new Error(isEn ? 'Not enough free storage on this phone.' : 'На телефоне недостаточно свободного места.');
+                }
+            }
+            setDriveTransfer({
+                operation: 'download',
+                label: isEn ? 'Downloading dictionaries' : 'Скачивание словарей из Drive',
+                transferred: 0,
+                total: expectedSize,
+                percent: 0,
+                startedAt: Date.now(),
+            });
             await invoke('download_db_from_drive', {
                 url: `https://www.googleapis.com/drive/v3/files/${info.id}?alt=media`,
                 token,
+                expectedSize: expectedSize || null,
             });
             await syncDictionaries?.();
             setDriveStatus(isEn ? 'Dictionary restored.' : 'Словарь восстановлен.');
+            await refreshDriveOverview(true);
         } catch (error: any) {
             setDriveStatus(error?.message || String(error));
         } finally {
             setDriveBusy(false);
         }
     };
+
+    const transferElapsedSeconds = driveTransfer
+        ? Math.max(0.01, (driveClock - driveTransfer.startedAt) / 1000)
+        : 0;
+    const transferSpeed = driveTransfer ? driveTransfer.transferred / transferElapsedSeconds : 0;
+    const transferEta = driveTransfer && transferSpeed > 0 && driveTransfer.total > driveTransfer.transferred
+        ? (driveTransfer.total - driveTransfer.transferred) / transferSpeed
+        : 0;
 
     return (
         <div className="mobile-shell" onClick={(e) => e.stopPropagation()}>
@@ -1086,7 +1322,7 @@ export const MobileLayout = ({
                             <button className="mobile-icon-btn" onClick={() => setIsMobileSettingsOpen(false)} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}><IconClose /></button>
                         </div>
 
-                        <div className="mobile-settings-nav" role="tablist" aria-label={isEn ? 'Settings sections' : 'Разделы настроек'}>
+                        <div ref={mobileSettingsNavRef} className="mobile-settings-nav" role="tablist" aria-label={isEn ? 'Settings sections' : 'Разделы настроек'}>
                             {([
                                 ['reading', isEn ? 'Reading' : 'Чтение'],
                                 ['flow', 'Flow'],
@@ -1280,9 +1516,19 @@ export const MobileLayout = ({
                                 </button>
                             </div>
                             <label className="mobile-setting-row">
-                                <span>{isEn ? 'Deck' : 'Колода'}</span>
+                                <span>{isEn ? 'Default deck' : 'Колода по умолчанию'}</span>
                                 <select value={settings.ankiDeck || ''} onChange={(e) => updateSetting('ankiDeck', e.target.value)}>
                                     <option value="">{isEn ? 'Not selected' : 'Не выбрано'}</option>
+                                    {ankiDecks.map((deck) => <option key={deck} value={deck}>{deck}</option>)}
+                                </select>
+                            </label>
+                            <label className="mobile-setting-row mobile-window-deck-row">
+                                <span>
+                                    {isEn ? 'This window' : 'Это окно'}
+                                    <small>{activeTab?.name || (isEn ? 'Current window' : 'Текущее окно')}</small>
+                                </span>
+                                <select value={activeTab?.ankiDeck || ''} onChange={(e) => updateActiveTabDeck(e.target.value)}>
+                                    <option value="">{isEn ? `Use default: ${settings.ankiDeck || 'not selected'}` : `Как по умолчанию: ${settings.ankiDeck || 'не выбрано'}`}</option>
                                     {ankiDecks.map((deck) => <option key={deck} value={deck}>{deck}</option>)}
                                 </select>
                             </label>
@@ -1325,7 +1571,7 @@ export const MobileLayout = ({
                         </div>}
 
                         {mobileSettingsSection === 'drive' && <div className="mobile-settings-section">
-                            <div className="mobile-section-title">Google Drive</div>
+                            <div className="mobile-section-title">{isEn ? 'Cloud backup' : 'Облачные копии'}</div>
                             {!GOOGLE_DRIVE_AVAILABLE ? (
                                 <>
                                     <div className="mobile-settings-note">
@@ -1339,58 +1585,126 @@ export const MobileLayout = ({
                                 </>
                             ) : settings.gdriveRefreshToken ? (
                                 <>
-                                    <div className="mobile-settings-note">
-                                        {isEn ? 'Connected. Backups use the same hidden app folder as desktop Setsuna.' : 'Подключено. Бэкапы лежат в той же скрытой папке приложения, что и на ПК.'}
-                                    </div>
-                                    <div className="mobile-drive-summary">
+                                    <div className="mobile-drive-account">
+                                        <span className="mobile-drive-account-dot" />
                                         <div>
-                                            <strong>{isEn ? 'Cloud space' : 'Место в облаке'}</strong>
-                                            <span>{driveQuota?.unlimited
-                                                ? (isEn ? 'Unlimited plan' : 'Без лимита')
-                                                : driveQuota
-                                                    ? `${formatMobileBytes(bytesAvailableInDrive(driveQuota))} ${isEn ? 'free' : 'свободно'} / ${formatMobileBytes(driveQuota.limit)}`
-                                                    : (isEn ? 'Checking…' : 'Проверяю…')}</span>
+                                            <strong>{isEn ? 'Drive connected' : 'Drive подключён'}</strong>
+                                            <span>{isEn ? 'Compatible with desktop Setsuna backups' : 'Совместим с резервными копиями Setsuna на ПК'}</span>
                                         </div>
                                         <button type="button" className="mobile-icon-btn tiny" disabled={driveBusy} onClick={() => void refreshDriveOverview()} aria-label={isEn ? 'Refresh Drive' : 'Обновить Drive'}>↻</button>
                                     </div>
-                                    <div className="mobile-settings-actions two">
-                                        <button className="mobile-action" disabled={driveBusy} onClick={uploadMobileBackup}>
-                                            {isEn ? 'Upload backup' : 'Загрузить бэкап'}
-                                        </button>
-                                        <button className="mobile-action" disabled={driveBusy || !driveBackups.length} onClick={() => restoreMobileBackup()}>
-                                            {isEn ? 'Restore latest' : 'Восстановить последний'}
-                                        </button>
-                                        <button className="mobile-action" disabled={driveBusy} onClick={uploadMobileDictionary}>
-                                            {isEn ? 'Upload dictionary' : 'Загрузить словарь'}
-                                        </button>
-                                        <button className="mobile-action" disabled={driveBusy} onClick={restoreMobileDictionary}>
-                                            {isEn ? 'Download dictionary' : 'Скачать словарь'}
-                                        </button>
-                                    </div>
-                                    <div className="mobile-settings-note mobile-dictionary-warning">
-                                        {isEn
-                                            ? 'Dictionaries can be very large. Uploading them uses your Drive quota and may take several minutes on mobile data.'
-                                            : 'Словари могут занимать много места. Их загрузка расходует квоту Drive и на мобильной сети может занять несколько минут.'}
-                                    </div>
-                                    <div className="mobile-backup-list">
-                                        <div className="mobile-backup-list-head">
-                                            <strong>{isEn ? 'Backup archive' : 'Архив бэкапов'}</strong>
-                                            <span>{driveBackups.length}</span>
-                                        </div>
-                                        {driveBackups.length === 0 ? (
-                                            <div className="mobile-settings-note">{isEn ? 'No cloud backups yet.' : 'В облаке пока нет бэкапов.'}</div>
-                                        ) : driveBackups.map((backup) => (
-                                            <div key={backup.id} className="mobile-backup-row">
-                                                <div>
-                                                    <strong>{backup.modifiedTime ? new Date(backup.modifiedTime).toLocaleString(isEn ? 'en-US' : 'ru-RU') : backup.name}</strong>
-                                                    <span>{formatMobileBytes(backup.size)}</span>
-                                                </div>
-                                                <div className="mobile-backup-actions">
-                                                    <button type="button" disabled={driveBusy} onClick={() => restoreMobileBackup(backup)}>{isEn ? 'Restore' : 'Восст.'}</button>
-                                                    <button type="button" disabled={driveBusy} className="danger" onClick={() => deleteMobileBackup(backup)} aria-label={isEn ? 'Delete backup' : 'Удалить бэкап'}>×</button>
-                                                </div>
+
+                                    {driveTransfer && (
+                                        <div className={`mobile-drive-transfer ${driveBusy ? 'active' : 'done'}`} role="status" aria-live="polite">
+                                            <div className="mobile-drive-transfer-head">
+                                                <strong>{driveTransfer.label}</strong>
+                                                <span>{Math.max(0, Math.min(100, Math.round(driveTransfer.percent)))}%</span>
                                             </div>
-                                        ))}
+                                            <div className="mobile-drive-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(driveTransfer.percent)}>
+                                                <span style={{ width: `${Math.max(0, Math.min(100, driveTransfer.percent))}%` }} />
+                                            </div>
+                                            <div className="mobile-drive-transfer-meta">
+                                                <span>{formatMobileBytes(driveTransfer.transferred)} / {driveTransfer.total ? formatMobileBytes(driveTransfer.total) : '—'}</span>
+                                                <span>{driveBusy && transferSpeed > 0 ? `${formatMobileBytes(transferSpeed)}/s` : (isEn ? 'Finished' : 'Готово')}</span>
+                                                <span>{driveBusy && transferEta > 0
+                                                    ? `${isEn ? 'left' : 'осталось'} ${formatMobileDuration(transferEta)}`
+                                                    : `${isEn ? 'elapsed' : 'прошло'} ${formatMobileDuration(transferElapsedSeconds)}`}</span>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <section className="mobile-drive-block">
+                                        <div className="mobile-drive-block-head">
+                                            <div>
+                                                <strong>{isEn ? 'Setsuna backup' : 'Копия Setsuna'}</strong>
+                                                <span>{isEn ? 'Windows, text, timers and settings' : 'Окна, текст, таймеры и настройки'}</span>
+                                            </div>
+                                            <span className="mobile-drive-size">{driveBackups[0] ? formatMobileBytes(driveBackups[0].size) : '—'}</span>
+                                        </div>
+                                        <div className="mobile-drive-last-backup">
+                                            {driveBackups[0]?.modifiedTime
+                                                ? `${isEn ? 'Latest' : 'Последняя'}: ${new Date(driveBackups[0].modifiedTime).toLocaleString(isEn ? 'en-US' : 'ru-RU')}`
+                                                : (isEn ? 'No backup has been created yet' : 'Резервных копий пока нет')}
+                                        </div>
+                                        <div className="mobile-settings-actions two compact">
+                                            <button className="mobile-action primary" disabled={driveBusy} onClick={uploadMobileBackup}>
+                                                {isEn ? 'Create backup' : 'Создать копию'}
+                                            </button>
+                                            <button className="mobile-action" disabled={driveBusy || !driveBackups.length} onClick={() => restoreMobileBackup()}>
+                                                {isEn ? 'Restore latest' : 'Восстановить последнюю'}
+                                            </button>
+                                        </div>
+                                    </section>
+
+                                    <section className="mobile-drive-block">
+                                        <div className="mobile-drive-block-head">
+                                            <div>
+                                                <strong>{isEn ? 'Dictionary database' : 'База словарей'}</strong>
+                                                <span>{isEn ? 'All imported Yomitan dictionaries' : 'Все импортированные словари Yomitan'}</span>
+                                            </div>
+                                            <span className="mobile-drive-size">{formatMobileBytes(localDictionary?.size)}</span>
+                                        </div>
+                                        <div className="mobile-drive-storage-grid">
+                                            <div>
+                                                <span>{isEn ? 'On phone' : 'На телефоне'}</span>
+                                                <strong>{formatMobileBytes(localDictionary?.size)}</strong>
+                                            </div>
+                                            <div>
+                                                <span>{isEn ? 'In Drive' : 'В Drive'}</span>
+                                                <strong>{driveDictionary ? formatMobileBytes(driveDictionary.size) : (isEn ? 'Not saved' : 'Не сохранено')}</strong>
+                                            </div>
+                                            <div>
+                                                <span>{isEn ? 'Phone free' : 'Свободно на телефоне'}</span>
+                                                <strong>{localDictionary?.availableBytes != null ? formatMobileBytes(localDictionary.availableBytes) : '—'}</strong>
+                                            </div>
+                                            <div>
+                                                <span>{isEn ? 'Drive free' : 'Свободно в Drive'}</span>
+                                                <strong>{driveQuota?.unlimited
+                                                    ? (isEn ? 'Unlimited' : 'Без лимита')
+                                                    : driveQuota ? formatMobileBytes(bytesAvailableInDrive(driveQuota)) : '—'}</strong>
+                                            </div>
+                                        </div>
+                                        <div className="mobile-drive-warning">
+                                            {isEn
+                                                ? 'Dictionaries may take several gigabytes. Setsuna checks free space before upload and restore. Wi-Fi is recommended.'
+                                                : 'Словари могут занимать несколько гигабайт. Перед загрузкой Setsuna проверит свободное место. Рекомендуется Wi-Fi.'}
+                                        </div>
+                                        <div className="mobile-settings-actions two compact">
+                                            <button className="mobile-action" disabled={driveBusy || !localDictionary?.size} onClick={uploadMobileDictionary}>
+                                                {isEn ? 'Upload database' : 'Загрузить базу в Drive'}
+                                            </button>
+                                            <button className="mobile-action" disabled={driveBusy || !driveDictionary} onClick={restoreMobileDictionary}>
+                                                {isEn ? 'Replace phone database' : 'Заменить базу на телефоне'}
+                                            </button>
+                                        </div>
+                                    </section>
+
+                                    <div className={`mobile-backup-list ${isDriveArchiveOpen ? 'open' : ''}`}>
+                                        <button type="button" className="mobile-backup-list-head" onClick={() => setIsDriveArchiveOpen((open) => !open)} aria-expanded={isDriveArchiveOpen}>
+                                            <span className="mobile-backup-list-title">
+                                                <strong>{isEn ? 'Backup archive' : 'Архив копий'}</strong>
+                                                <small>{driveBackups.length} {isEn ? 'saved' : 'сохранено'}</small>
+                                            </span>
+                                            {isDriveArchiveOpen ? <IconChevronUp /> : <IconChevronDown />}
+                                        </button>
+                                        {isDriveArchiveOpen && (
+                                            <div className="mobile-backup-list-body">
+                                                {driveBackups.length === 0 ? (
+                                                    <div className="mobile-settings-note">{isEn ? 'No cloud backups yet.' : 'В облаке пока нет копий.'}</div>
+                                                ) : driveBackups.map((backup) => (
+                                                    <div key={backup.id} className="mobile-backup-row">
+                                                        <div>
+                                                            <strong>{backup.modifiedTime ? new Date(backup.modifiedTime).toLocaleString(isEn ? 'en-US' : 'ru-RU') : backup.name}</strong>
+                                                            <span>{formatMobileBytes(backup.size)}</span>
+                                                        </div>
+                                                        <div className="mobile-backup-actions">
+                                                            <button type="button" disabled={driveBusy} onClick={() => restoreMobileBackup(backup)}>{isEn ? 'Restore' : 'Восстановить'}</button>
+                                                            <button type="button" disabled={driveBusy} className="danger" onClick={() => deleteMobileBackup(backup)} aria-label={isEn ? 'Delete backup' : 'Удалить бэкап'}>×</button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                     <button className="mobile-action danger" disabled={driveBusy} onClick={() => updateSetting('gdriveRefreshToken', '')}>
                                         {isEn ? 'Disconnect Drive' : 'Отключить Drive'}
@@ -1667,27 +1981,6 @@ export const TopBar = ({
         return () => observer.disconnect();
     }, [visibleTabs.length]);
 
-    useEffect(() => {
-        const el = topbarRef.current;
-        if (!el) return;
-        const updateCompactMode = () => {
-            const tabStrip = tabStripRef.current;
-            const tabsNeedSpace = visibleTabs.length > 0;
-            const tabStripIsCrushed = tabsNeedSpace && (tabStrip?.clientWidth || 0) < 190;
-            const contentIsClipped = el.scrollWidth > el.clientWidth + 1;
-            if (!isTopbarCollapsed && (el.clientWidth < 900 || tabStripIsCrushed || contentIsClipped)) {
-                setIsTopbarCollapsed(true);
-            }
-        };
-        const frame = window.requestAnimationFrame(updateCompactMode);
-        const observer = new ResizeObserver(updateCompactMode);
-        observer.observe(el);
-        if (tabStripRef.current) observer.observe(tabStripRef.current);
-        return () => {
-            window.cancelAnimationFrame(frame);
-            observer.disconnect();
-        };
-    }, [isTopbarCollapsed, visibleTabs.length]);
     useEffect(() => {
         setTabWindowStart((start) => Math.max(0, Math.min(start, Math.max(0, visibleTabs.length - visibleTabSlots))));
     }, [visibleTabs.length, visibleTabSlots]);
@@ -1966,13 +2259,14 @@ export const TopBar = ({
                 type="button"
                 className="header-btn topbar-collapse-toggle"
                 onClick={() => setIsTopbarCollapsed((value) => !value)}
+                aria-expanded={!isTopbarCollapsed}
                 title={isTopbarCollapsed
                     ? (settings?.appLanguage === 'en' ? 'Expand toolbar' : 'Развернуть панель')
                     : (settings?.appLanguage === 'en' ? 'Collapse toolbar' : 'Свернуть панель')}
                 aria-label={isTopbarCollapsed ? 'Expand toolbar' : 'Collapse toolbar'}
                 style={{ width: 28, height: 33, flex: '0 0 28px', padding: 0, justifyContent: 'center', fontSize: 18 }}
             >
-                {isTopbarCollapsed ? '‹' : '›'}
+                {isTopbarCollapsed ? '›' : '‹'}
             </button>
 
             <div className="header-actions" style={{ display: 'flex', alignItems: 'center', flex: '0 0 auto', minWidth: 0, overflow: 'visible' }}>

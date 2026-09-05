@@ -3267,27 +3267,64 @@ export default function App() {
         });
     }, [lookupCambridgeForManualSearch, settings.cambridgeApiOnlyWhenNoLocal]);
 
-    const runSentenceTokenLookup = useCallback((word: string, sentence: string, cursor?: number) => {
+    const runSentenceTokenLookup = useCallback(async (word: string, sentence: string, cursor?: number) => {
         const requestedWord = normalizeLookupText(word);
-        if (!requestedWord) return;
+        if (!requestedWord) return null;
+        // A second tap replaces the current mobile sheet. Closing it before the
+        // async query also prevents the old sheet from retaining the touch layer.
+        setLookupStack([]);
         setMobileLookupNotice('');
         const rect = new DOMRect(window.innerWidth / 2, Math.max(110, window.innerHeight * 0.3), 0, 0);
+        const requestedLength = Array.from(requestedWord).length;
+        const isJapaneseToken = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff66-\uff9f]/.test(requestedWord);
+        const keepFullJapaneseMatch = (entries: DictEntry[]) => isJapaneseToken
+            ? entries.filter((entry) => Number(entry.source_length || 0) >= requestedLength)
+            : entries;
 
-        void (async () => {
+        try {
             let resolvedWord = requestedWord;
             let localEntries: DictEntry[] = [];
+            let match = {
+                start: Number.isFinite(cursor) ? Number(cursor) : 0,
+                length: Array.from(requestedWord).length,
+            };
 
-            if (Number.isFinite(cursor) && sentence) {
+            // The tokenizer already selected a concrete Japanese block. Looking up that
+            // block first prevents a valid segment such as 米屋 from collapsing to 米.
+            if (isJapaneseToken) {
+                try {
+                    const entries = await invoke<DictEntry[]>('lookup_word', { word: requestedWord });
+                    localEntries = keepFullJapaneseMatch(Array.isArray(entries) ? entries : []);
+                } catch {
+                    localEntries = [];
+                }
+            }
+
+            if (localEntries.length === 0 && Number.isFinite(cursor) && sentence) {
                 try {
                     const result = await invoke<{
                         entries: DictEntry[];
-                        start: number;
-                        end: number;
+                        start?: number;
+                        end?: number;
+                        match_start?: number;
+                        match_len?: number;
                         word: string;
                     } | null>('scan_cursor', { sentence, cursor });
                     if (result) {
                         resolvedWord = normalizeLookupText(result.word) || requestedWord;
-                        localEntries = Array.isArray(result.entries) ? result.entries : [];
+                        localEntries = keepFullJapaneseMatch(Array.isArray(result.entries) ? result.entries : []);
+                        if (isJapaneseToken && localEntries.length === 0) {
+                            resolvedWord = requestedWord;
+                        }
+                        const start = Number.isFinite(result.match_start)
+                            ? Number(result.match_start)
+                            : Number(result.start);
+                        const length = Number.isFinite(result.match_len)
+                            ? Number(result.match_len)
+                            : Number(result.end) - start;
+                        if (Number.isFinite(start) && Number.isFinite(length) && length > 0) {
+                            match = { start, length };
+                        }
                     }
                 } catch {
                     // Direct lookup below remains useful for punctuation and incomplete text.
@@ -3297,7 +3334,7 @@ export default function App() {
             if (localEntries.length === 0) {
                 try {
                     const entries = await invoke<DictEntry[]>('lookup_word', { word: requestedWord });
-                    localEntries = Array.isArray(entries) ? entries : [];
+                    localEntries = keepFullJapaneseMatch(Array.isArray(entries) ? entries : []);
                     resolvedWord = requestedWord;
                 } catch {
                     localEntries = [];
@@ -3312,7 +3349,7 @@ export default function App() {
                 setMobileLookupNotice(settings.appLanguage === 'en'
                     ? `No dictionary entry for “${resolvedWord}”. Tap another block or import a larger dictionary.`
                     : `Для «${resolvedWord}» нет статьи. Нажми на соседний блок или импортируй более полный словарь.`);
-                return;
+                return null;
             }
 
             setMobileLookupNotice('');
@@ -3322,12 +3359,14 @@ export default function App() {
                 word: resolvedWord,
                 sentence: sentence || resolvedWord,
             }]);
-        })().catch((error) => {
+            return match;
+        } catch (error) {
             console.warn('Sentence token lookup failed', error);
             setMobileLookupNotice(settings.appLanguage === 'en'
                 ? 'Lookup failed. Check the dictionary database and try again.'
                 : 'Лукап не сработал. Проверь базу словарей и попробуй ещё раз.');
-        });
+            return null;
+        }
     }, [lookupCambridgeForManualSearch, settings.appLanguage, settings.cambridgeApiOnlyWhenNoLocal]);
 
     useEffect(() => {
@@ -3843,6 +3882,7 @@ export default function App() {
                         toggleWs={toggleWs}
                         setWsEnabled={setWsEnabled}
                         lookupOpen={lookupStack.length > 0}
+                        onCloseLookup={() => setLookupStack([])}
                         lookupNotice={mobileLookupNotice}
                         settingsRequest={mobileSettingsRequest}
                     />
@@ -3967,7 +4007,12 @@ export default function App() {
                         settings={settings}
                         playerClip={playerMiningClip}
                         captureSource={resolvedWorkspace === "texthooker" ? (activeTab?.captureSource || null) : null}
-                        ankiDeck={settings.ankiDeckMode === 'contextual' && resolvedWorkspace === "texthooker" ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
+                        ankiDeck={isMobileLayout && resolvedWorkspace === "texthooker"
+                            ? (activeTab?.ankiDeck || settings.ankiDeck)
+                            : settings.ankiDeckMode === 'contextual' && resolvedWorkspace === "texthooker"
+                                ? (activeTab?.ankiDeck || settings.ankiDeck)
+                                : settings.ankiDeck}
+                        onClose={() => setLookupStack([])}
                     />
                 )}
             </div>

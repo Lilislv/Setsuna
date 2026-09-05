@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useMemo, useRef } from "react";
 import { AppSettings } from "./SettingsModal";
 import { checkWordsStatusMulti, addNote, browseAnkiCards } from "../utils/anki";
+import { captureMobileScreen, hasMobileScreenCapture } from "../utils/mobileFiles";
 import { getTranslator } from "../utils/i18n";
 import { CaptureSourceBinding, PlayerMiningClip } from "../utils/constants";
 
@@ -42,6 +43,7 @@ export interface LookuperProps {
     captureSource?: CaptureSourceBinding | null;
     screenshotSource?: LookupScreenshotSource;
     ankiDeck?: string;
+    onClose?: () => void;
 }
 
 type LookupScanTarget = {
@@ -668,19 +670,29 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                         return;
                     }
                 } else {
-                    if (activeProcs.length === 0) {
-                        alert(t('anki.noProcesses'));
-                        setIsAdding(false);
-                        return;
+                    if (hasMobileScreenCapture()) {
+                        document.documentElement.classList.add('setsuna-capture-clean');
+                        try {
+                            await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+                            b64 = await captureMobileScreen();
+                        } finally {
+                            document.documentElement.classList.remove('setsuna-capture-clean');
+                        }
+                    } else {
+                        if (activeProcs.length === 0) {
+                            alert(t('anki.noProcesses'));
+                            setIsAdding(false);
+                            return;
+                        }
+                        const remoteSource = activeProcs.find((proc: any) => proc.sourceType === "remote" && proc.remoteUrl && proc.remoteToken && proc.pid);
+                        b64 = remoteSource
+                            ? await invoke<string | null>('take_remote_capture_screenshot', {
+                                url: remoteSource.remoteUrl,
+                                token: remoteSource.remoteToken,
+                                pid: remoteSource.pid,
+                            })
+                            : await invoke<string | null>('take_smart_screenshot', { processes: activeProcs });
                     }
-                    const remoteSource = activeProcs.find((proc: any) => proc.sourceType === "remote" && proc.remoteUrl && proc.remoteToken && proc.pid);
-                    b64 = remoteSource
-                        ? await invoke<string | null>('take_remote_capture_screenshot', {
-                            url: remoteSource.remoteUrl,
-                            token: remoteSource.remoteToken,
-                            pid: remoteSource.pid,
-                        })
-                        : await invoke<string | null>('take_smart_screenshot', { processes: activeProcs });
                 }
                 if (b64) {
                     screenshotData = b64;
@@ -984,7 +996,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
     );
 };
 
-export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt, onSlice, settings: baseSettings, captureSource, playerClip, screenshotSource = { kind: 'internal' }, ankiDeck }: LookuperProps) {
+export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt, onSlice, settings: baseSettings, captureSource, playerClip, screenshotSource = { kind: 'internal' }, ankiDeck, onClose }: LookuperProps) {
   const settings = useMemo(
       () => baseSettings ? { ...baseSettings, ankiDeck: ankiDeck || baseSettings.ankiDeck } : baseSettings,
       [baseSettings, ankiDeck],
@@ -1508,6 +1520,22 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
           };
 
           try {
+              // Let the native scanner try the whole sentence first. It knows about
+              // inflections, idioms and phrasal verbs (for example, closed up ->
+              // close up). Looking up the hovered English token first made an exact
+              // `closed` entry hide the more useful phrase match.
+              const res = await invoke<any>("scan_cursor", { sentence, cursor: cursorIndex });
+              if (mySerial !== scanSerial) return;
+
+              if (res && res.entries && res.entries.length > 0) {
+                  const entries = await mergeCambridgeEntries(res.word, res.entries);
+                  if (mySerial !== scanSerial) return;
+                  showLookup({ ...res, entries }, res.word, res.match_start, res.match_len);
+                  return;
+              }
+
+              // Cambridge remains a fallback for English words which are not in the
+              // local database. This path deliberately runs after sentence scanning.
               const english = extractEnglishWordAtCursor(sentence, cursorIndex);
               if (english) {
                   const query = normalizeCambridgeWord(english.word);
@@ -1527,15 +1555,6 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                       showLookup({ entries }, english.word, english.start, english.len);
                       return;
                   }
-              }
-
-              const res = await invoke<any>("scan_cursor", { sentence, cursor: cursorIndex });
-              if (mySerial !== scanSerial) return;
-
-              if (res && res.entries && res.entries.length > 0) {
-                  const entries = await mergeCambridgeEntries(res.word, res.entries);
-                  if (mySerial !== scanSerial) return;
-                  showLookup({ ...res, entries }, res.word, res.match_start, res.match_len);
               }
           } catch (e) {
               const english = extractEnglishWordAtCursor(sentence, cursorIndex);
@@ -1618,7 +1637,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
 
   return (
     <>
-        {isMobileSheet && <div className="dict-mobile-scrim" />}
+        {isMobileSheet && <div className="dict-mobile-scrim" aria-hidden="true" />}
         {groupedStack.map(({ data, groupedEntries }, index) => {
             if (groupedEntries.length === 0) return null;
             if (isMobileSheet && index !== groupedStack.length - 1) return null;
@@ -1688,6 +1707,19 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                     e.stopPropagation();
                     if (onSlice && stack.length > index + 1) onSlice(index);
                 }}>
+                    {isMobileSheet && onClose && (
+                        <button
+                            type="button"
+                            className="dict-mobile-close"
+                            aria-label={settings?.appLanguage === 'en' ? 'Close lookup' : 'Закрыть лукап'}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                onClose();
+                            }}
+                        >
+                            ×
+                        </button>
+                    )}
                     {groupedEntries.map((group, i) => (
                         <LookupEntryItem 
                             key={i} group={group} settings={settings} sentence={data.sentence} onWordLookup={handleWordLookup}

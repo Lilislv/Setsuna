@@ -80,6 +80,15 @@ function JlPopup() {
 
     return (
         <main className="jl-popup-root">
+            <button
+                type="button"
+                className="jl-popup-close"
+                onClick={() => void invoke("hide_jl_lookup_window")}
+                aria-label={language === "en" ? "Close lookup" : "Закрыть словарь"}
+                title={language === "en" ? "Close lookup" : "Закрыть словарь"}
+            >
+                ×
+            </button>
             <div className="jl-popup-content">
                 {stack.length === 0 && (
                     <div className="jl-popup-empty">

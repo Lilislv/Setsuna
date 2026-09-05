@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="com.ichi2.anki.permission.READ_WRITE_DATABASE" />
 
@@ -45,10 +46,15 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".FlowCaptureActivity"
+            android:exported="false"
+            android:theme="@style/Theme.setsuna.Transparent" />
+
         <service
             android:name=".TextOverlayService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|mediaProjection">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the user-enabled Setsuna text overlay visible while the user reads in another app." />

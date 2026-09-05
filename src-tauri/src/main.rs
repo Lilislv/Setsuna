@@ -3445,17 +3445,14 @@ fn english_phrase_lookup_forms(
 ) -> Vec<String> {
     let mut forms = Vec::new();
     let surface: String = chars[words[left].start..words[right].end].iter().collect();
-    push_english_phrase_form(&mut forms, surface.clone());
-
     let joined = words[left..=right]
         .iter()
         .map(|word| word.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    push_english_phrase_form(&mut forms, joined);
 
     let first_word = &words[left].text;
-    let mut base_forms = vec![first_word.to_lowercase()];
+    let mut base_forms = Vec::new();
     push_english_base_forms(&mut base_forms, &first_word.to_lowercase());
     let rest = words[left + 1..=right]
         .iter()
@@ -3468,6 +3465,12 @@ fn english_phrase_lookup_forms(
             push_english_phrase_form(&mut forms, format!("{base}{surface_rest}"));
         }
     }
+
+    // Prefer dictionary headwords over Yomitan non-lemma redirects. For example,
+    // `closed up shop` has a technical redirect entry, while the useful article is
+    // stored under `close up shop`.
+    push_english_phrase_form(&mut forms, surface.clone());
+    push_english_phrase_form(&mut forms, joined);
 
     add_english_possessive_idiom_forms(&mut forms);
     forms
@@ -4999,7 +5002,9 @@ fn scan_english_phrase_in_db<'a>(
     }
 
     let max_words = MAX_PHRASE_WORDS.min(component_end - component_start + 1);
-    for word_count in (2..=max_words).rev() {
+    // Prefer the nearest useful expression under the pointer. Longer idioms remain
+    // available by pointing at a word which is unique to that longer expression.
+    for word_count in 2..=max_words {
         for left in component_start..=hit_index {
             let right = left + word_count - 1;
             if right > component_end || hit_index > right {
@@ -8346,6 +8351,54 @@ mod tests {
     }
 
     #[test]
+    fn scan_cursor_prefers_closed_up_over_exact_closed_entry() {
+        let db = test_db();
+        insert_english_test_entry(&db, "close up");
+        insert_english_test_entry(&db, "closed");
+
+        let result = scan_cursor_in_db(&db, "I closed up", 5).unwrap();
+        assert_eq!(result.word, "close up");
+        assert_eq!((result.match_start, result.match_len), (2, 9));
+        assert!(result.entries.iter().all(|entry| entry.term == "close up"));
+    }
+
+    #[test]
+    fn scan_cursor_prefers_phrase_lemma_over_non_lemma_redirect() {
+        let db = test_db();
+        insert_english_test_entry(&db, "close up");
+        insert_english_test_entry(&db, "close up shop");
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags)
+             VALUES (?1, '', ?2, 'English test', 'non-lemma')",
+            params![
+                "closed up shop",
+                r#"[["close up shop",["past participle"]]]"#
+            ],
+        )
+        .unwrap();
+
+        let result = scan_cursor_in_db(&db, "Anyway, I closed up shop.", 21).unwrap();
+        assert_eq!(result.word, "close up shop");
+        assert_eq!((result.match_start, result.match_len), (10, 14));
+        assert!(result
+            .entries
+            .iter()
+            .all(|entry| entry.term == "close up shop"));
+    }
+
+    #[test]
+    fn scan_cursor_prefers_nearby_phrasal_verb_over_longer_idiom() {
+        let db = test_db();
+        insert_english_test_entry(&db, "close up");
+        insert_english_test_entry(&db, "close up shop");
+
+        let result = scan_cursor_in_db(&db, "Anyway, I closed up shop.", 13).unwrap();
+        assert_eq!(result.word, "close up");
+        assert_eq!((result.match_start, result.match_len), (10, 9));
+        assert!(result.entries.iter().all(|entry| entry.term == "close up"));
+    }
+
+    #[test]
     fn scan_cursor_resolves_separable_english_phrasal_verb() {
         let db = test_db();
         insert_english_test_entry(&db, "space out");
@@ -8730,19 +8783,6 @@ fn main() {
                                 drop(tabs);
                                 for window in windows {
                                     let _ = window.close();
-                                }
-                            }
-                        }
-
-                        tauri::WindowEvent::Resized(_) => {
-                            let is_minimized = main_win_for_events.is_minimized().unwrap_or(false);
-
-                            if is_minimized {
-                                let _ = main_win_for_events.hide();
-                                if let Ok(tabs) = state.inner().tabs.try_lock() {
-                                    for window in tabs.values() {
-                                        let _ = window.hide();
-                                    }
                                 }
                             }
                         }

@@ -8,12 +8,10 @@ const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:1337';
 const BACKUP_PREFIX = 'setsuna_backup_';
 const LEGACY_BACKUP_PREFIX = 'txthk_backup_';
 
-// The HTTP plugin is optional on Android. WebView's native fetch supports the
-// Google OAuth and Drive CORS endpoints, while calling a missing plugin made
-// every Drive action fail before a network request was even attempted.
+// Prefer Tauri's native client on every platform. In Android WebView, direct
+// requests can be blocked by CORS and may hide the resumable upload Location
+// header even when Google accepted the request.
 const driveFetch: typeof globalThis.fetch = async (input, init) => {
-    const isAndroid = /Android/i.test(navigator.userAgent);
-    if (isAndroid) return globalThis.fetch(input, init);
     try {
         return await tauriFetch(input, init as any) as Response;
     } catch (error) {

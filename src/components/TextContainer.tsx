@@ -1,4 +1,5 @@
 ﻿import { useEffect, useRef, useState, useCallback, memo, useLayoutEffect, type ReactNode } from "react";
+import type { ClipboardEvent as ReactClipboardEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -211,8 +212,14 @@ const useFuriganaTokens = (text: string, contextBefore: string, contextAfter: st
 
 const JAPANESE_TOKEN_RE = /[぀-ヿ㐀-鿿豈-﫿ｦ-ﾟー々〆ヶ]/;
 const LATIN_TOKEN_RE = /[A-Za-zÀ-ɏ]/;
+type LookupMatch = { start: number; length: number };
+type LookupTokenHandler = (
+    token: string,
+    sentence: string,
+    cursor: number,
+) => LookupMatch | null | void | Promise<LookupMatch | null | void>;
 
-const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none', contextBefore = '', contextAfter = '', activeCursor = null }: { text: string; searchQuery: string; onLookupToken?: (token: string, sentence: string, cursor: number) => void; furiganaMode?: string; contextBefore?: string; contextAfter?: string; activeCursor?: number | null }) => {
+const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none', contextBefore = '', contextAfter = '', activeRange = null }: { text: string; searchQuery: string; onLookupToken?: LookupTokenHandler; furiganaMode?: string; contextBefore?: string; contextAfter?: string; activeRange?: LookupMatch | null }) => {
     const tokens = useFuriganaTokens(text, contextBefore, contextAfter);
 
     if (!onLookupToken) return <>{highlightText(text, searchQuery)}</>;
@@ -245,12 +252,16 @@ const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none'
                 </ruby>
             ) : highlightText(surface, searchQuery);
 
-            const isActive = activeCursor != null && cursor === activeCursor;
+            const surfaceLength = Array.from(surface).length;
+            const isActive = Boolean(activeRange
+                && cursor < activeRange.start + activeRange.length
+                && cursor + surfaceLength > activeRange.start);
             return (
                 <button
                     key={`word-${index}-${cursor}-${surface}`}
                     type="button"
                     className={isActive ? "lookup-word active" : "lookup-word"}
+                    aria-label={surface}
                     onClick={(e) => {
                         e.stopPropagation();
                         onLookupToken(surface, text, cursor);
@@ -270,12 +281,16 @@ const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none'
         if (!part.lookup) {
             return <span key={`fallback-plain-${part.cursor}-${index}`}>{highlightText(part.text, searchQuery)}</span>;
         }
-        const isActive = activeCursor != null && part.cursor === activeCursor;
+        const partLength = Array.from(part.text).length;
+        const isActive = Boolean(activeRange
+            && part.cursor < activeRange.start + activeRange.length
+            && part.cursor + partLength > activeRange.start);
         return (
             <button
                 key={`fallback-word-${part.cursor}-${index}-${part.text}`}
                 type="button"
                 className={isActive ? "lookup-word active" : "lookup-word"}
+                aria-label={part.text}
                 onClick={(event) => {
                     event.stopPropagation();
                     onLookupToken(part.text, text, part.cursor);
@@ -308,7 +323,7 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
         : (isHovered || isEditing ? 'var(--hover-bg)' : 'transparent');
 
     return (
-        <div className="text-line-wrapper" data-raw-text={line} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', marginBottom: '14px', padding: '6px 10px', borderRadius: '8px', backgroundColor: bgColor, transition: 'background-color 0.2s', position: 'relative' }}>
+        <div className="text-line-wrapper" data-line-index={index} data-raw-text={line} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', margin: 0, padding: '6px 10px', borderRadius: '8px', backgroundColor: bgColor, transition: 'background-color 0.2s', position: 'relative' }}>
             
             <div 
                 ref={textRef}
@@ -349,7 +364,9 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
                             furiganaMode={furiganaMode}
                             contextBefore={contextBefore}
                             contextAfter={contextAfter}
-                            activeCursor={activeToken && activeToken.line === index ? activeToken.cursor : null}
+                            activeRange={activeToken && activeToken.line === index
+                                ? { start: activeToken.start, length: activeToken.length }
+                                : null}
                         />
                     ) : (
                         <FuriganaLine
@@ -384,7 +401,8 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
 const TextContainer = memo(function TextContainer({ contentKey, lines = [], lineFurigana = [], isFlashing = false, onDelete, onEdit, furiganaMode, autoScrollOffset = 80, searchQuery = "", activeSearchLineIdx = -1, searchTrigger = 0, panelPosition = 'bottom', language = 'ru', textOrientation = 'horizontal', readerProgress = 0, onReaderProgress, onLookupToken, lookupActive = false }: any) {
   const parentRef = useRef<HTMLDivElement>(null);
   // Which word is currently looked up — held highlighted while the popup is open, cleared on close.
-  const [activeToken, setActiveToken] = useState<{ line: number; cursor: number } | null>(null);
+  const [activeToken, setActiveToken] = useState<{ line: number; start: number; length: number } | null>(null);
+  const lookupRequestRef = useRef(0);
   const lookupActiveRef = useRef(lookupActive);
   useEffect(() => { lookupActiveRef.current = lookupActive; }, [lookupActive]);
   useEffect(() => { if (!lookupActive) setActiveToken(null); }, [lookupActive]);
@@ -395,9 +413,12 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
       const timer = setTimeout(() => { if (!lookupActiveRef.current) setActiveToken(null); }, 750);
       return () => clearTimeout(timer);
   }, [activeToken]);
-  const handleTokenTap = useCallback((lineIndex: number, token: string, sentence: string, cursor: number) => {
-      setActiveToken({ line: lineIndex, cursor });
-      onLookupToken?.(token, sentence, cursor);
+  const handleTokenTap = useCallback(async (lineIndex: number, token: string, sentence: string, cursor: number) => {
+      const requestId = ++lookupRequestRef.current;
+      setActiveToken({ line: lineIndex, start: cursor, length: Array.from(token).length });
+      const match = await onLookupToken?.(token, sentence, cursor);
+      if (requestId !== lookupRequestRef.current || !match || match.length <= 0) return;
+      setActiveToken({ line: lineIndex, start: match.start, length: match.length });
   }, [onLookupToken]);
   // On mobile the lookup opens as a bottom sheet; lift the tapped word near the top so it
   // stays visible above the sheet instead of being covered by it.
@@ -538,6 +559,29 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
       }, 50);
   };
 
+  const handleCopySelection = useCallback((event: ReactClipboardEvent<HTMLDivElement>) => {
+      const selection = window.getSelection();
+      const container = parentRef.current;
+      if (!container || !selection || selection.isCollapsed || selection.rangeCount === 0) return;
+
+      const range = selection.getRangeAt(0);
+      const selectedRows = Array.from(container.querySelectorAll<HTMLElement>('.text-line-wrapper[data-raw-text]'))
+          .filter((row) => {
+              try { return range.intersectsNode(row); } catch { return false; }
+          })
+          .sort((left, right) => Number(left.dataset.lineIndex || 0) - Number(right.dataset.lineIndex || 0));
+
+      if (selectedRows.length < 2) return;
+      const cleanText = selectedRows
+          .map((row) => row.dataset.rawText || '')
+          .filter(Boolean)
+          .join('\n\n');
+      if (!cleanText) return;
+
+      event.preventDefault();
+      event.clipboardData.setData('text/plain', cleanText);
+  }, []);
+
   useEffect(() => {
       const isNewText = lines.length > prevLinesLengthRef.current;
       prevLinesLengthRef.current = lines.length;
@@ -630,10 +674,19 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
       );
   }
 
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const firstVirtualRow = virtualRows[0];
+  const lastVirtualRow = virtualRows[virtualRows.length - 1];
+  const virtualPaddingTop = firstVirtualRow?.start || 0;
+  const virtualPaddingBottom = lastVirtualRow
+      ? Math.max(0, rowVirtualizer.getTotalSize() - lastVirtualRow.end)
+      : 0;
+
   return (
-    <div ref={parentRef} onScroll={handleScroll} className={`text-container ${isFlashing ? 'flash' : ''}`} style={{ padding: '20px', overflowY: 'auto', flex: 1, position: 'relative' }}>
-      <div style={{ width: '100%', minHeight: '100%', height: `${Math.max(rowVirtualizer.getTotalSize(), parentRef.current?.clientHeight || 0)}px`, position: 'relative' }}>
-        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+    <div ref={parentRef} onScroll={handleScroll} onCopy={handleCopySelection} className={`text-container ${isFlashing ? 'flash' : ''}`} style={{ padding: '20px', overflowY: 'auto', flex: 1, position: 'relative' }}>
+      <div style={{ width: '100%', minHeight: '100%' }}>
+        {virtualPaddingTop > 0 && <div aria-hidden="true" style={{ height: `${virtualPaddingTop}px` }} />}
+        {virtualRows.map((virtualRow) => {
             const index = virtualRow.index;
             const isSpacer = index === lines.length;
             const viewportHeight = parentRef.current?.clientHeight || window.innerHeight;
@@ -644,12 +697,11 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
                     ref={rowVirtualizer.measureElement}
                     data-index={index}
                     style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
                         width: '100%',
-                        transform: `translateY(${virtualRow.start}px)`,
                         height: isSpacer ? `${spacerHeight}px` : undefined,
+                        paddingBottom: isSpacer ? 0 : '14px',
+                        boxSizing: 'border-box',
+                        display: 'flow-root',
                     }}
                 >
                     {!isSpacer && (
@@ -673,6 +725,7 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
                 </div>
             );
         })}
+        {virtualPaddingBottom > 0 && <div aria-hidden="true" style={{ height: `${virtualPaddingBottom}px` }} />}
       </div>
 
       {showScrollBottom && (

@@ -13,6 +13,8 @@ import java.io.File
 import java.io.FileOutputStream
 
 class MainActivity : TauriActivity() {
+  override val handleBackNavigation: Boolean = true
+
   private var setsunaWebView: WebView? = null
   private var pendingSharedText: String? = null
   private var pendingOverlayLookup: String? = null

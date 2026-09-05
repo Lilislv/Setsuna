@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use sysinfo::Disks;
 use tauri::{generate_context, generate_handler, Builder, Emitter, Manager, State};
 use zip::ZipArchive;
 
@@ -298,6 +299,23 @@ fn import_yomitan_zip(conn: &mut Connection, path: &str) -> Result<usize, String
     upsert_mobile_dictionary_meta(&tx, &dict_name, index_meta.as_ref())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(total)
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DriveTransferProgress {
+    operation: String,
+    transferred: u64,
+    total: u64,
+    percent: u8,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DictionaryStorageInfo {
+    path: String,
+    size: u64,
+    available_bytes: Option<u64>,
 }
 
 fn unix_now_ms() -> i64 {
@@ -809,7 +827,7 @@ fn lookup_word_in_db(conn: &Connection, word: &str) -> Result<Vec<DictEntry>, St
     Ok(Vec::new())
 }
 
-const STARTER_DICTIONARY_REVISION: &str = "2026-08-28.1";
+const STARTER_DICTIONARY_REVISION: &str = "2026-09-02.1";
 const CORE_DICTIONARY_REVISION: &str = "2026-08-28.2";
 const CORE_DICTIONARY_ARCHIVE: &[u8] =
     include_bytes!("../resources/mobile-starter-dictionaries.zip");
@@ -826,6 +844,7 @@ struct EmbeddedStarterEntry {
 }
 
 const STARTER_JP_RU: &[(&str, &str, &str, &str)] = &[
+    ("米屋", "こめや", "рисовая лавка; магазин или продавец риса", "n"),
     ("日本", "にほん", "Япония", "n"),
     ("日本人", "にほんじん", "японец; японка", "n"),
     ("私", "わたし", "я; я сам", "pn"),
@@ -869,6 +888,7 @@ const STARTER_JP_RU: &[(&str, &str, &str, &str)] = &[
 ];
 
 const STARTER_JP_EN: &[(&str, &str, &str, &str)] = &[
+    ("米屋", "こめや", "rice shop; rice dealer", "n"),
     ("日本", "にほん", "Japan", "n"),
     ("日本人", "にほんじん", "Japanese person", "n"),
     ("私", "わたし", "I; me", "pn"),
@@ -1119,18 +1139,77 @@ fn get_mobile_db_path(app: &tauri::App) -> Result<PathBuf, String> {
     Ok(app_dir.join("dictionary.db"))
 }
 
+fn available_space_for_path(path: &Path) -> Option<u64> {
+    let base = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+    let resolved = base.canonicalize().unwrap_or(base);
+    let disks = Disks::new_with_refreshed_list();
+    disks
+        .list()
+        .iter()
+        .filter(|disk| resolved.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().components().count())
+        .map(|disk| disk.available_space())
+}
+
+fn emit_drive_progress(app: &tauri::AppHandle, operation: &str, transferred: u64, total: u64) {
+    let percent = if total == 0 {
+        0
+    } else {
+        ((transferred.saturating_mul(100) / total).min(100)) as u8
+    };
+    let _ = app.emit(
+        "drive_dictionary_progress",
+        DriveTransferProgress {
+            operation: operation.to_string(),
+            transferred,
+            total,
+            percent,
+        },
+    );
+}
+
+fn resumable_next_offset(range: Option<&str>) -> u64 {
+    range
+        .and_then(|value| value.rsplit('-').next())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|last| last.saturating_add(1))
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn get_dictionary_storage_info(state: State<'_, AppState>) -> Result<DictionaryStorageInfo, String> {
+    let path = state.db_path.clone();
+    let size = std::fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or(0);
+    Ok(DictionaryStorageInfo {
+        path: path.to_string_lossy().into_owned(),
+        size,
+        available_bytes: available_space_for_path(&path),
+    })
+}
+
 #[tauri::command]
 async fn upload_db_to_drive(
+    app: tauri::AppHandle,
     url: String,
     token: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
     let db_path = state.db_path.clone();
-    if !Path::new(&db_path).exists() {
+    if !db_path.exists() {
         return Err("Dictionary database does not exist yet.".to_string());
     }
+    {
+        let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+    }
 
-    let file = tokio::fs::File::open(&db_path)
+    let mut file = tokio::fs::File::open(&db_path)
         .await
         .map_err(|e| format!("Failed to open dictionary database: {}", e))?;
     let file_len = file
@@ -1138,83 +1217,182 @@ async fn upload_db_to_drive(
         .await
         .map_err(|e| format!("Failed to inspect dictionary database: {}", e))?
         .len();
-    let stream = tokio_util::io::ReaderStream::new(file);
-    let body = reqwest::Body::wrap_stream(stream);
-    let res = reqwest::Client::new()
-        .patch(&url)
-        .bearer_auth(token)
-        .header("Content-Type", "application/octet-stream")
-        .header("Content-Length", file_len.to_string())
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to upload dictionary database: {}", e))?;
+    let client = reqwest::Client::new();
+    emit_drive_progress(&app, "upload", 0, file_len);
 
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!(
-            "Dictionary database upload failed: {status} {body}"
-        ));
+    if !url.contains("uploadType=resumable") && !url.contains("upload_id=") {
+        let stream = tokio_util::io::ReaderStream::new(file);
+        let response = client
+            .patch(&url)
+            .bearer_auth(token)
+            .header("Content-Type", "application/octet-stream")
+            .header("Content-Length", file_len.to_string())
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await
+            .map_err(|e| format!("Failed to upload dictionary database: {}", e))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("Dictionary database upload failed: {} - {}", status, body));
+        }
+        emit_drive_progress(&app, "upload", file_len, file_len);
+        return Ok(());
     }
 
+    const CHUNK_SIZE: usize = 8 * 1024 * 1024;
+    let mut offset = 0_u64;
+    while offset < file_len {
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|e| format!("Failed to seek dictionary database: {}", e))?;
+        let amount = ((file_len - offset) as usize).min(CHUNK_SIZE);
+        let mut chunk = vec![0_u8; amount];
+        file.read_exact(&mut chunk)
+            .await
+            .map_err(|e| format!("Failed to read dictionary database: {}", e))?;
+        let end = offset + amount as u64 - 1;
+        let mut attempts = 0_u8;
+        loop {
+            attempts += 1;
+            let response = client
+                .put(&url)
+                .bearer_auth(&token)
+                .header("Content-Type", "application/octet-stream")
+                .header("Content-Length", amount.to_string())
+                .header("Content-Range", format!("bytes {}-{}/{}", offset, end, file_len))
+                .body(chunk.clone())
+                .send()
+                .await
+                .map_err(|error| format!("Failed to upload dictionary chunk: {}", error))?;
+            if response.status().is_success() {
+                offset = file_len;
+                break;
+            }
+            if response.status().as_u16() == 308 {
+                let confirmed = resumable_next_offset(
+                    response.headers().get("range").and_then(|value| value.to_str().ok()),
+                )
+                .min(file_len);
+                if confirmed > offset {
+                    offset = confirmed;
+                    break;
+                }
+                if attempts < 4 {
+                    continue;
+                }
+            }
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("Dictionary database upload failed: {} - {}", status, body));
+        }
+        emit_drive_progress(&app, "upload", offset, file_len);
+    }
     Ok(())
 }
 
 #[tauri::command]
 async fn download_db_from_drive(
+    app: tauri::AppHandle,
     url: String,
     token: String,
+    expected_size: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
     let db_path = state.db_path.clone();
-    let temp_path = db_path.with_extension("download");
-    let mut res = reqwest::Client::new()
+    let temp_path = db_path.with_extension("db.drive-download");
+    let rollback_path = db_path.with_extension("db.before-drive-restore");
+    let mut response = reqwest::Client::new()
         .get(&url)
         .bearer_auth(token)
         .send()
         .await
         .map_err(|e| format!("Failed to download dictionary database: {}", e))?;
-
-    if !res.status().is_success() {
-        return Err(format!(
-            "Dictionary database download failed: {}",
-            res.status()
-        ));
+    if !response.status().is_success() {
+        return Err(format!("Dictionary database download failed: {}", response.status()));
+    }
+    let total = expected_size.or_else(|| response.content_length()).unwrap_or(0);
+    if total > 0 {
+        if let Some(available) = available_space_for_path(&db_path) {
+            let margin = (total / 50).max(32 * 1024 * 1024);
+            if available < total.saturating_add(margin) {
+                return Err(format!(
+                    "Not enough local storage. Need {} bytes, available {} bytes.",
+                    total.saturating_add(margin),
+                    available
+                ));
+            }
+        }
     }
 
+    let _ = tokio::fs::remove_file(&temp_path).await;
     let mut file = tokio::fs::File::create(&temp_path)
         .await
         .map_err(|e| format!("Failed to create temporary dictionary database: {}", e))?;
-    while let Some(chunk) = res
+    let mut downloaded = 0_u64;
+    emit_drive_progress(&app, "download", 0, total);
+    while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|e| format!("Failed to read downloaded dictionary database: {}", e))?
     {
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+        file.write_all(&chunk)
             .await
             .map_err(|e| format!("Failed to save dictionary database: {}", e))?;
+        downloaded += chunk.len() as u64;
+        emit_drive_progress(&app, "download", downloaded, total.max(downloaded));
     }
-    tokio::io::AsyncWriteExt::flush(&mut file)
+    file.sync_all()
         .await
         .map_err(|e| format!("Failed to flush dictionary database: {}", e))?;
     drop(file);
 
+    if let Some(expected) = expected_size {
+        if downloaded != expected {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(format!(
+                "Downloaded dictionary size mismatch: expected {}, received {} bytes.",
+                expected, downloaded
+            ));
+        }
+    }
+
+    let mut validation = Connection::open(&temp_path)
+        .map_err(|e| format!("Downloaded dictionary database is invalid: {}", e))?;
+    init_mobile_db(&mut validation)?;
+    validation
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("Downloaded dictionary database check failed: {}", e))
+        .and_then(|result| {
+            if result == "ok" { Ok(()) } else { Err(format!("Downloaded dictionary database check failed: {}", result)) }
+        })?;
+    drop(validation);
+
     let mut conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-    *conn =
-        Connection::open_in_memory().map_err(|e| format!("Failed to release old database: {e}"))?;
-    std::fs::rename(&temp_path, &db_path)
-        .or_else(|_| {
-            std::fs::copy(&temp_path, &db_path).map(|_| ())?;
-            std::fs::remove_file(&temp_path).ok();
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(|e| format!("Failed to replace dictionary database: {}", e))?;
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    *conn = Connection::open_in_memory()
+        .map_err(|e| format!("Failed to release old dictionary database: {}", e))?;
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(&rollback_path);
+    if db_path.exists() {
+        std::fs::rename(&db_path, &rollback_path)
+            .map_err(|e| format!("Failed to prepare dictionary rollback copy: {}", e))?;
+    }
+    if let Err(error) = std::fs::rename(&temp_path, &db_path) {
+        if rollback_path.exists() {
+            let _ = std::fs::rename(&rollback_path, &db_path);
+        }
+        return Err(format!("Failed to apply downloaded dictionary database: {}", error));
+    }
     let mut replacement = Connection::open(&db_path)
         .map_err(|e| format!("Failed to open downloaded dictionary database: {}", e))?;
     init_mobile_db(&mut replacement)?;
     *conn = replacement;
-
+    let _ = std::fs::remove_file(&rollback_path);
+    emit_drive_progress(&app, "download", downloaded, downloaded);
     Ok(())
 }
 
@@ -1397,9 +1575,12 @@ fn lookup_segmented_token(conn: &Connection, token: &TextToken) -> Result<Vec<Di
         }
     }
 
-    // Non-standard names and compounds may not exist in IPADIC. Keep the old
-    // longest-prefix search as a final fallback, but constrain it to this block.
-    lookup_word_in_db(conn, &token.text)
+    // The UI already selected this analyzer block. A shorter dictionary prefix
+    // belongs to a different tap target and must not replace the whole block.
+    Ok(lookup_word_in_db(conn, &token.text)?
+        .into_iter()
+        .filter(|entry| entry.source_length >= source_length)
+        .collect())
 }
 
 fn is_japanese_word_char(ch: char) -> bool {
@@ -1769,17 +1950,18 @@ fn english_phrase_lookup_forms(
 ) -> Vec<String> {
     let mut forms = Vec::new();
     let surface: String = chars[words[left].start..words[right].end].iter().collect();
-    push_unique_english_form(&mut forms, surface.clone());
-
     let joined = words[left..=right]
         .iter()
         .map(|word| word.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    push_unique_english_form(&mut forms, joined.clone());
 
     let first_word = &words[left].text;
-    for base in english_base_form_candidates(first_word) {
+    let normalized_first = first_word.to_lowercase().replace('\u{2019}', "'");
+    for base in english_base_form_candidates(first_word)
+        .into_iter()
+        .filter(|base| base != &normalized_first)
+    {
         let rest = words[left + 1..=right]
             .iter()
             .map(|word| word.text.as_str())
@@ -1791,6 +1973,10 @@ fn english_phrase_lookup_forms(
             push_unique_english_form(&mut forms, format!("{base}{surface_rest}"));
         }
     }
+
+    // Prefer the canonical lemma before a Yomitan `non-lemma` redirect.
+    push_unique_english_form(&mut forms, surface.clone());
+    push_unique_english_form(&mut forms, joined);
 
     add_possessive_idiom_variants(&mut forms);
     forms
@@ -1871,7 +2057,9 @@ fn scan_english_phrase_at_cursor(
     }
 
     let max_words = MAX_PHRASE_WORDS.min(component_end - component_start + 1);
-    for word_count in (2..=max_words).rev() {
+    // Prefer the nearest expression under the tapped word. A longer idiom is still
+    // selected when the user taps a word which only belongs to that idiom.
+    for word_count in 2..=max_words {
         for left in component_start..=hit_index {
             let right = left + word_count - 1;
             if right > component_end || hit_index > right {
@@ -2073,6 +2261,41 @@ async fn get_furigana(
     }
 
     Ok(tokens)
+}
+
+#[tauri::command]
+async fn get_flow_tokens(
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<Value>, String> {
+    let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
+    resolve_flow_tokens(&text, &conn)
+}
+
+fn resolve_flow_tokens(text: &str, conn: &Connection) -> Result<Vec<Value>, String> {
+    let tokens = segment_japanese_text(text).map_err(|error| error.to_string())?;
+
+    tokens
+        .into_iter()
+        .map(|token| {
+            let entries = if token.lookup {
+                lookup_segmented_token(&conn, &token)?
+            } else {
+                Vec::new()
+            };
+            let mut value = serde_json::to_value(&token).map_err(|error| error.to_string())?;
+            if let Some(object) = value.as_object_mut() {
+                if let Some(entry) = entries.first() {
+                    object.insert("lookupTerm".to_string(), Value::String(entry.term.clone()));
+                    object.insert("lookupReading".to_string(), Value::String(entry.reading.clone()));
+                    object.insert("lookupFound".to_string(), Value::Bool(true));
+                } else {
+                    object.insert("lookupFound".to_string(), Value::Bool(false));
+                }
+            }
+            Ok(value)
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -2384,6 +2607,7 @@ pub fn run() {
             lookup_word,
             scan_cursor,
             start_oauth_server,
+            get_dictionary_storage_info,
             upload_db_to_drive,
             download_db_from_drive,
             manage_browser,
@@ -2396,6 +2620,7 @@ pub fn run() {
             open_jl_mode_window,
             close_jl_mode_window,
             get_furigana,
+            get_flow_tokens,
             lookup_cambridge_api,
             anki_check,
             start_text_sync_server,
@@ -2434,6 +2659,7 @@ mod deinflect_tests {
         let rows = [
             ("食べる", "たべる", "v1 vt"),
             ("見る", "みる", "v1 vt"),
+            ("会う", "あう", "v5u vi"),
             ("降る", "ふる", "v5r vi"),
             ("痛い", "いたい", "adj-i"),
             ("杏", "あんず", "n"),
@@ -2614,6 +2840,31 @@ mod deinflect_tests {
     }
 
     #[test]
+    fn flow_tokens_resolve_polite_surface_to_dictionary_form() {
+        let conn = seeded_conn();
+        let tokens = resolve_flow_tokens("では、またお会いできますね", &conn).unwrap();
+        let token = tokens
+            .iter()
+            .find(|token| token.get("text").and_then(Value::as_str) == Some("会いできます"))
+            .expect("the polite verb must remain one clickable surface block");
+        assert_eq!(token.get("lookupTerm").and_then(Value::as_str), Some("会う"));
+        assert_eq!(token.get("lookupReading").and_then(Value::as_str), Some("あう"));
+    }
+
+    #[test]
+    fn mobile_scan_cursor_keeps_the_full_segment_instead_of_a_short_prefix() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        let result = scan_cursor_in_db(&conn, "米屋で米をもらい、来た道を引き返す。", 0)
+            .unwrap()
+            .expect("米屋 must resolve as the selected analyzer block");
+        assert_eq!(result.word, "米屋");
+        assert_eq!((result.start, result.end), (0, 2));
+        assert!(result.entries.iter().all(|entry| entry.source_length == 2));
+        assert!(result.entries.iter().any(|entry| entry.term == "米屋"));
+    }
+
+    #[test]
     fn mobile_scan_cursor_does_not_prepend_unrelated_katakana() {
         let mut conn = Connection::open_in_memory().unwrap();
         init_mobile_db(&mut conn).unwrap();
@@ -2657,6 +2908,60 @@ mod deinflect_tests {
             .expect("spaced out must resolve to space out");
         assert_eq!(result.word, "space out");
         assert_eq!((result.start, result.end), (2, 12));
+    }
+
+    #[test]
+    fn english_phrasal_verb_beats_exact_inflected_word() {
+        let conn = seeded_conn();
+        insert_english_test_entry(&conn, "close up");
+        insert_english_test_entry(&conn, "closed");
+
+        let result = scan_cursor_in_db(&conn, "I closed up", 5)
+            .unwrap()
+            .expect("closed up must resolve to close up");
+        assert_eq!(result.word, "close up");
+        assert_eq!((result.start, result.end), (2, 11));
+        assert!(result.entries.iter().all(|entry| entry.term == "close up"));
+    }
+
+    #[test]
+    fn english_phrase_prefers_lemma_over_non_lemma_redirect() {
+        let conn = seeded_conn();
+        insert_english_test_entry(&conn, "close up");
+        insert_english_test_entry(&conn, "close up shop");
+        conn.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags)
+             VALUES (?1, '', ?2, 'English test', 'non-lemma')",
+            params![
+                "closed up shop",
+                r#"[["close up shop",["past participle"]]]"#
+            ],
+        )
+        .unwrap();
+
+        let result = scan_cursor_in_db(&conn, "Anyway, I closed up shop.", 21)
+            .unwrap()
+            .expect("the canonical close up shop article must win");
+        assert_eq!(result.word, "close up shop");
+        assert_eq!((result.start, result.end), (10, 24));
+        assert!(result
+            .entries
+            .iter()
+            .all(|entry| entry.term == "close up shop"));
+    }
+
+    #[test]
+    fn english_phrase_prefers_nearby_phrasal_verb_over_longer_idiom() {
+        let conn = seeded_conn();
+        insert_english_test_entry(&conn, "close up");
+        insert_english_test_entry(&conn, "close up shop");
+
+        let result = scan_cursor_in_db(&conn, "Anyway, I closed up shop.", 13)
+            .unwrap()
+            .expect("closed up must remain available inside the longer idiom");
+        assert_eq!(result.word, "close up");
+        assert_eq!((result.start, result.end), (10, 19));
+        assert!(result.entries.iter().all(|entry| entry.term == "close up"));
     }
 
     #[test]

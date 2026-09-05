@@ -37,12 +37,10 @@ class TextOverlayBridge(private val activity: Activity) {
             .setAction(TextOverlayService.ACTION_SHOW)
             .putExtra(TextOverlayService.EXTRA_TEXT, text)
             .putExtra(TextOverlayService.EXTRA_OPTIONS, optionsJson)
-        activity.runOnUiThread {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                activity.startForegroundService(intent)
-            } else {
-                activity.startService(intent)
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            activity.startForegroundService(intent)
+        } else {
+            activity.startService(intent)
         }
         JSONObject().put("shown", true)
     }
@@ -52,9 +50,7 @@ class TextOverlayBridge(private val activity: Activity) {
         activity.getSharedPreferences(TextCaptureService.PREFS, Activity.MODE_PRIVATE).edit()
             .putBoolean("overlay_active", false)
             .apply()
-        activity.runOnUiThread {
-            activity.stopService(Intent(activity, TextOverlayService::class.java))
-        }
+        activity.stopService(Intent(activity, TextOverlayService::class.java))
         JSONObject().put("hidden", true)
     }
 
