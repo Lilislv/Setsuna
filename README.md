@@ -14,7 +14,8 @@ Setsuna is a desktop app for reading Japanese text.
 - Yomitan dictionary import
 - Anki integration (1-click mining)
 - Reading statistics
-- Built-in browser
+- Online and local word audio, with configurable fallback order
+- Bug reports and feature requests through GitHub Issues
 - Google Drive AppData sync
 
 ## Download
@@ -35,4 +36,4 @@ https://www.setsunalookup.ru/terms.html
 
 ## License
 
-MIT
+MIT. Bundled third-party components are covered by [their respective notices](THIRD_PARTY_NOTICES.md).
