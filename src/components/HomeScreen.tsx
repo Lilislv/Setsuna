@@ -1,6 +1,7 @@
+import releaseInfo from "../release-info.json";
 import type { ReactNode } from "react";
 import { IconBookTab, IconPlayerTab, IconSettings, IconTextTab, IconWifi } from "./Icons";
-import { ANIME_PLAYER_AVAILABLE, EPUB_READER_AVAILABLE } from "../utils/featureFlags";
+import { ANIME_PLAYER_AVAILABLE, EPUB_READER_AVAILABLE, YATSU_READER_AVAILABLE } from "../utils/featureFlags";
 import "./HomeScreen.css";
 
 type HomeScreenProps = {
@@ -37,8 +38,8 @@ export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, o
         {
             id: "epub",
             title: isEn ? "EPUB Reader" : "EPUB-ридер",
-            category: isEn ? "Books and light novels" : "Книги и ранобэ",
-            status: EPUB_READER_AVAILABLE
+            category: YATSU_READER_AVAILABLE ? (isEn ? "Yatsu Reader · Setsuna dictionaries" : "Yatsu Reader · словари Setsuna") : (isEn ? "Books and light novels" : "Книги и ранобэ"),
+            status: YATSU_READER_AVAILABLE ? (isEn ? "Preview" : "Первая версия") : EPUB_READER_AVAILABLE
                 ? (isEn ? "Workspace" : "Рабочее пространство")
                 : (isEn ? "Coming soon" : "Скоро"),
             action: onEpub,
@@ -109,7 +110,7 @@ export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, o
 
                 <footer className="home-menu-footer">
                     <span>{isEn ? "One library. Three ways to read." : "Одна библиотека. Три режима чтения."}</span>
-                    <span className="home-menu-version">Setsuna 0.5</span>
+                    <span className="home-menu-version">Setsuna {releaseInfo.displayVersion}{import.meta.env.VITE_PRIVATE_READER === '1' ? (isEn ? ' · Local' : ' · Локальная') : ''}</span>
                 </footer>
             </div>
         </section>

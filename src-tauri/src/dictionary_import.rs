@@ -14,7 +14,7 @@ use zip::ZipArchive;
 
 const MAX_PLAIN_DICTIONARY_BYTES: u64 = MAX_STREAM_DICTIONARY_BYTES;
 const MAX_STREAM_DICTIONARY_BYTES: u64 = 64 * 1024 * 1024 * 1024;
-const STREAM_JSON_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
+const STREAM_JSON_THRESHOLD_BYTES: u64 = if cfg!(target_os = "android") { 1024 * 1024 } else { 32 * 1024 * 1024 };
 static DICTIONARY_IMPORT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static RECENT_DICTIONARY_IMPORT: OnceLock<Mutex<Option<(Vec<String>, Instant)>>> = OnceLock::new();
 
@@ -78,6 +78,7 @@ fn import_dictionaries_blocking(
     app: tauri::AppHandle,
     paths: Vec<String>,
 ) -> Result<usize, String> {
+    let paths = unique_dictionary_paths(paths);
     if paths.is_empty() {
         return Err("No dictionary files selected".to_string());
     }
@@ -88,10 +89,11 @@ fn import_dictionaries_blocking(
     let import_key: Vec<String> = paths
         .iter()
         .map(|path| {
-            std::fs::canonicalize(path)
+            let path = std::fs::canonicalize(path)
                 .unwrap_or_else(|_| PathBuf::from(path))
                 .to_string_lossy()
-                .to_lowercase()
+                .into_owned();
+            if cfg!(windows) { path.to_lowercase() } else { path }
         })
         .collect();
     if RECENT_DICTIONARY_IMPORT
@@ -123,14 +125,17 @@ fn import_dictionaries_blocking(
     let mut db = super::open_db(&app)?;
     db.busy_timeout(Duration::from_secs(5))
         .map_err(|e| format!("Failed to configure dictionary database: {}", e))?;
-    db.execute_batch(
+    db.execute_batch(if cfg!(target_os = "android") {
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;
+         PRAGMA temp_store = FILE; PRAGMA cache_size = -16384;"
+    } else {
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = OFF;
          PRAGMA temp_store = MEMORY;
-         PRAGMA cache_size = -131072;",
-    )
+         PRAGMA cache_size = -131072;"
+    })
     .map_err(|e| format!("Failed to optimize dictionary database: {}", e))?;
-    drop_import_indexes(&db)?;
+    if !cfg!(target_os = "android") { drop_import_indexes(&db)?; }
 
     let mut total_added = 0usize;
     let mut batch_result = Ok(());
@@ -195,13 +200,25 @@ fn import_dictionaries_blocking(
     result
 }
 
+fn unique_dictionary_paths(paths: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    paths.into_iter().filter(|path| {
+        // Android's picker must copy all StarDict companions, but import the set once.
+        let normalized = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        let key = stardict_base_path(&normalized.to_string_lossy()).unwrap_or(normalized).to_string_lossy().into_owned();
+        seen.insert(if cfg!(windows) { key.to_lowercase() } else { key })
+    }).collect()
+}
+
 fn import_dictionary_path(
     app: &tauri::AppHandle,
     db: &mut rusqlite::Connection,
     path: &str,
 ) -> Result<usize, String> {
     let lower = path.to_lowercase();
-    if lower.ends_with(".tar.xz") || lower.ends_with(".txz") {
+    if lower.ends_with(".db") || lower.ends_with(".sqlite") || lower.ends_with(".sqlite3") {
+        import_database(db, path)
+    } else if lower.ends_with(".tar.xz") || lower.ends_with(".txz") {
         import_tar_xz_dictionary(app, db, path)
     } else if lower.ends_with(".zip") {
         import_yomitan_zip(app, db, path)
@@ -315,6 +332,61 @@ fn rebuild_import_indexes(db: &rusqlite::Connection) -> Result<(), String> {
         .map_err(|e| format!("Failed to save dictionary indexes: {}", e))?;
     db.execute_batch("PRAGMA synchronous = NORMAL;")
         .map_err(|e| format!("Failed to finalize dictionary database: {}", e))
+}
+
+// Copy on SQLite's side: even a multi-gigabyte desktop DB never enters the WebView
+// or a Rust Vec. One transaction preserves installed dictionaries on any failure.
+fn import_database(db: &mut rusqlite::Connection, path: &str) -> Result<usize, String> {
+    if db.path().is_some_and(|current| std::fs::canonicalize(current).ok() == std::fs::canonicalize(path).ok()) {
+        return Err("This is already the active dictionary database.".into());
+    }
+    let source = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+    let check: String = source.query_row("PRAGMA quick_check", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if check != "ok" { return Err(format!("Dictionary database is damaged: {check}")); }
+    if !crate::core::database::table_exists(&source, "entries")? { return Err("Select a Setsuna dictionary.db exported from PC.".into()); }
+    drop(source);
+    db.execute("ATTACH DATABASE ?1 AS incoming_dictionary", [path]).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let mut added = 0;
+        let tables = [
+            ("entries", "term,reading,definition,dict_name,tags,lookup_rules,score", "dict_name"),
+            ("frequencies", "term,reading,value,display_value,dict_name", "dict_name"),
+            ("pitches", "term,reading,position,dict_name", "dict_name"),
+            ("pronunciations", "term,reading,ipa,tags,dict_name", "dict_name"),
+            ("dictionary_meta", "title,revision,format,index_url,download_url,is_updatable,imported_at_ms", "title"),
+        ];
+        tx.execute_batch("CREATE TEMP TABLE setsuna_incoming_names(name TEXT PRIMARY KEY);").map_err(|e| e.to_string())?;
+        // Replacing a dictionary also removes metadata that disappeared in its new
+        // version, while unrelated dictionaries in the destination remain installed.
+        for (table, _, key) in tables {
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM incoming_dictionary.sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0)).map_err(|e| e.to_string())?;
+            if exists {
+                tx.execute(&format!("INSERT OR IGNORE INTO setsuna_incoming_names SELECT DISTINCT {key} FROM incoming_dictionary.{table} WHERE {key} IS NOT NULL"), []).map_err(|e| e.to_string())?;
+            }
+        }
+        for (table, _, key) in tables {
+            tx.execute(&format!("DELETE FROM {table} WHERE {key} IN (SELECT name FROM setsuna_incoming_names)"), []).map_err(|e| e.to_string())?;
+        }
+        for (table, columns, key) in tables {
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM incoming_dictionary.sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0)).map_err(|e| e.to_string())?;
+            if !exists {
+                if table == "entries" { return Err("This database needs migration in Setsuna on PC first.".into()); }
+                continue;
+            }
+            let mut stmt = tx.prepare(&format!("PRAGMA incoming_dictionary.table_info({table})")).map_err(|e| e.to_string())?;
+            let available = stmt.query_map([], |r| r.get::<_, String>(1)).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            drop(stmt);
+            if !available.iter().any(|c| c == key) { return Err(format!("Invalid dictionary database: {table}.{key} is missing")); }
+            let columns = columns.split(',').filter(|c| available.iter().any(|a| a == c)).collect::<Vec<_>>().join(",");
+            added += tx.execute(&format!("INSERT INTO {table} ({columns}) SELECT {columns} FROM incoming_dictionary.{table}"), []).map_err(|e| e.to_string())?;
+        }
+        tx.execute_batch("DROP TABLE setsuna_incoming_names;").map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(added)
+    })();
+    let detached = db.execute_batch("DETACH DATABASE incoming_dictionary").map_err(|e| e.to_string());
+    match result { Ok(count) => detached.map(|_| count), Err(error) => Err(error) }
 }
 
 /// Removes superseded revisions of auto-updatable dictionaries.
@@ -2544,7 +2616,13 @@ fn import_yomitan_bank_entry(
             .get(5)
             .map(|v| v.to_string())
             .unwrap_or_else(|| "[]".to_string());
-        insert_entry(tx, term, reading, &definition, dict_name, &tags);
+        let rules = data_arr.get(3).and_then(Value::as_str);
+        let score = data_arr.get(4).and_then(Value::as_i64).unwrap_or(0);
+        if !term.trim().is_empty() {
+            let result = tx.prepare_cached("INSERT INTO entries (term, reading, definition, dict_name, tags, lookup_rules, score) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
+                .and_then(|mut statement| statement.execute(params![term, reading, definition, dict_name, tags, rules, score]));
+            if let Err(error) = result { remember_import_database_error(error.to_string()); }
+        }
         *words_added += 1;
     } else if file_name.contains("kanji_bank_") {
         let term = data_arr.get(0).and_then(|v| v.as_str()).unwrap_or("");
@@ -2727,6 +2805,65 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use std::io::Cursor;
+
+    #[test]
+    fn stardict_companions_are_imported_as_one_dictionary() {
+        let paths = ["one.ifo", "one.idx.gz", "one.dict.dz", "two.json", "three.ifo", "three.idx", "three.dict"];
+        assert_eq!(unique_dictionary_paths(paths.map(String::from).to_vec()), ["one.ifo", "two.json", "three.ifo"]);
+    }
+
+    #[test]
+    fn desktop_database_import_preserves_lookup_metadata_and_rolls_back_failure() {
+        let path = std::env::temp_dir().join(format!("setsuna-db-import-{}-{}.db", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let mut source = Connection::open(&path).unwrap();
+        crate::core::database::ensure_canonical_schema(&mut source).unwrap();
+        source.execute_batch(r#"
+            INSERT INTO entries(term,reading,definition,dict_name,tags,lookup_rules,score) VALUES ('食べる','たべる','[{"type":"structured-content","content":{"tag":"span","content":"eat"}}]','PC','common','v1',42);
+            INSERT INTO frequencies(term,reading,value,display_value,dict_name) VALUES ('食べる','たべる',12,'12','PC freq');
+            INSERT INTO pitches(term,reading,position,dict_name) VALUES ('食べる','たべる',2,'PC pitch');
+            INSERT INTO pronunciations(term,reading,ipa,tags,dict_name) VALUES ('食べる','たべる','tabe','test','PC IPA');
+            INSERT INTO dictionary_meta(title,revision,index_url,is_updatable) VALUES ('PC','2026','https://example.invalid/index.json',1);
+        "#).unwrap();
+        drop(source);
+        let mut target = Connection::open_in_memory().unwrap();
+        crate::core::database::ensure_canonical_schema(&mut target).unwrap();
+        target.execute_batch("INSERT INTO entries(term,definition,dict_name) VALUES ('old','preserved','PC'); CREATE TRIGGER reject_import BEFORE INSERT ON entries WHEN NEW.term='食べる' BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        assert!(import_database(&mut target, path.to_str().unwrap()).is_err());
+        assert_eq!(target.query_row("SELECT term FROM entries", [], |r| r.get::<_, String>(0)).unwrap(), "old");
+        target.execute_batch("DROP TRIGGER reject_import").unwrap();
+        target.execute_batch("INSERT INTO frequencies(term,dict_name,value) VALUES ('stale','PC',99); INSERT INTO entries(term,definition,dict_name) VALUES ('unrelated','keep','Other');").unwrap();
+        assert_eq!(import_database(&mut target, path.to_str().unwrap()).unwrap(), 5);
+        assert_eq!(target.query_row("SELECT COUNT(*) FROM frequencies WHERE dict_name='PC'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(target.query_row("SELECT COUNT(*) FROM entries WHERE dict_name='Other'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        let found = crate::dictionary_engine::scan_cursor_in_db(&target, "食べた", 0).unwrap();
+        assert_eq!(found.word, "食べた");
+        let entry = &found.entries[0];
+        assert_eq!(entry.term, "食べる");
+        assert!(entry.definition.contains("structured-content"));
+        assert_eq!(entry.score, 42);
+        assert_eq!(entry.frequencies[0].value, 12);
+        assert_eq!(entry.pitches[0].position, 2);
+        assert_eq!(entry.pronunciations[0].ipa, "tabe");
+        let wire = serde_json::to_value(found).unwrap();
+        assert_eq!(wire["match_start"], 0);
+        assert_eq!(wire["match_len"], 3);
+        assert!(wire["entries"][0]["definition"].is_string());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn yomitan_import_preserves_grammar_separately_from_display_tags_and_score() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::core::database::ensure_canonical_schema(&mut db).unwrap();
+        let tx = db.transaction().unwrap();
+        let row = serde_json::json!(["食べる", "たべる", "common", "v1", 42, ["eat"], 1, "popular"]);
+        let mut added = 0;
+        import_yomitan_bank_entry(&tx, "term_bank_1.json", row.as_array().unwrap(), "Test", &mut added);
+        tx.commit().unwrap();
+        let entry: (String, String, i64) = db.query_row("SELECT tags, lookup_rules, score FROM entries", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(entry, ("common popular".into(), "v1".into(), 42));
+        assert_eq!(added, 1);
+    }
 
     #[test]
     fn streams_nested_entries_without_materializing_the_document() {

@@ -1,5 +1,6 @@
 package com.serichka.setsuna
 
+import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -13,6 +14,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -58,18 +60,71 @@ class TextOverlayService : Service() {
     private var panel: LinearLayout? = null
     private var label: TextView? = null
     private var title: TextView? = null
+    private var toolbar: LinearLayout? = null
+    private var toolbarActions: LinearLayout? = null
+    private var toolbarToggle: TextView? = null
+    private var collapsedToolbarToggle: TextView? = null
+    private var lockButton: TextView? = null
     private var settingsRow: LinearLayout? = null
+    private var resizeHandle: TextView? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var lookupRoot: LinearLayout? = null
     private var lookupParams: WindowManager.LayoutParams? = null
     private var lastText = ""
     private var lastOptions = JSONObject()
     private var currentLookup: NativeLookup? = null
+    private var lookupSerial = 0L
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var captureThread: HandlerThread? = null
     private var foregroundReady = false
+    private var isToolbarExpanded = false
+    private var isWindowLocked = false
+    private var toolbarHeightAnimator: ValueAnimator? = null
+    private var geometryOrientation = "portrait"
+    private fun orientationKey() = if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"
+
+    private fun saveGeometry() {
+        val p = windowParams ?: return
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putInt("${geometryOrientation}_width", p.width).putInt("${geometryOrientation}_height", p.height)
+            .putInt("${geometryOrientation}_x", p.x).putInt("${geometryOrientation}_y", p.y).apply()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        saveGeometry()
+        super.onConfigurationChanged(newConfig)
+        geometryOrientation = orientationKey()
+        val p = windowParams ?: return
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val sw = resources.displayMetrics.widthPixels
+        val sh = resources.displayMetrics.heightPixels
+        p.width = prefs.getInt("${geometryOrientation}_width", dp(lastOptions.optInt("width", 320))).coerceIn(min(dp(220), sw), sw)
+        p.height = prefs.getInt("${geometryOrientation}_height", dp(lastOptions.optInt("height", 180))).coerceIn(min(dp(140), sh), sh)
+        p.x = prefs.getInt("${geometryOrientation}_x", dp(18)).coerceIn(0, max(0, sw - p.width))
+        p.y = prefs.getInt("${geometryOrientation}_y", dp(48)).coerceIn(0, max(0, sh - p.height))
+        removeLookup()
+        root?.let { runCatching { windowManager.updateViewLayout(it, p) } }
+    }
+
+    private var timerButton: TextView? = null
+    private val timerTick = object : Runnable {
+        override fun run() {
+            updateTimer(0)
+            mainHandler.postDelayed(this, 500)
+        }
+    }
+
+    private fun updateTimer(action: Int) {
+        runCatching {
+            val state = JSONObject(NativeDictionary.flowTimer(action))
+            val seconds = state.optDouble("elapsedSeconds", 0.0).toLong()
+            val paused = state.optBoolean("paused", true)
+            timerButton?.text = String.format(java.util.Locale.ROOT, "%s %02d:%02d:%02d", if (paused) "▶" else "Ⅱ", seconds / 3600, seconds / 60 % 60, seconds % 60)
+            timerButton?.contentDescription = if (paused) "Запустить таймер" else "Пауза таймера"
+        }.onFailure { Log.e(TAG, "Flow timer failed", it) }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -108,6 +163,10 @@ class TextOverlayService : Service() {
                     START_STICKY
                 }
                 else -> {
+                    if (getSharedPreferences(TextCaptureService.PREFS, MODE_PRIVATE).getBoolean("overlay_dismissed", false)) {
+                        stopSelf()
+                        return START_NOT_STICKY
+                    }
                     lastText = intent?.getStringExtra(EXTRA_TEXT)?.trim().orEmpty()
                     lastOptions = runCatching { JSONObject(intent?.getStringExtra(EXTRA_OPTIONS).orEmpty()) }
                         .getOrElse { JSONObject() }
@@ -128,12 +187,21 @@ class TextOverlayService : Service() {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(timerTick)
+        timerButton = null
         removeLookup()
         root?.let { view -> runCatching { windowManager.removeView(view) } }
         cleanupCapture()
         root = null
         panel = null
         label = null
+        toolbar = null
+        toolbarActions = null
+        toolbarToggle = null
+        collapsedToolbarToggle = null
+        lockButton = null
+        settingsRow = null
+        resizeHandle = null
         windowParams = null
         super.onDestroy()
     }
@@ -141,15 +209,18 @@ class TextOverlayService : Service() {
     private fun ensureOverlay(options: JSONObject) {
         if (root != null) return
 
+        geometryOrientation = orientationKey()
         val preferences = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val screenWidth = resources.displayMetrics.widthPixels
         val screenHeight = resources.displayMetrics.heightPixels
         val maxWidth = max(dp(220), screenWidth - dp(12))
         val maxHeight = max(dp(110), screenHeight - dp(96))
-        val requestedWidth = dp(options.optInt("width", 340).coerceIn(220, 520))
+        val requestedWidth = dp(options.optInt("width", 320).coerceIn(220, 520))
         val requestedHeight = dp(options.optInt("height", 160).coerceIn(110, 360))
-        val savedWidth = preferences.getInt("width", requestedWidth).coerceIn(min(dp(220), maxWidth), maxWidth)
-        val savedHeight = preferences.getInt("height", requestedHeight).coerceIn(min(dp(110), maxHeight), maxHeight)
+        val savedWidth = preferences.getInt("${geometryOrientation}_width", requestedWidth).coerceIn(min(dp(220), maxWidth), maxWidth)
+        val savedHeight = preferences.getInt("${geometryOrientation}_height", requestedHeight).coerceIn(min(dp(110), maxHeight), maxHeight)
+        isToolbarExpanded = preferences.getBoolean("toolbar_expanded", options.optBoolean("toolbarExpanded", false))
+        isWindowLocked = preferences.getBoolean("window_locked", options.optBoolean("locked", false))
 
         val frame = FrameLayout(this)
         val contentPanel = LinearLayout(this).apply {
@@ -158,12 +229,12 @@ class TextOverlayService : Service() {
         }
         frame.addView(contentPanel, FrameLayout.LayoutParams(-1, -1))
 
-        val toolbar = LinearLayout(this).apply {
+        val toolbarView = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(38)
+            minimumHeight = dp(34)
         }
-        contentPanel.addView(toolbar, LinearLayout.LayoutParams(-1, dp(38)))
+        contentPanel.addView(toolbarView, LinearLayout.LayoutParams(-1, dp(38)))
 
         val titleView = TextView(this).apply {
             text = "FLOW"
@@ -173,16 +244,57 @@ class TextOverlayService : Service() {
             setPadding(dp(12), 0, dp(8), 0)
             contentDescription = "Drag Setsuna Flow"
         }
-        toolbar.addView(titleView, LinearLayout.LayoutParams(0, -1, 1f))
+        toolbarView.addView(titleView, LinearLayout.LayoutParams(0, -1, 1f))
 
+        val actionGroup = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         val settingsButton = toolbarButton("Aa", "Flow settings") {
             settingsRow?.visibility = if (settingsRow?.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         }
-        val returnButton = toolbarButton("\u2197", "Return to Setsuna") { openMainApp() }
-        val closeButton = toolbarButton("\u00d7", "Close Setsuna Flow") { stopSelf() }
-        toolbar.addView(settingsButton)
-        toolbar.addView(returnButton)
-        toolbar.addView(closeButton)
+        val pinButton = toolbarButton(if (isWindowLocked) "\ud83d\udd12" else "\ud83d\udd13", "Lock Flow position and size") {
+            toggleWindowLock()
+        }
+        val returnButton = toolbarButton("\u2302", "Return to Setsuna") { openMainApp() }
+        val closeButton = toolbarButton("\u00d7", "Close Setsuna Flow") {
+            getSharedPreferences(TextCaptureService.PREFS, MODE_PRIVATE).edit()
+                .putBoolean("overlay_active", false)
+                .putBoolean("overlay_dismissed", true).apply()
+            updateTimer(2)
+            sendBroadcast(Intent(ACTION_DISMISSED).setPackage(packageName))
+            stopSelf()
+        }
+        actionGroup.addView(settingsButton)
+        actionGroup.addView(pinButton)
+        actionGroup.addView(returnButton)
+        actionGroup.addView(closeButton)
+        toolbarView.addView(actionGroup)
+
+        val toggleButton = toolbarButton(if (isToolbarExpanded) "\u2303" else "\u2304", "Expand or collapse Flow toolbar") {
+            setToolbarExpanded(!isToolbarExpanded, persist = true)
+        }
+        toolbarView.addView(toggleButton)
+
+        // Kept visible when the optional toolbar is collapsed.
+        val timerView = toolbarButton("▶ 00:00:00", "Запустить таймер") { updateTimer(1) }.apply {
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(dp(44), 0, dp(44), 0)
+            background = roundedBackground(Color.rgb(34, 83, 126), Color.rgb(79, 166, 255), 6)
+        }
+        contentPanel.addView(timerView, LinearLayout.LayoutParams(-1, dp(44)))
+        timerButton = timerView
+        mainHandler.removeCallbacks(timerTick)
+        mainHandler.post(timerTick)
+
+        val compactToggleButton = toolbarButton("\u2304", "Expand Flow toolbar") {
+            setToolbarExpanded(true, persist = true)
+        }.apply {
+            alpha = 0f
+        }
+        frame.addView(compactToggleButton, FrameLayout.LayoutParams(dp(42), dp(32), Gravity.TOP or Gravity.END))
 
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -193,7 +305,6 @@ class TextOverlayService : Service() {
         controls.addView(controlButton("A-", "Smaller text") { adjustNativeFont(-2) })
         controls.addView(controlButton("A+", "Larger text") { adjustNativeFont(2) })
         controls.addView(controlButton("\u25d0", "Background opacity") { cycleNativeOpacity() })
-        controls.addView(controlButton("\u25a3", "Window size") { cycleWindowSize() })
         controls.addView(controlButton("\u21ba", "Use app settings") { resetNativeOverrides() })
         contentPanel.addView(controls, LinearLayout.LayoutParams(-1, dp(38)))
 
@@ -205,17 +316,21 @@ class TextOverlayService : Service() {
             movementMethod = LinkMovementMethod.getInstance()
             isVerticalScrollBarEnabled = true
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_UP && currentLookup != null) removeLookup()
+                false
+            }
         }
         contentPanel.addView(textView, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        val resizeHandle = TextView(this).apply {
+        val resizeGrip = TextView(this).apply {
             text = "\u231f"
             setTextColor(Color.argb(220, 225, 230, 240))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             gravity = Gravity.CENTER
             contentDescription = "Resize Setsuna Flow"
         }
-        frame.addView(resizeHandle, FrameLayout.LayoutParams(dp(38), dp(38), Gravity.END or Gravity.BOTTOM))
+        frame.addView(resizeGrip, FrameLayout.LayoutParams(dp(38), dp(38), Gravity.END or Gravity.BOTTOM))
 
         val params = WindowManager.LayoutParams(
             savedWidth,
@@ -227,22 +342,30 @@ class TextOverlayService : Service() {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = preferences.getInt("x", dp(18)).coerceIn(0, max(0, screenWidth - savedWidth))
-            y = preferences.getInt("y", dp(96)).coerceIn(0, max(0, screenHeight - savedHeight))
+            x = preferences.getInt("${geometryOrientation}_x", dp(18)).coerceIn(0, max(0, screenWidth - savedWidth))
+            y = preferences.getInt("${geometryOrientation}_y", dp(96)).coerceIn(0, max(0, screenHeight - savedHeight))
         }
 
         val dragListener = createDragListener(frame, params)
         titleView.setOnTouchListener(dragListener)
-        toolbar.setOnTouchListener(dragListener)
-        resizeHandle.setOnTouchListener(createResizeListener(frame, params, savedWidth, savedHeight))
+        toolbarView.setOnTouchListener(dragListener)
+        resizeGrip.setOnTouchListener(createResizeListener(frame, params, savedWidth, savedHeight))
 
         root = frame
         panel = contentPanel
         label = textView
         title = titleView
+        toolbar = toolbarView
+        toolbarActions = actionGroup
+        toolbarToggle = toggleButton
+        collapsedToolbarToggle = compactToggleButton
+        lockButton = pinButton
         settingsRow = controls
+        resizeHandle = resizeGrip
         windowParams = params
         windowManager.addView(frame, params)
+        setToolbarExpanded(isToolbarExpanded, persist = false)
+        updateWindowLockUi()
     }
 
     private fun toolbarButton(text: String, description: String, action: () -> Unit) = TextView(this).apply {
@@ -275,6 +398,7 @@ class TextOverlayService : Service() {
         var originX = 0
         var originY = 0
         return View.OnTouchListener { _, event ->
+            if (isWindowLocked) return@OnTouchListener false
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
@@ -293,7 +417,7 @@ class TextOverlayService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putInt("x", params.x).putInt("y", params.y).apply()
+                    saveGeometry()
                     true
                 }
                 else -> false
@@ -312,6 +436,7 @@ class TextOverlayService : Service() {
         var startWidth = initialWidth
         var startHeight = initialHeight
         return View.OnTouchListener { _, event ->
+            if (isWindowLocked) return@OnTouchListener false
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
@@ -332,9 +457,7 @@ class TextOverlayService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                        .putInt("width", params.width).putInt("height", params.height)
-                        .putInt("x", params.x).putInt("y", params.y).apply()
+                    saveGeometry()
                     true
                 }
                 else -> false
@@ -344,16 +467,25 @@ class TextOverlayService : Service() {
 
     private fun updateOverlay(text: String, options: JSONObject) {
         applyConfiguredSize(options)
+        applyConfiguredBehavior(options)
         val preferences = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val manual = preferences.getBoolean("manual_style", false)
         val textColor = safeColor(options.optString("textColor", "#ffffff"), Color.WHITE)
         val backgroundColor = safeColor(options.optString("backgroundColor", "#15181d"), Color.rgb(21, 24, 29))
-        val opacity = if (manual) preferences.getInt("opacity", 88) else options.optInt("opacity", 88).coerceIn(20, 100)
-        val fontSize = if (manual) preferences.getInt("font_size", 22) else options.optInt("fontSize", 22).coerceIn(12, 48)
+        val borderColor = safeColor(options.optString("borderColor", "#56606d"), Color.rgb(86, 96, 109))
+        val opacity = if (preferences.getBoolean("manual_opacity", false)) preferences.getInt("opacity", 88)
+            else options.optInt("opacity", 88).coerceIn(20, 100)
+        val fontSize = if (preferences.getBoolean("manual_font_size", false)) preferences.getInt("font_size", 22)
+            else options.optInt("fontSize", 22).coerceIn(12, 48)
+        val fontFamily = options.optString("fontFamily", "serif")
+        val lineHeight = options.optDouble("lineHeight", 1.2).coerceIn(1.0, 1.8).toFloat()
+        val padding = dp(options.optInt("padding", 12).coerceIn(6, 28))
         val alpha = (opacity * 2.55f).toInt()
 
-        panel?.background = roundedBackground(backgroundColor, Color.argb(min(210, alpha), 105, 115, 130), 12, alpha)
+        panel?.background = roundedBackground(backgroundColor, borderColor, 8, alpha)
         title?.setTextColor(Color.argb(210, Color.red(textColor), Color.green(textColor), Color.blue(textColor)))
+        toolbarToggle?.setTextColor(textColor)
+        collapsedToolbarToggle?.setTextColor(textColor)
+        lockButton?.setTextColor(textColor)
         settingsRow?.let { row ->
             for (index in 0 until row.childCount) (row.getChildAt(index) as? TextView)?.setTextColor(textColor)
         }
@@ -361,7 +493,13 @@ class TextOverlayService : Service() {
             this.text = buildOverlayText(text.ifBlank { "Setsuna" }, options)
             setTextColor(textColor)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSize.toFloat())
-            setPadding(dp(14), dp(8), dp(30), dp(12))
+            typeface = when (fontFamily) {
+                "sans" -> Typeface.create("sans-serif", Typeface.NORMAL)
+                "monospace" -> Typeface.create("monospace", Typeface.NORMAL)
+                else -> Typeface.create("serif", Typeface.NORMAL)
+            }
+            setLineSpacing(0f, lineHeight)
+            setPadding(padding, dp(5), max(padding, dp(44)), padding)
         }
     }
 
@@ -369,10 +507,14 @@ class TextOverlayService : Service() {
         val frame = root ?: return
         val params = windowParams ?: return
         val preferences = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val widthDp = options.optInt("width", 340).coerceIn(220, 520)
+        val widthDp = options.optInt("width", 320).coerceIn(220, 520)
         val heightDp = options.optInt("height", 160).coerceIn(110, 360)
         val previousWidthDp = preferences.getInt("configured_width_dp", -1)
         val previousHeightDp = preferences.getInt("configured_height_dp", -1)
+        if (previousWidthDp == -1 || previousHeightDp == -1) {
+            preferences.edit().putInt("configured_width_dp", widthDp).putInt("configured_height_dp", heightDp).apply()
+            return
+        }
         if (previousWidthDp == widthDp && previousHeightDp == heightDp) return
 
         val screenWidth = resources.displayMetrics.widthPixels
@@ -383,14 +525,140 @@ class TextOverlayService : Service() {
         params.y = params.y.coerceIn(0, max(0, screenHeight - params.height))
         preferences.edit()
             .putInt("configured_width_dp", widthDp).putInt("configured_height_dp", heightDp)
-            .putInt("width", params.width).putInt("height", params.height)
-            .putInt("x", params.x).putInt("y", params.y).apply()
+            .apply()
+        saveGeometry()
         runCatching { windowManager.updateViewLayout(frame, params) }
+    }
+
+    private fun applyConfiguredBehavior(options: JSONObject) {
+        val preferences = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val configuredLock = if (options.optBoolean("locked", false)) 1 else 0
+        if (preferences.getInt("configured_lock", -1) != configuredLock) {
+            isWindowLocked = configuredLock == 1
+            preferences.edit()
+                .putInt("configured_lock", configuredLock)
+                .putBoolean("window_locked", isWindowLocked)
+                .apply()
+            updateWindowLockUi()
+        }
+
+        val configuredToolbar = if (options.optBoolean("toolbarExpanded", false)) 1 else 0
+        if (preferences.getInt("configured_toolbar", -1) != configuredToolbar) {
+            preferences.edit().putInt("configured_toolbar", configuredToolbar).apply()
+            setToolbarExpanded(configuredToolbar == 1, persist = true)
+        }
+    }
+
+    private fun setToolbarExpanded(expanded: Boolean, persist: Boolean) {
+        isToolbarExpanded = expanded
+        toolbarToggle?.text = if (expanded) "\u2303" else "\u2304"
+        toolbarToggle?.contentDescription = if (expanded) "Collapse Flow toolbar" else "Expand Flow toolbar"
+        if (!expanded) settingsRow?.visibility = View.GONE
+        val titleView = title
+        val actionsView = toolbarActions
+        titleView?.animate()?.cancel()
+        actionsView?.animate()?.cancel()
+        collapsedToolbarToggle?.animate()?.cancel()
+        if (!persist) {
+            titleView?.visibility = if (expanded) View.VISIBLE else View.INVISIBLE
+            titleView?.alpha = if (expanded) 1f else 0f
+            titleView?.translationY = 0f
+            actionsView?.visibility = if (expanded) View.VISIBLE else View.GONE
+            actionsView?.alpha = if (expanded) 1f else 0f
+            actionsView?.translationY = 0f
+            toolbar?.visibility = if (expanded) View.VISIBLE else View.GONE
+            setToolbarHeight(if (expanded) 38 else 0)
+            collapsedToolbarToggle?.visibility = if (expanded) View.GONE else View.VISIBLE
+            collapsedToolbarToggle?.alpha = if (expanded) 0f else 1f
+        } else if (expanded) {
+            collapsedToolbarToggle?.animate()?.alpha(0f)?.setDuration(60)?.withEndAction {
+                collapsedToolbarToggle?.visibility = View.GONE
+            }?.start()
+            toolbar?.visibility = View.VISIBLE
+            titleView?.apply {
+                visibility = View.VISIBLE
+                alpha = 0f
+                translationY = -dp(10).toFloat()
+                animate().alpha(1f).translationY(0f).setDuration(130).start()
+            }
+            actionsView?.apply {
+                visibility = View.VISIBLE
+                alpha = 0f
+                translationY = -dp(10).toFloat()
+                animate().alpha(1f).translationY(0f).setDuration(130).start()
+            }
+            animateToolbarHeight(38)
+        } else {
+            titleView?.animate()?.alpha(0f)?.translationY(-dp(10).toFloat())?.setDuration(105)?.withEndAction {
+                titleView.visibility = View.INVISIBLE
+                titleView.translationY = 0f
+            }?.start()
+            actionsView?.animate()?.alpha(0f)?.translationY(-dp(10).toFloat())?.setDuration(105)?.withEndAction {
+                actionsView.visibility = View.GONE
+                actionsView.translationY = 0f
+            }?.start()
+            animateToolbarHeight(0)
+            mainHandler.postDelayed({
+                if (!isToolbarExpanded) {
+                    toolbar?.visibility = View.GONE
+                    collapsedToolbarToggle?.apply {
+                        visibility = View.VISIBLE
+                        alpha = 0f
+                        translationY = -dp(6).toFloat()
+                        animate().alpha(1f).translationY(0f).setDuration(90).start()
+                    }
+                }
+            }, 135)
+        }
+        if (persist) getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean("toolbar_expanded", expanded)
+            .apply()
+    }
+
+    private fun setToolbarHeight(heightDp: Int) {
+        toolbar?.let { view ->
+            view.minimumHeight = if (heightDp == 0) 0 else dp(34)
+            view.layoutParams = view.layoutParams.apply { height = dp(heightDp) }
+            view.requestLayout()
+        }
+    }
+
+    private fun animateToolbarHeight(targetHeightDp: Int) {
+        val view = toolbar ?: return
+        val startHeight = view.height.takeIf { it > 0 } ?: dp(if (isToolbarExpanded) 30 else 38)
+        val targetHeight = dp(targetHeightDp)
+        view.minimumHeight = if (targetHeightDp == 0) 0 else dp(34)
+        toolbarHeightAnimator?.cancel()
+        toolbarHeightAnimator = ValueAnimator.ofInt(startHeight, targetHeight).apply {
+            duration = 130
+            addUpdateListener { animator ->
+                view.layoutParams = view.layoutParams.apply { height = animator.animatedValue as Int }
+                view.requestLayout()
+            }
+            start()
+        }
+    }
+
+    private fun toggleWindowLock() {
+        isWindowLocked = !isWindowLocked
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean("window_locked", isWindowLocked)
+            .apply()
+        updateWindowLockUi()
+    }
+
+    private fun updateWindowLockUi() {
+        lockButton?.text = if (isWindowLocked) "\ud83d\udd12" else "\ud83d\udd13"
+        lockButton?.contentDescription = if (isWindowLocked) "Unlock Flow position and size" else "Lock Flow position and size"
+        resizeHandle?.visibility = if (isWindowLocked) View.GONE else View.VISIBLE
     }
 
     private fun buildOverlayText(text: String, options: JSONObject): CharSequence {
         val rendered = SpannableString(text)
-        val tokens = options.optJSONArray("tokens")
+        // Always tokenize the current line; saved overlay options can belong to
+        // a previous line when the capture service updates in the background.
+        val tokens = runCatching { JSONArray(NativeDictionary.scan("", text, -1)) }.getOrNull()
+        val lookupColor = safeColor(options.optString("textColor", "#ffffff"), Color.WHITE)
         var searchFrom = 0
         var clickableCount = 0
         if (tokens != null) {
@@ -405,11 +673,9 @@ class TextOverlayService : Service() {
                 addLookupSpan(
                     rendered,
                     surface,
-                    token.optString("lookupTerm"),
-                    token.optString("lemma"),
-                    token.optString("lookupReading").ifBlank { token.optString("reading") },
                     start,
                     end,
+                    lookupColor,
                 )
                 clickableCount += 1
             }
@@ -417,7 +683,7 @@ class TextOverlayService : Service() {
         if (clickableCount == 0) {
             Regex("[A-Za-z\\u00c0-\\u024f][A-Za-z\\u00c0-\\u024f'-]*|[\\u3040-\\u30ff\\u3400-\\u9fff\\uf900-\\ufaff]+")
                 .findAll(text)
-                .forEach { match -> addLookupSpan(rendered, match.value, "", "", "", match.range.first, match.range.last + 1) }
+                .forEach { match -> addLookupSpan(rendered, match.value, match.range.first, match.range.last + 1, lookupColor) }
         }
         return rendered
     }
@@ -425,65 +691,56 @@ class TextOverlayService : Service() {
     private fun addLookupSpan(
         rendered: SpannableString,
         surface: String,
-        lookupTerm: String,
-        lemma: String,
-        reading: String,
         start: Int,
         end: Int,
+        textColor: Int,
     ) {
         rendered.setSpan(object : ClickableSpan() {
-            override fun onClick(widget: View) = openLookup(surface, lookupTerm, lemma, reading)
+            override fun onClick(widget: View) = openLookup(surface, rendered.toString(), start)
             override fun updateDrawState(drawState: TextPaint) {
                 drawState.isUnderlineText = false
-                drawState.color = Color.rgb(99, 179, 255)
+                drawState.color = textColor
             }
         }, start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 
-    private fun openLookup(surface: String, lookupTerm: String, lemma: String, reading: String) {
+    private fun openLookup(surface: String, sentence: String, start: Int) {
         if (surface.isBlank()) return
+        val request = ++lookupSerial
+        val cursor = sentence.codePointCount(0, start)
+        val options = JSONObject(lastOptions.toString())
         Thread {
-            val result = queryDictionary(surface, lookupTerm, lemma, reading)
-            mainHandler.post { showLookup(result) }
+            val result = queryDictionary(surface, sentence, cursor, options)
+            mainHandler.post {
+                if (request == lookupSerial && sentence == lastText && root != null) showLookup(result)
+            }
         }.start()
     }
 
-    private fun queryDictionary(surface: String, lookupTerm: String, lemma: String, suppliedReading: String): NativeLookup {
+    private fun queryDictionary(surface: String, sentence: String, cursor: Int, options: JSONObject): NativeLookup {
         val dbFile = File(applicationInfo.dataDir, "dictionary.db")
-        if (!dbFile.exists()) return NativeLookup(surface, lookupTerm.ifBlank { surface }, suppliedReading, emptyList(), "Словари не найдены.")
+        if (!dbFile.exists()) return NativeLookup(surface, surface, "", emptyList(), "Словари не найдены.")
         return runCatching {
-            SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { db ->
-                val entries = mutableListOf<NativeEntry>()
-                val candidates = linkedSetOf<String>().apply {
-                    if (lookupTerm.isNotBlank()) add(lookupTerm)
-                    if (lemma.isNotBlank()) add(lemma)
-                    add(surface)
-                }
-                var matchedTerm = lookupTerm.ifBlank { lemma.ifBlank { surface } }
-                for (candidate in candidates) {
-                    db.rawQuery(
-                        "SELECT term, reading, definition, dict_name, tags FROM entries WHERE term = ? OR reading = ? LIMIT 36",
-                        arrayOf(candidate, candidate),
-                    ).use { cursor ->
-                        while (cursor.moveToNext()) {
-                            entries += NativeEntry(
-                                cursor.getString(0).orEmpty(),
-                                cursor.getString(1).orEmpty(),
-                                flattenDefinition(cursor.getString(2).orEmpty()),
-                                cursor.getString(3).orEmpty().ifBlank { "Dictionary" },
-                                cursor.getString(4).orEmpty(),
-                            )
-                        }
-                    }
-                    if (entries.isNotEmpty()) {
-                        matchedTerm = entries.first().term.ifBlank { candidate }
-                        break
-                    }
-                }
-                val reading = entries.firstOrNull()?.reading.orEmpty().ifBlank { suppliedReading }
-                NativeLookup(surface, matchedTerm, reading, entries, if (entries.isEmpty()) "Точного совпадения в словарях нет." else "")
+            val raw = NativeDictionary.scan(dbFile.absolutePath, sentence, cursor)
+            if (raw == "null") return@runCatching NativeLookup(surface, surface, "", emptyList(), "Совпадений в словарях нет.")
+            val result = JSONObject(raw)
+            val rows = result.optJSONArray("entries") ?: JSONArray()
+            val dictionaries = options.optJSONArray("dictionaries") ?: JSONArray()
+            val disabled = (0 until dictionaries.length()).map { dictionaries.getJSONObject(it) }
+                .filter { !it.optBoolean("active", true) }.map { it.optString("name") }.toSet()
+            val enabledRows = (0 until rows.length()).map { rows.getJSONObject(it) }
+                .filter { it.optString("dict_name") !in disabled }
+            val entries = enabledRows.map { entry ->
+                NativeEntry(entry.optString("term"), entry.optString("reading"),
+                    flattenDefinition(entry.optString("definition")), entry.optString("dict_name"), entry.optString("tags"))
             }
-        }.getOrElse { NativeLookup(surface, lookupTerm.ifBlank { surface }, suppliedReading, emptyList(), it.message ?: "Ошибка поиска.") }
+            val sourceLength = enabledRows.maxOfOrNull { it.optInt("source_length") } ?: 0
+            val matchStart = result.optInt("match_start", cursor)
+            val matchLength = min(sourceLength, result.optInt("match_len", sourceLength))
+            val selected = if (matchLength > 0) sentence.substring(sentence.offsetByCodePoints(0, matchStart), sentence.offsetByCodePoints(0, matchStart + matchLength)) else surface
+            NativeLookup(selected, entries.firstOrNull()?.term ?: surface,
+                entries.firstOrNull()?.reading.orEmpty(), entries, result.optString("error"))
+        }.getOrElse { NativeLookup(surface, surface, "", emptyList(), it.message ?: "Ошибка поиска.") }
     }
 
     private fun flattenDefinition(raw: String): String {
@@ -513,14 +770,16 @@ class TextOverlayService : Service() {
         val main = windowParams ?: return
         val screenWidth = resources.displayMetrics.widthPixels
         val screenHeight = resources.displayMetrics.heightPixels
-        val width = min(max(main.width, dp(286)), screenWidth - dp(12))
-        val contentHeight = if (result.entries.isEmpty()) dp(156) else dp(292)
-        val height = min(contentHeight, max(dp(150), screenHeight - dp(110)))
+        val preferredWidth = dp(lastOptions.optInt("lookupWidth", 300).coerceIn(240, 360))
+        val width = min(max(min(main.width, preferredWidth), dp(240)), screenWidth - dp(12))
+        val configuredHeight = dp(lastOptions.optInt("lookupHeight", 220).coerceIn(150, 280))
+        val contentHeight = if (result.entries.isEmpty()) dp(138) else configuredHeight
+        val height = min(contentHeight, max(dp(138), screenHeight - dp(110)))
 
         val popup = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(10), dp(16), dp(12))
-            background = roundedBackground(Color.rgb(35, 35, 35), Color.rgb(65, 67, 72), 8)
+            setPadding(dp(12), dp(8), dp(12), dp(9))
+            background = roundedBackground(Color.rgb(30, 31, 33), Color.rgb(76, 80, 87), 7)
         }
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -531,14 +790,14 @@ class TextOverlayService : Service() {
             wordBlock.addView(TextView(this).apply {
                 text = result.reading
                 setTextColor(Color.rgb(151, 158, 170))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
                 includeFontPadding = false
             }, LinearLayout.LayoutParams(-1, dp(18)))
         }
         wordBlock.addView(TextView(this).apply {
             text = result.headword
             setTextColor(Color.rgb(241, 243, 246))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 27f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             includeFontPadding = false
         }, LinearLayout.LayoutParams(-1, dp(39)))
@@ -560,7 +819,7 @@ class TextOverlayService : Service() {
         actions.addView(lookupActionButton("+", "Add to Anki", true) { addCurrentLookupToAnki(null) })
         actions.addView(lookupActionButton("+▣", "Add to Anki with screenshot") { requestFlowScreenshot() })
         actions.addView(lookupActionButton("×", "Close lookup", destructive = true) { removeLookup() })
-        header.addView(actions, LinearLayout.LayoutParams(-2, dp(38)).apply { topMargin = dp(2) })
+        header.addView(actions, LinearLayout.LayoutParams(-2, dp(34)).apply { topMargin = dp(1) })
         popup.addView(header, LinearLayout.LayoutParams(-1, -2))
 
         popup.addView(View(this).apply { setBackgroundColor(Color.rgb(57, 58, 62)) },
@@ -572,7 +831,7 @@ class TextOverlayService : Service() {
                 addView(TextView(this@TextOverlayService).apply {
                     text = result.error
                     setTextColor(Color.rgb(185, 190, 199))
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                     setLineSpacing(0f, 1.15f)
                     setPadding(0, dp(4), 0, 0)
                 })
@@ -592,7 +851,7 @@ class TextOverlayService : Service() {
                     addView(TextView(this@TextOverlayService).apply {
                         text = definitions.mapIndexed { index, definition -> "${index + 1}. $definition" }.joinToString("\n\n")
                         setTextColor(Color.rgb(230, 232, 236))
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                         setLineSpacing(dp(2).toFloat(), 1.12f)
                     }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
 
@@ -640,7 +899,7 @@ class TextOverlayService : Service() {
         isFocusable = true
         if (accent) background = roundedBackground(Color.rgb(35, 61, 43), Color.rgb(73, 190, 94), 5)
         setOnClickListener { action() }
-        layoutParams = LinearLayout.LayoutParams(dp(39), dp(38))
+        layoutParams = LinearLayout.LayoutParams(dp(36), dp(34))
     }
 
     private fun dictionaryBadgeColor(dictionary: String): Int {
@@ -655,6 +914,7 @@ class TextOverlayService : Service() {
     }
 
     private fun removeLookup() {
+        lookupSerial += 1
         lookupRoot?.let { runCatching { windowManager.removeView(it) } }
         lookupRoot = null
         lookupParams = null
@@ -860,16 +1120,16 @@ class TextOverlayService : Service() {
 
     private fun adjustNativeFont(delta: Int) {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val current = if (prefs.getBoolean("manual_style", false)) prefs.getInt("font_size", 22) else lastOptions.optInt("fontSize", 22)
-        prefs.edit().putBoolean("manual_style", true).putInt("font_size", (current + delta).coerceIn(12, 48)).apply()
+        val current = if (prefs.getBoolean("manual_font_size", false)) prefs.getInt("font_size", 22) else lastOptions.optInt("fontSize", 22)
+        prefs.edit().putBoolean("manual_font_size", true).putInt("font_size", (current + delta).coerceIn(12, 48)).apply()
         updateOverlay(lastText, lastOptions)
     }
 
     private fun cycleNativeOpacity() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val current = if (prefs.getBoolean("manual_style", false)) prefs.getInt("opacity", 88) else lastOptions.optInt("opacity", 88)
+        val current = if (prefs.getBoolean("manual_opacity", false)) prefs.getInt("opacity", 88) else lastOptions.optInt("opacity", 88)
         val next = when { current > 80 -> 65; current > 50 -> 35; else -> 95 }
-        prefs.edit().putBoolean("manual_style", true).putInt("opacity", next).apply()
+        prefs.edit().putBoolean("manual_opacity", true).putInt("opacity", next).apply()
         updateOverlay(lastText, lastOptions)
     }
 
@@ -889,7 +1149,12 @@ class TextOverlayService : Service() {
     }
 
     private fun resetNativeOverrides() {
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("manual_style", false).apply()
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .remove("manual_style")
+            .remove("manual_font_size")
+            .remove("manual_opacity")
+            .remove("font_family")
+            .apply()
         updateOverlay(lastText, lastOptions)
     }
 
@@ -950,6 +1215,7 @@ class TextOverlayService : Service() {
         private const val TAG = "SetsunaFlow"
         const val ACTION_SHOW = "com.serichka.setsuna.overlay.SHOW"
         const val ACTION_HIDE = "com.serichka.setsuna.overlay.HIDE"
+        const val ACTION_DISMISSED = "com.serichka.setsuna.overlay.DISMISSED"
         const val ACTION_CAPTURE = "com.serichka.setsuna.overlay.CAPTURE"
         const val EXTRA_TEXT = "text"
         const val EXTRA_OPTIONS = "options"

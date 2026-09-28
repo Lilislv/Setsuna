@@ -7,10 +7,10 @@
   ],
   "windows": [
     "main",
-    "tab_*",
     "jl_mode",
     "jl_lookup",
-    "lookup_*"
+    "lookup_*",
+    "yatsu_lookup"
   ],
   "permissions": [
     "core:default",

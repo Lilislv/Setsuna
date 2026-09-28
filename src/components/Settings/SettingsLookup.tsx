@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openMobileDictionaryPicker } from "../../utils/mobileFiles";
 import { invoke } from "@tauri-apps/api/core";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
@@ -8,6 +9,7 @@ import { LookupEntryItem, groupDictionaryEntries } from "../Lookuper";
 import { AppSettings } from "../SettingsModal";
 
 interface SettingsLookupProps {
+    dictionariesOnly?: boolean;
     settings: AppSettings;
     updateSetting: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
     highlightedSection: string | null;
@@ -100,11 +102,11 @@ function SortableDictItem({ dict, idx, totalLen, toggleDict, changeDictColor, de
 
     return (
         <div ref={setNodeRef} style={style} onClick={() => isSelectionMode && toggleSelection(dict.name)}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", width: "100%" }}>
+            <div className="dictionary-item-header" style={{ display: "flex", alignItems: "center", gap: "10px", width: "100%" }}>
                 <span {...attributes} {...listeners} style={{ color: "var(--text-muted)", fontSize: "18px", padding: "0 5px", cursor: "grab", touchAction: "none" }}>☰</span>
                 <span style={{ color: "var(--text-muted)", fontSize: "12px", width: "20px", textAlign: "right", userSelect: "none" }}>{idx + 1}.</span>
-                {!isSelectionMode && <input type="checkbox" checked={dict.active} onChange={() => toggleDict(idx)} style={{ cursor: "pointer" }} />}
-                <span style={{ color: dict.active || isSelectionMode ? "var(--text-main)" : "var(--text-muted)", fontSize: "14px", flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", userSelect: "none" }}>{dict.name}</span>
+                {!isSelectionMode && <input type="checkbox" aria-label={dict.name} checked={dict.active} onChange={() => toggleDict(idx)} style={{ cursor: "pointer" }} />}
+                <span className="dictionary-item-name" style={{ color: dict.active || isSelectionMode ? "var(--text-main)" : "var(--text-muted)", fontSize: "14px", flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", userSelect: "none" }}>{dict.name}</span>
                 {updateStatus?.updateAvailable && !isSelectionMode && (
                     <button
                         type="button"
@@ -216,14 +218,13 @@ function ShortcutRecorder({ value, global, language, onChange }: {
     );
 }
 
-export default function SettingsLookup({ settings, updateSetting, highlightedSection, isOpen, syncDictionaries, runDictImport, setConfirmDialog }: SettingsLookupProps) {
+export default function SettingsLookup({ settings, updateSetting, highlightedSection, isOpen, syncDictionaries, runDictImport, setConfirmDialog, dictionariesOnly = false }: SettingsLookupProps) {
     const t = labels[settings.appLanguage === "en" ? "en" : "ru"];
     const [isSelectionMode, setIsSelectionMode] = useState(false);
     const [selectedDicts, setSelectedDicts] = useState<string[]>([]);
     const [previewWord, setPreviewWord] = useState("刹那");
     const [previewEntries, setPreviewEntries] = useState<any[]>([]);
     const [activeGrammarDesc, setActiveGrammarDesc] = useState<string | null>(null);
-    const [cambridgeStatus, setCambridgeStatus] = useState("");
     const [dictionaryUpdates, setDictionaryUpdates] = useState<DictionaryUpdateStatus[] | null>(null);
     const [checkingUpdates, setCheckingUpdates] = useState(false);
     const [updatingDictionary, setUpdatingDictionary] = useState<string | null>(null);
@@ -265,7 +266,7 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
     }, [isOpen]);
 
     useEffect(() => {
-        if (!isOpen) return;
+        if (!isOpen || dictionariesOnly) return;
         const wordToSearch = previewWord.trim() || "刹那";
         const timer = setTimeout(() => {
             invoke("scan_cursor", { sentence: wordToSearch, cursor: 0 })
@@ -276,7 +277,7 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
                 .catch(() => setPreviewEntries([]));
         }, 400);
         return () => clearTimeout(timer);
-    }, [previewWord, settings.dictionaries, isOpen]);
+    }, [previewWord, settings.dictionaries, isOpen, dictionariesOnly]);
 
     let finalPreviewEntries = previewEntries;
     if (finalPreviewEntries.length === 0) {
@@ -299,9 +300,10 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
 
     const handleDictionaryImport = async () => {
         try {
+            if (openMobileDictionaryPicker()) return;
             const selectedPath = await open({ multiple: true, filters: [{ name: "Dictionaries", extensions: ["zip", "json", "jsonl", "gz", "xz", "txz", "ifo", "idx", "dict", "dz", "csv", "tsv", "txt", "dsl"] }] });
             if (selectedPath) await runDictImport(Array.isArray(selectedPath) ? selectedPath : [selectedPath]);
-        } catch {}
+        } catch (error) { alert(String(error)); }
     };
 
     const handleDeleteSelected = () => {
@@ -384,33 +386,9 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
         updateSetting("dictionaries", newList);
     };
 
-    const testCambridgeApi = async () => {
-        const testWord = /^[A-Za-z][A-Za-z' -]*$/.test(previewWord.trim()) ? previewWord.trim() : "from";
-        setCambridgeStatus(settings.appLanguage === "en" ? "Checking..." : "Проверяю...");
-        try {
-            const entries = await invoke<any[]>("lookup_cambridge_api", {
-                word: testWord,
-                config: {
-                    enabled: true,
-                    apiKey: settings.cambridgeApiKey || "",
-                    dictionaryCode: settings.cambridgeApiDictionary || "english-russian",
-                    baseUrl: settings.cambridgeApiBaseUrl || "https://dictionary.cambridge.org/api/v1",
-                },
-            });
-            setCambridgeStatus(
-                entries?.length
-                    ? (settings.appLanguage === "en" ? `OK: ${entries.length} result(s)` : `OK: найдено ${entries.length}`)
-                    : (settings.appLanguage === "en" ? "No result for test word." : "Нет результата для тестового слова.")
-            );
-        } catch (err) {
-            setCambridgeStatus(String(err || "Cambridge API error"));
-        }
-    };
-
-    if (!isOpen) return null;
-
     return (
         <div className="tab-content-anim">
+            {!dictionariesOnly && <>
             <div id="lookup-win" className={`modern-card ${highlightedSection === "lookup-win" ? "card-highlighted" : ""}`} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>
                 <div className="card-label" style={{ color: "var(--text-main)" }}>{t.windowSettings}</div>
                 <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) minmax(260px, auto)", alignItems: "center", gap: "10px 14px", marginBottom: "18px", padding: "11px", border: "1px solid var(--border-main)", borderRadius: "5px", background: "var(--bg-main)" }}>
@@ -458,57 +436,7 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
                     <label className="checkbox-label" style={{ flex: 1 }}><input type="checkbox" checked={settings.autoPlayAudio ?? true} onChange={(e) => updateSetting("autoPlayAudio", e.target.checked)} /> {settings.appLanguage === "en" ? "Automatically play audio" : "Автоматически проигрывать аудио"}</label>
                 </div>
 
-                <div style={{ padding: "16px", background: "var(--bg-main)", border: "1px solid var(--border-main)", borderRadius: "6px", marginTop: "20px" }}>
-                    <div className="card-label" style={{ color: "var(--text-main)", marginBottom: "12px" }}>Cambridge Dictionary API</div>
-                    <label className="checkbox-label" style={{ marginBottom: "12px" }}>
-                        <input
-                            type="checkbox"
-                            checked={settings.cambridgeApiEnabled ?? false}
-                            onChange={(e) => updateSetting("cambridgeApiEnabled", e.target.checked)}
-                        />
-                        {settings.appLanguage === "en" ? "Use Cambridge API for English lookup" : "Использовать Cambridge API для английского лукапа"}
-                    </label>
-                    <label className="checkbox-label" style={{ marginBottom: "12px" }}>
-                        <input
-                            type="checkbox"
-                            checked={settings.cambridgeApiOnlyWhenNoLocal ?? true}
-                            onChange={(e) => updateSetting("cambridgeApiOnlyWhenNoLocal", e.target.checked)}
-                        />
-                        {settings.appLanguage === "en" ? "Only call Cambridge when local dictionaries have no result" : "Вызывать Cambridge только если локальные словари ничего не нашли"}
-                    </label>
-                    <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: "10px 14px", alignItems: "center" }}>
-                        <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>{settings.appLanguage === "en" ? "API key" : "API ключ"}</span>
-                        <input
-                            type="password"
-                            className="modern-input"
-                            value={settings.cambridgeApiKey || ""}
-                            onChange={(e) => updateSetting("cambridgeApiKey", e.target.value)}
-                            placeholder="accessKey"
-                        />
-                        <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>{settings.appLanguage === "en" ? "Dictionary code" : "Код словаря"}</span>
-                        <input
-                            type="text"
-                            className="modern-input"
-                            value={settings.cambridgeApiDictionary || "english-russian"}
-                            onChange={(e) => updateSetting("cambridgeApiDictionary", e.target.value)}
-                            placeholder="english-russian"
-                        />
-                        <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>Base URL</span>
-                        <input
-                            type="text"
-                            className="modern-input"
-                            value={settings.cambridgeApiBaseUrl || "https://dictionary.cambridge.org/api/v1"}
-                            onChange={(e) => updateSetting("cambridgeApiBaseUrl", e.target.value)}
-                            placeholder="https://dictionary.cambridge.org/api/v1"
-                        />
-                    </div>
-                    <div style={{ display: "flex", gap: "10px", alignItems: "center", marginTop: "12px" }}>
-                        <button type="button" className="btn-primary" onClick={testCambridgeApi} style={{ padding: "6px 12px" }}>{settings.appLanguage === "en" ? "Test" : "Проверить"}</button>
-                        {cambridgeStatus && <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>{cambridgeStatus}</span>}
-                    </div>
-                </div>
-
-                <div style={{ padding: "20px", background: "var(--bg-main)", border: "1px solid var(--border-main)", borderRadius: "6px", marginTop: "20px", display: "flex", flexDirection: "column", alignItems: "center", overflow: "hidden" }}>
+                    <div style={{ padding: "20px", background: "var(--bg-main)", border: "1px solid var(--border-main)", borderRadius: "6px", marginTop: "20px", display: "flex", flexDirection: "column", alignItems: "center", overflow: "hidden" }}>
                     <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "20px", width: "100%", justifyContent: "center" }}>
                         <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>{t.previewWord}</span>
                         <input type="text" className="modern-input" value={previewWord} onChange={(e) => setPreviewWord(e.target.value)} style={{ width: "150px" }} />
@@ -521,10 +449,11 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
                 </div>
             </div>
 
+            </>}
             <div id="lookup-dicts" className={`modern-card ${highlightedSection === "lookup-dicts" ? "card-highlighted" : ""}`} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
                     <div className="card-label" style={{ margin: 0, color: "var(--text-main)" }}>{t.dictionaries}</div>
-                    <div style={{ display: "flex", gap: "10px" }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
                         <button onClick={checkDictionaryUpdates} disabled={checkingUpdates} style={{ background: "var(--bg-side)", border: "1px solid var(--border-main)", color: "var(--text-main)", padding: "6px 12px", borderRadius: "6px", cursor: checkingUpdates ? "default" : "pointer", opacity: checkingUpdates ? 0.6 : 1 }}>
                             {checkingUpdates ? "..." : (settings.appLanguage === "en" ? "Check updates" : "Проверить обновления")}
                         </button>

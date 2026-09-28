@@ -1,5 +1,21 @@
 # Third-Party Notices
 
+## Yomitan Japanese lookup grammar
+
+The generated `src-tauri/src/yomitan-japanese.json`, `yomitan-kana.json`,
+`tests/yomitan-japanese-parity.json` and the adapted transformer in
+`src-tauri/src/japanese_deinflector.rs` derive from Yomitan.
+
+Copyright (C) 2024-2026 Yomitan Authors.
+The upstream test fixtures also include Copyright (C) 2020-2022 Yomichan Authors.
+These portions are licensed under GPL-3.0-or-later; see
+`licenses/Yomitan-GPL-3.0.txt` for the full license. The repository's MIT notice
+does not replace the license of these portions.
+
+Source: https://github.com/yomidevs/yomitan
+Regenerate using `node scripts/generate-yomitan-japanese.mjs` against the supplied
+Yomitan checkout. Runtime builds consume the checked-in data without that checkout.
+
 ## Ve text segmentation rules
 
 Setsuna's Japanese word grouping is adapted from `ve_dart`, an MIT-licensed

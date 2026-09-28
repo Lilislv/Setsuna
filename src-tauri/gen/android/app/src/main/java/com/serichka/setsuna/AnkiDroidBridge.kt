@@ -101,6 +101,19 @@ class AnkiDroidBridge(private val activity: Activity) {
             }
         }
 
+        val audioField = note.optString("audioField", "")
+        val audioBase64 = note.optString("audioBase64", "")
+        if (audioField.isNotBlank() && audioBase64.isNotBlank()) {
+            val index = model.fields.indexOf(audioField)
+            if (index >= 0) {
+                val filename = note.optString("audioFilename", "")
+                require(filename.matches(Regex("setsuna_audio_[a-f0-9]+\\.(mp3|ogg|wav|flac|m4a)"))) { "Invalid audio filename" }
+                require(audioBase64.length <= 12 * 1024 * 1024) { "Audio file is too large" }
+                val mediaName = storeBase64Media(audioBase64, filename)
+                fields[index] = listOf(fields[index], "[sound:$mediaName]").filter { it.isNotBlank() }.joinToString(" ")
+            }
+        }
+
         val values = ContentValues().apply {
             put(NOTE_MID, model.id)
             put(NOTE_FLDS, joinFields(fields))
@@ -190,9 +203,14 @@ class AnkiDroidBridge(private val activity: Activity) {
     }
 
     private fun storeBase64Image(data: String): String {
+        val mediaName = storeBase64Media(data, "setsuna_screen_${System.currentTimeMillis()}.jpg")
+        return """<img src="$mediaName">"""
+    }
+
+    private fun storeBase64Media(data: String, filename: String): String {
         val cleaned = data.substringAfter("base64,", data)
         val bytes = Base64.decode(cleaned, Base64.DEFAULT)
-        val file = File(activity.cacheDir, "setsuna_screen_${System.currentTimeMillis()}.jpg")
+        val file = File(activity.cacheDir, filename)
         file.writeBytes(bytes)
 
         val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
@@ -201,13 +219,18 @@ class AnkiDroidBridge(private val activity: Activity) {
             activity.grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
 
-        val mediaUri = resolver.insert(MEDIA_URI, ContentValues().apply {
-            put(MEDIA_FILE_URI, uri.toString())
-            put(MEDIA_PREFERRED_NAME, file.nameWithoutExtension)
-        }) ?: return ""
-
-        val mediaName = File(mediaUri.path ?: file.name).name
-        return if (mediaName.isBlank()) "" else """<img src="$mediaName">"""
+        try {
+            val mediaUri = resolver.insert(MEDIA_URI, ContentValues().apply {
+                put(MEDIA_FILE_URI, uri.toString())
+                put(MEDIA_PREFERRED_NAME, file.nameWithoutExtension)
+            }) ?: error("AnkiDroid did not store the media file")
+            val mediaName = File(mediaUri.path ?: file.name).name
+            require(mediaName.isNotBlank()) { "AnkiDroid returned an empty media filename" }
+            return mediaName
+        } finally {
+            activity.revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            file.delete()
+        }
     }
 
     private fun wrap(block: () -> Any?): String {

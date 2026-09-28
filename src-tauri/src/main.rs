@@ -1,4 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod dictionary_engine;
+#[cfg(feature = "private-reader")]
+mod yatsu;
+use dictionary_engine::*;
+
+#[cfg(target_os = "windows")]
+mod webview_recovery;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
@@ -68,21 +75,23 @@ use windows::Win32::UI::Accessibility::{
     TextUnit_Word, UIA_TextPatternId,
 };
 
-mod dictionary_import;
 mod core;
+mod dictionary_import;
 mod epub_import;
 #[cfg(target_os = "linux")]
 mod hover_lookup;
+mod japanese_tokenizer;
+mod lookup_normalization;
+mod japanese_deinflector;
+mod local_audio;
 mod player_media;
 use dictionary_import::{import_dictionaries, import_dictionary};
 use epub_import::import_epub;
+use japanese_tokenizer::segment_text as segment_japanese_text;
+use lookup_normalization::{japanese_lookup_variants, katakana_to_hiragana};
 use player_media::{extract_player_clip, get_ffmpeg_status};
 
 static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-pub struct BrowserState {
-    pub tabs: Mutex<HashMap<String, tauri::WebviewWindow>>,
-}
 
 pub struct ForegroundHistory {
     pub hwnds: Mutex<VecDeque<u64>>,
@@ -243,17 +252,25 @@ struct AnkiConnectConfigResult {
 
 fn ankiconnect_config_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
-    let base = env::var_os("APPDATA").map(PathBuf::from).map(|path| path.join("Anki2"));
+    let base = env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|path| path.join("Anki2"));
 
     #[cfg(target_os = "macos")]
-    let base = env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("Library").join("Application Support").join("Anki2"));
+    let base = env::var_os("HOME").map(PathBuf::from).map(|path| {
+        path.join("Library")
+            .join("Application Support")
+            .join("Anki2")
+    });
 
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     let base = env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(PathBuf::from).map(|path| path.join(".local").join("share")))
+        .or_else(|| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|path| path.join(".local").join("share"))
+        })
         .map(|path| path.join("Anki2"));
 
     base.map(|path| path.join("addons21").join("2055492159").join("config.json"))
@@ -278,9 +295,8 @@ fn read_ankiconnect_api_key() -> Option<String> {
 
 #[tauri::command]
 fn configure_ankiconnect() -> Result<AnkiConnectConfigResult, String> {
-    let path = ankiconnect_config_path().ok_or_else(|| {
-        "Could not locate the Anki data directory on this computer.".to_string()
-    })?;
+    let path = ankiconnect_config_path()
+        .ok_or_else(|| "Could not locate the Anki data directory on this computer.".to_string())?;
     if !path.is_file() {
         return Err(format!(
             "AnkiConnect config was not found at {}. Install add-on 2055492159 and restart Anki first.",
@@ -316,7 +332,10 @@ fn configure_ankiconnect() -> Result<AnkiConnectConfigResult, String> {
         .entry("webBindPort".to_string())
         .or_insert_with(|| Value::Number(8765.into()));
 
-    if let Some(ignored) = object.get_mut("ignoreOriginList").and_then(Value::as_array_mut) {
+    if let Some(ignored) = object
+        .get_mut("ignoreOriginList")
+        .and_then(Value::as_array_mut)
+    {
         ignored.retain(|value| {
             value
                 .as_str()
@@ -333,9 +352,8 @@ fn configure_ankiconnect() -> Result<AnkiConnectConfigResult, String> {
     if changed {
         let backup_path = path.with_extension("json.setsuna-backup");
         if !backup_path.exists() {
-            fs::copy(&path, &backup_path).map_err(|error| {
-                format!("Could not back up AnkiConnect config: {error}")
-            })?;
+            fs::copy(&path, &backup_path)
+                .map_err(|error| format!("Could not back up AnkiConnect config: {error}"))?;
         }
         fs::write(&path, format!("{updated}\n"))
             .map_err(|error| format!("Could not write AnkiConnect config: {error}"))?;
@@ -345,7 +363,10 @@ fn configure_ankiconnect() -> Result<AnkiConnectConfigResult, String> {
         path: path.display().to_string(),
         changed,
         requires_anki_restart: changed,
-        origins: SETSUNA_ANKI_ORIGINS.iter().map(|origin| origin.to_string()).collect(),
+        origins: SETSUNA_ANKI_ORIGINS
+            .iter()
+            .map(|origin| origin.to_string())
+            .collect(),
     })
 }
 
@@ -837,82 +858,6 @@ struct ScreenshotTarget {
     path: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub struct DeinflectReason {
-    rule: Value,
-    desc: Value,
-    #[serde(default)]
-    in_suffix: String,
-    #[serde(default)]
-    out_suffix: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub struct FrequencyData {
-    dict_name: String,
-    display_value: String,
-    value: i64,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub struct PitchData {
-    dict_name: String,
-    reading: String,
-    position: i64,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub struct PronunciationData {
-    dict_name: String,
-    reading: String,
-    ipa: String,
-    tags: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub struct DictEntry {
-    term: String,
-    reading: String,
-    definition: String,
-    dict_name: String,
-    tags: String,
-    deinflection_reasons: Vec<DeinflectReason>,
-    frequencies: Vec<FrequencyData>,
-    pitches: Vec<PitchData>,
-    pronunciations: Vec<PronunciationData>,
-    source_length: usize,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DictionaryUpdateStatus {
-    dict_name: String,
-    current_revision: String,
-    latest_revision: String,
-    update_available: bool,
-    error: String,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CambridgeApiConfig {
-    #[serde(default)]
-    enabled: bool,
-    #[serde(default)]
-    api_key: String,
-    #[serde(default)]
-    dictionary_code: String,
-    #[serde(default)]
-    base_url: Option<String>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-struct CambridgeCacheRecord {
-    saved_at_ms: u64,
-    expires_at_ms: u64,
-    entries: Vec<DictEntry>,
-}
-
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DiscordPresencePayload {
@@ -932,32 +877,8 @@ struct DiscordPresencePayload {
     second_button_url: Option<String>,
 }
 
-#[derive(serde::Serialize, Clone)]
-pub struct TextToken {
-    text: String,
-    reading: Option<String>,
-}
-
-#[derive(serde::Serialize)]
-pub struct CursorLookupResult {
-    entries: Vec<DictEntry>,
-    match_start: usize,
-    match_len: usize,
-    word: String,
-}
-
 static DIAGNOSTICS_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const DIAGNOSTICS_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
-const LOOKUP_NO_MATCH: &str = "\u{0000}SETSUNA_NO_MATCH";
-const LOOKUP_MAX_SCAN_CHARS: usize = 12;
-const LOOKUP_SCAN_DEINFLECT_DEPTH: usize = 3;
-const LOOKUP_DIRECT_DEINFLECT_DEPTH: usize = 3;
-const CAMBRIDGE_CACHE_FILE: &str = "cambridge-api-cache.json";
-const CAMBRIDGE_CACHE_TTL_MS: u64 = 180 * 24 * 60 * 60 * 1000;
-const CAMBRIDGE_NEGATIVE_CACHE_TTL_MS: u64 = 14 * 24 * 60 * 60 * 1000;
-const CAMBRIDGE_CACHE_MAX_RECORDS: usize = 2000;
-const CAMBRIDGE_CACHE_MAX_ENTRY_BYTES: usize = 160 * 1024;
-
 fn unix_time_ms() -> u128 {
     StdSystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1235,449 +1156,6 @@ fn log_frontend_diagnostics(
     Ok(())
 }
 
-fn kata_to_hira(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            let u = c as u32;
-            if (0x30A1..=0x30F6).contains(&u) {
-                std::char::from_u32(u - 0x0060).unwrap_or(c)
-            } else {
-                c
-            }
-        })
-        .collect()
-}
-fn hira_to_kata(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            let u = c as u32;
-            if (0x3041..=0x3096).contains(&u) {
-                std::char::from_u32(u + 0x0060).unwrap_or(c)
-            } else {
-                c
-            }
-        })
-        .collect()
-}
-
-fn push_unique_string(values: &mut Vec<String>, value: String) {
-    if !value.is_empty() && !values.iter().any(|existing| existing == &value) {
-        values.push(value);
-    }
-}
-
-fn irregular_english_base_form(lower: &str) -> Option<&'static str> {
-    match lower {
-        "arose" | "arisen" => Some("arise"),
-        "ate" | "eaten" => Some("eat"),
-        "became" => Some("become"),
-        "began" | "begun" => Some("begin"),
-        "bit" | "bitten" => Some("bite"),
-        "blew" | "blown" => Some("blow"),
-        "broke" | "broken" => Some("break"),
-        "brought" => Some("bring"),
-        "built" => Some("build"),
-        "bought" => Some("buy"),
-        "came" => Some("come"),
-        "caught" => Some("catch"),
-        "chose" | "chosen" => Some("choose"),
-        "dealt" => Some("deal"),
-        "did" | "done" => Some("do"),
-        "drew" | "drawn" => Some("draw"),
-        "drank" | "drunk" => Some("drink"),
-        "drove" | "driven" => Some("drive"),
-        "fell" | "fallen" => Some("fall"),
-        "felt" => Some("feel"),
-        "fled" => Some("flee"),
-        "flew" | "flown" => Some("fly"),
-        "forgot" | "forgotten" => Some("forget"),
-        "found" => Some("find"),
-        "gave" | "given" => Some("give"),
-        "got" | "gotten" => Some("get"),
-        "grew" | "grown" => Some("grow"),
-        "had" => Some("have"),
-        "heard" => Some("hear"),
-        "held" => Some("hold"),
-        "kept" => Some("keep"),
-        "knew" | "known" => Some("know"),
-        "laid" => Some("lay"),
-        "led" => Some("lead"),
-        "left" => Some("leave"),
-        "lent" => Some("lend"),
-        "lost" => Some("lose"),
-        "made" => Some("make"),
-        "met" => Some("meet"),
-        "paid" => Some("pay"),
-        "ran" => Some("run"),
-        "rang" | "rung" => Some("ring"),
-        "rode" | "ridden" => Some("ride"),
-        "rose" | "risen" => Some("rise"),
-        "said" => Some("say"),
-        "sang" | "sung" => Some("sing"),
-        "sat" => Some("sit"),
-        "saw" | "seen" => Some("see"),
-        "sent" => Some("send"),
-        "shook" | "shaken" => Some("shake"),
-        "shot" => Some("shoot"),
-        "slept" => Some("sleep"),
-        "sold" => Some("sell"),
-        "spoke" | "spoken" => Some("speak"),
-        "spent" => Some("spend"),
-        "stood" => Some("stand"),
-        "stole" | "stolen" => Some("steal"),
-        "swam" | "swum" => Some("swim"),
-        "taught" => Some("teach"),
-        "thought" => Some("think"),
-        "threw" | "thrown" => Some("throw"),
-        "told" => Some("tell"),
-        "took" | "taken" => Some("take"),
-        "understood" => Some("understand"),
-        "went" | "gone" => Some("go"),
-        "woke" | "woken" => Some("wake"),
-        "won" => Some("win"),
-        "wore" | "worn" => Some("wear"),
-        "wrote" | "written" => Some("write"),
-        "lying" => Some("lie"),
-        _ => None,
-    }
-}
-
-fn push_english_base_forms(values: &mut Vec<String>, lower: &str) {
-    if !is_english_lookup_word(lower) {
-        return;
-    }
-
-    if let Some(base) = irregular_english_base_form(lower) {
-        push_unique_string(values, base.to_string());
-    }
-
-    if lower.ends_with("ies") && lower.len() > 4 {
-        let mut stem = lower[..lower.len() - 3].to_string();
-        stem.push('y');
-        push_unique_string(values, stem);
-    }
-
-    if lower.ends_with("ing") && lower.len() > 5 {
-        let stem = &lower[..lower.len() - 3];
-        push_unique_string(values, stem.to_string());
-        let mut with_e = stem.to_string();
-        with_e.push('e');
-        push_unique_string(values, with_e);
-
-        let stem_chars: Vec<char> = stem.chars().collect();
-        if stem_chars.len() >= 2
-            && stem_chars[stem_chars.len() - 1] == stem_chars[stem_chars.len() - 2]
-        {
-            push_unique_string(values, stem_chars[..stem_chars.len() - 1].iter().collect());
-        }
-    }
-
-    if lower.ends_with("ed") && lower.len() > 4 {
-        let stem = &lower[..lower.len() - 2];
-        push_unique_string(values, stem.to_string());
-        let mut with_e = stem.to_string();
-        with_e.push('e');
-        push_unique_string(values, with_e);
-
-        let stem_chars: Vec<char> = stem.chars().collect();
-        if stem_chars.len() >= 2
-            && stem_chars[stem_chars.len() - 1] == stem_chars[stem_chars.len() - 2]
-        {
-            push_unique_string(values, stem_chars[..stem_chars.len() - 1].iter().collect());
-        }
-    }
-
-    if lower.ends_with("es") && lower.len() > 3 {
-        push_unique_string(values, lower[..lower.len() - 2].to_string());
-    }
-
-    if lower.ends_with('s') && lower.len() > 3 && !lower.ends_with("ss") {
-        push_unique_string(values, lower[..lower.len() - 1].to_string());
-    }
-}
-
-fn lookup_forms(term: &str) -> Vec<String> {
-    let mut forms = Vec::new();
-    push_unique_string(&mut forms, term.to_string());
-    if term.chars().any(|c| c.is_ascii_alphabetic()) {
-        let lower = term.to_lowercase();
-        push_unique_string(&mut forms, lower.clone());
-        push_english_base_forms(&mut forms, &lower);
-        push_unique_string(&mut forms, term.to_uppercase());
-        let mut chars = term.chars();
-        if let Some(first) = chars.next() {
-            let mut title = first.to_uppercase().collect::<String>();
-            title.push_str(&chars.as_str().to_lowercase());
-            push_unique_string(&mut forms, title);
-        }
-    }
-    push_unique_string(&mut forms, kata_to_hira(term));
-    push_unique_string(&mut forms, hira_to_kata(term));
-
-    for (from, to) in [
-        ("\u{308A}", "\u{308B}"),
-        ("\u{3044}", "\u{3046}"),
-        ("\u{304D}", "\u{304F}"),
-        ("\u{304E}", "\u{3050}"),
-        ("\u{3057}", "\u{3059}"),
-        ("\u{3061}", "\u{3064}"),
-        ("\u{306B}", "\u{306C}"),
-        ("\u{3073}", "\u{3076}"),
-        ("\u{307F}", "\u{3080}"),
-        ("\u{3058}", "\u{305A}"),
-    ] {
-        if term.ends_with(from) && term.chars().count() > 1 {
-            let mut stem = term[..term.len() - from.len()].to_string();
-            stem.push_str(to);
-            push_unique_string(&mut forms, stem.clone());
-            push_unique_string(&mut forms, kata_to_hira(&stem));
-            push_unique_string(&mut forms, hira_to_kata(&stem));
-        }
-    }
-
-    while forms.len() < 8 {
-        forms.push(LOOKUP_NO_MATCH.to_string());
-    }
-    forms.truncate(8);
-    forms
-}
-
-fn lookup_entry_rank(entry: &DictEntry, forms: &[String]) -> i32 {
-    if entry.term == forms[0] {
-        return 0;
-    }
-    if entry.reading == forms[0] {
-        return 1;
-    }
-    if forms
-        .iter()
-        .skip(1)
-        .any(|form| !form.is_empty() && entry.term == *form)
-    {
-        return 2;
-    }
-    if forms
-        .iter()
-        .skip(1)
-        .any(|form| !form.is_empty() && entry.reading == *form)
-    {
-        return 3;
-    }
-    4
-}
-
-fn best_frequency_value(entry: &DictEntry) -> i64 {
-    entry
-        .frequencies
-        .iter()
-        .map(|freq| freq.value)
-        .filter(|value| *value > 0)
-        .min()
-        .unwrap_or(i64::MAX)
-}
-
-fn load_rules() -> Vec<(Value, Value, String, String)> {
-    let rules_str = include_str!("deinflect.json");
-    let clean_rules_str = rules_str.trim_start_matches('\u{feff}');
-    let mut rules = Vec::new();
-    let mut unique_pairs = HashSet::new();
-    if let Ok(json_rules) = serde_json::from_str::<Value>(clean_rules_str) {
-        if let Some(arr) = json_rules.as_array() {
-            for item in arr {
-                let in_s = item
-                    .get("in")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let out_s = item
-                    .get("out")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if in_s.is_empty() {
-                    continue;
-                }
-                if unique_pairs.insert((in_s.clone(), out_s.clone())) {
-                    let reason = item
-                        .get("reason")
-                        .cloned()
-                        .unwrap_or(Value::String("".to_string()));
-                    let desc = item
-                        .get("desc")
-                        .cloned()
-                        .unwrap_or(Value::String("".to_string()));
-                    rules.push((reason, desc, in_s, out_s));
-                }
-            }
-        }
-    }
-    rules
-}
-
-#[tauri::command]
-async fn get_installed_dicts(app: tauri::AppHandle) -> Result<Vec<String>, String> {
-    let mut db = open_db(&app)?;
-    // Older builds could leave one row per dated revision. Clean those rows
-    // before exposing dictionary names to the frontend.
-    dictionary_import::cleanup_stale_dictionary_revisions(&mut db)?;
-    let mut names = HashSet::new();
-    for table in ["entries", "frequencies", "pitches", "pronunciations"] {
-        let sql = format!(
-            "SELECT DISTINCT dict_name FROM {} WHERE dict_name IS NOT NULL AND dict_name != ''",
-            table
-        );
-        let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        for name in rows.flatten() {
-            names.insert(name);
-        }
-    }
-    let mut names: Vec<String> = names.into_iter().collect();
-    names.sort();
-    Ok(names)
-}
-
-#[tauri::command]
-async fn check_dictionary_updates(
-    app: tauri::AppHandle,
-) -> Result<Vec<DictionaryUpdateStatus>, String> {
-    let dictionaries = {
-        let db = open_db(&app)?;
-        let mut stmt = db
-            .prepare(
-                "SELECT title, revision, index_url FROM dictionary_meta
-                 WHERE is_updatable = 1 AND index_url != '' ORDER BY title",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0).unwrap_or_default(),
-                    row.get::<_, String>(1).unwrap_or_default(),
-                    row.get::<_, String>(2).unwrap_or_default(),
-                ))
-            })
-            .map_err(|e| e.to_string())?;
-        rows.flatten().collect::<Vec<_>>()
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut statuses = Vec::with_capacity(dictionaries.len());
-    for (dict_name, current_revision, index_url) in dictionaries {
-        let result = async {
-            let response = client
-                .get(&index_url)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            if !response.status().is_success() {
-                return Err(format!("HTTP {}", response.status()));
-            }
-            let index = response.json::<Value>().await.map_err(|e| e.to_string())?;
-            Ok::<String, String>(
-                index
-                    .get("revision")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            )
-        }
-        .await;
-
-        match result {
-            Ok(latest_revision) => statuses.push(DictionaryUpdateStatus {
-                dict_name,
-                update_available: !latest_revision.is_empty()
-                    && latest_revision != current_revision,
-                current_revision,
-                latest_revision,
-                error: String::new(),
-            }),
-            Err(error) => statuses.push(DictionaryUpdateStatus {
-                dict_name,
-                current_revision,
-                latest_revision: String::new(),
-                update_available: false,
-                error,
-            }),
-        }
-    }
-    Ok(statuses)
-}
-
-#[tauri::command]
-async fn update_dictionary_from_source(
-    app: tauri::AppHandle,
-    dict_name: String,
-) -> Result<usize, String> {
-    let download_url = {
-        let db = open_db(&app)?;
-        db.query_row(
-            "SELECT download_url FROM dictionary_meta WHERE title = ?1 AND is_updatable = 1",
-            params![&dict_name],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|_| format!("Dictionary '{}' has no update source", dict_name))?
-    };
-    if !(download_url.starts_with("https://") || download_url.starts_with("http://")) {
-        return Err("Dictionary update URL is invalid".to_string());
-    }
-
-    let response = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?
-        .get(&download_url)
-        .send()
-        .await
-        .map_err(|e| format!("Dictionary download failed: {}", e))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Dictionary download failed: HTTP {}",
-            response.status()
-        ));
-    }
-    if response.content_length().unwrap_or(0) > 64 * 1024 * 1024 * 1024 {
-        return Err("Dictionary archive is larger than 64 GB".to_string());
-    }
-
-    let temp_path = std::env::temp_dir().join(format!(
-        "setsuna-dictionary-update-{}-{}.zip",
-        std::process::id(),
-        unix_time_ms()
-    ));
-    let mut file = tokio::fs::File::create(&temp_path)
-        .await
-        .map_err(|e| format!("Failed to create update file: {}", e))?;
-    let mut response = response;
-    let mut downloaded = 0u64;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("Failed to download dictionary: {}", e))?
-    {
-        downloaded += chunk.len() as u64;
-        if downloaded > 64 * 1024 * 1024 * 1024 {
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err("Dictionary archive is larger than 64 GB".to_string());
-        }
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
-            .await
-            .map_err(|e| format!("Failed to save dictionary update: {}", e))?;
-    }
-    drop(file);
-
-    let result =
-        dictionary_import::import_dictionary(app, temp_path.to_string_lossy().into_owned()).await;
-    let _ = tokio::fs::remove_file(&temp_path).await;
-    result
-}
-
 fn available_space_for_path(path: &Path) -> Option<u64> {
     let base = if path.is_dir() {
         path.to_path_buf()
@@ -1762,7 +1240,9 @@ async fn query_resumable_upload_offset(
 #[tauri::command]
 fn get_dictionary_storage_info(app: tauri::AppHandle) -> Result<DictionaryStorageInfo, String> {
     let path = get_dictionary_db_path(&app)?;
-    let size = fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or(0);
+    let size = fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     Ok(DictionaryStorageInfo {
         path: path.to_string_lossy().into_owned(),
         size,
@@ -1859,7 +1339,10 @@ async fn upload_db_to_drive(
         if !res.status().is_success() {
             let status = res.status();
             let body = res.text().await.unwrap_or_default();
-            return Err(format!("Dictionary database upload failed: {} - {}", status, body));
+            return Err(format!(
+                "Dictionary database upload failed: {} - {}",
+                status, body
+            ));
         }
         emit_drive_progress(&app, "upload", file_len, file_len);
         return Ok(());
@@ -1885,7 +1368,10 @@ async fn upload_db_to_drive(
                 .bearer_auth(&token)
                 .header("Content-Type", "application/octet-stream")
                 .header("Content-Length", amount.to_string())
-                .header("Content-Range", format!("bytes {}-{}/{}", offset, end, file_len))
+                .header(
+                    "Content-Range",
+                    format!("bytes {}-{}/{}", offset, end, file_len),
+                )
                 .body(chunk.clone())
                 .send()
                 .await;
@@ -1908,8 +1394,7 @@ async fn upload_db_to_drive(
                     }
                     if attempts >= 4 {
                         return Err(
-                            "Google Drive did not accept the current dictionary chunk."
-                                .to_string(),
+                            "Google Drive did not accept the current dictionary chunk.".to_string()
                         );
                     }
                 }
@@ -1929,7 +1414,10 @@ async fn upload_db_to_drive(
                         }
                         continue;
                     }
-                    return Err(format!("Dictionary database upload failed: {} - {}", status, body));
+                    return Err(format!(
+                        "Dictionary database upload failed: {} - {}",
+                        status, body
+                    ));
                 }
                 Err(error) if attempts < 4 => {
                     let _ = error;
@@ -1943,7 +1431,9 @@ async fn upload_db_to_drive(
                         }
                     }
                 }
-                Err(error) => return Err(format!("Failed to upload dictionary database: {}", error)),
+                Err(error) => {
+                    return Err(format!("Failed to upload dictionary database: {}", error))
+                }
             }
         }
         emit_drive_progress(&app, "upload", offset, file_len);
@@ -1971,7 +1461,10 @@ async fn download_db_from_drive(
         .await
         .map_err(|e| format!("Failed to download dictionary database: {}", e))?;
     if !res.status().is_success() {
-        return Err(format!("Dictionary database download failed: {}", res.status()));
+        return Err(format!(
+            "Dictionary database download failed: {}",
+            res.status()
+        ));
     }
     let total = expected_size.or_else(|| res.content_length()).unwrap_or(0);
     if total > 0 {
@@ -2129,480 +1622,6 @@ async fn start_oauth_server(app: tauri::AppHandle) -> Result<OAuthServerStart, S
         redirect_uri: format!("http://127.0.0.1:{}", port),
         reused: false,
     })
-}
-
-#[tauri::command]
-async fn delete_dictionary(app: tauri::AppHandle, dict_name: String) -> Result<(), String> {
-    let mut db = open_db(&app)?;
-    let tx = db.transaction().map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM entries WHERE dict_name = ?1",
-        params![dict_name],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM frequencies WHERE dict_name = ?1",
-        params![dict_name],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM pitches WHERE dict_name = ?1",
-        params![dict_name],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM pronunciations WHERE dict_name = ?1",
-        params![dict_name],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM dictionary_meta WHERE title = ?1",
-        params![dict_name],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn delete_dictionaries(app: tauri::AppHandle, dict_names: Vec<String>) -> Result<(), String> {
-    let mut db = open_db(&app)?;
-    let tx = db.transaction().map_err(|e| e.to_string())?;
-    for dict_name in dict_names {
-        tx.execute(
-            "DELETE FROM entries WHERE dict_name = ?1",
-            params![dict_name],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM frequencies WHERE dict_name = ?1",
-            params![dict_name],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM pitches WHERE dict_name = ?1",
-            params![dict_name],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM pronunciations WHERE dict_name = ?1",
-            params![dict_name],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM dictionary_meta WHERE title = ?1",
-            params![dict_name],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn clear_database(app: tauri::AppHandle) -> Result<(), String> {
-    let mut db = open_db(&app)?;
-    let tx = db.transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM entries", [])
-        .map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM frequencies", [])
-        .map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM pitches", [])
-        .map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM pronunciations", [])
-        .map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM dictionary_meta", [])
-        .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn manage_browser(
-    app: AppHandle,
-    state: tauri::State<'_, BrowserState>,
-    action: String,
-    id: String,
-    url: String,
-    x_offset: f64,
-    y_offset: f64,
-    width: f64,
-    height: f64,
-) -> Result<(), String> {
-    let mut tabs = state.tabs.lock().unwrap_or_else(|e| e.into_inner());
-
-    let main_win = app
-        .get_webview_window("main")
-        .ok_or("Main window was not found".to_string())?;
-
-    let main_pos = main_win
-        .inner_position()
-        .or_else(|_| main_win.outer_position())
-        .unwrap_or(tauri::PhysicalPosition::new(0, 0));
-
-    let mut target_x = main_pos.x + x_offset.round() as i32;
-    let mut target_y = main_pos.y + y_offset.round() as i32;
-    let mut target_w = width.round() as u32;
-    let mut target_h = height.round() as u32;
-
-    if target_w < 280 {
-        target_w = 280;
-    }
-    if target_h < 200 {
-        target_h = 200;
-    }
-
-    if let Ok(Some(monitor)) = main_win.current_monitor() {
-        let mon_pos = monitor.position();
-        let mon_size = monitor.size();
-
-        let mon_x = mon_pos.x;
-        let mon_y = mon_pos.y;
-        let mon_w = mon_size.width as i32;
-        let mon_h = mon_size.height as i32;
-
-        let max_x = mon_x + mon_w - target_w as i32 - 8;
-        let max_y = mon_y + mon_h - target_h as i32 - 8;
-
-        if target_x < mon_x {
-            target_x = mon_x;
-        }
-        if target_y < mon_y {
-            target_y = mon_y;
-        }
-        if target_x > max_x {
-            target_x = max_x;
-        }
-        if target_y > max_y {
-            target_y = max_y;
-        }
-    } else {
-        if target_x < 0 {
-            target_x = 0;
-        }
-        if target_y < 0 {
-            target_y = 0;
-        }
-    }
-
-    let pos = tauri::PhysicalPosition::new(target_x, target_y);
-    let size = tauri::PhysicalSize::new(target_w, target_h);
-
-    let init_script = format!(
-        r#"
-    (() => {{
-        const emitMeta = () => {{
-            try {{
-                let favicon = "";
-
-                const iconEl = Array.from(document.querySelectorAll("link[rel]"))
-                    .find((el) => /\b(icon|apple-touch-icon|shortcut icon)\b/i.test(el.getAttribute("rel") || ""));
-
-                if (iconEl) {{
-                    const href = iconEl.getAttribute("href");
-                    if (href) {{
-                        try {{
-                            favicon = new URL(href, window.location.href).href;
-                        }} catch (e) {{}}
-                    }}
-                }}
-
-                if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {{
-                    window.__TAURI__.core.invoke('emit_browser_meta', {{
-                        id: '{}',
-                        url: window.location.href,
-                        title: (document.title || "").trim(),
-                        favicon: favicon || (window.location.origin + '/favicon.ico')
-                    }});
-                }}
-            }} catch (e) {{}}
-        }};
-
-        const emitSelection = () => {{
-            try {{
-                const sel = window.getSelection();
-                const text = sel ? sel.toString().trim() : '';
-
-                if (text && window.__TAURI__ && window.__TAURI__.event) {{
-                    const rect = sel.getRangeAt(0).getBoundingClientRect();
-                    window.__TAURI__.event.emit('browser_selection', {{
-                        id: '{}',
-                        text: text,
-                        x: rect.right,
-                        y: rect.bottom
-                    }});
-                }} else if (window.__TAURI__ && window.__TAURI__.event) {{
-                    window.__TAURI__.event.emit('browser_selection_clear', {{
-                        id: '{}'
-                    }});
-                }}
-            }} catch (e) {{}}
-        }};
-
-        const wrapHistoryMethod = (name) => {{
-            const original = history[name];
-            history[name] = function (...args) {{
-                const result = original.apply(this, args);
-                setTimeout(emitMeta, 50);
-                setTimeout(emitMeta, 300);
-                return result;
-            }};
-        }};
-
-        wrapHistoryMethod('pushState');
-        wrapHistoryMethod('replaceState');
-
-        window.addEventListener('popstate', () => {{
-            setTimeout(emitMeta, 50);
-            setTimeout(emitMeta, 300);
-        }});
-
-        window.addEventListener('hashchange', () => {{
-            setTimeout(emitMeta, 50);
-            setTimeout(emitMeta, 300);
-        }});
-
-        window.addEventListener('DOMContentLoaded', () => {{
-            setTimeout(emitMeta, 20);
-            setTimeout(emitMeta, 200);
-        }});
-
-        window.addEventListener('load', () => {{
-            setTimeout(emitMeta, 50);
-            setTimeout(emitMeta, 300);
-            setTimeout(emitMeta, 1000);
-        }});
-
-        const titleObserver = new MutationObserver(() => {{
-            emitMeta();
-        }});
-
-        const observeHead = () => {{
-            const titleEl = document.querySelector('title');
-            if (titleEl) {{
-                titleObserver.observe(titleEl, {{
-                    childList: true,
-                    subtree: true
-                }});
-            }}
-
-            if (document.head) {{
-                titleObserver.observe(document.head, {{
-                    childList: true,
-                    subtree: true,
-                    attributes: true,
-                    attributeFilter: ['href', 'rel']
-                }});
-            }}
-        }};
-
-        observeHead();
-
-        if (!document.head) {{
-            document.addEventListener('DOMContentLoaded', observeHead, {{ once: true }});
-        }}
-
-        if (document.body) {{
-            titleObserver.observe(document.body, {{
-                childList: true,
-                subtree: false
-            }});
-        }}
-
-        document.addEventListener('mouseup', emitSelection);
-
-        setInterval(emitMeta, 1500);
-        setTimeout(emitMeta, 50);
-        setTimeout(emitMeta, 300);
-        setTimeout(emitMeta, 1000);
-    }})();
-    "#,
-        id, id, id
-    );
-
-    match action.as_str() {
-        "show" => {
-            for (other_id, other_window) in tabs.iter() {
-                if other_id != &id {
-                    let _ = other_window.hide();
-                }
-            }
-
-            if let Some(window) = tabs.get(&id) {
-                let _ = window.set_position(pos);
-                let _ = window.set_size(size);
-                let _ = window.show();
-                let _ = window.unminimize();
-            } else {
-                let final_url = if url.trim().is_empty() {
-                    "https://duckduckgo.com/".to_string()
-                } else {
-                    url.clone()
-                };
-
-                let webview_url = match final_url.parse() {
-                    Ok(u) => WebviewUrl::External(u),
-                    Err(_) => return Err(format!("Invalid URL: {}", final_url)),
-                };
-
-                let mut browser_builder = tauri::WebviewWindowBuilder::new(&app, &id, webview_url)
-                    .title("txthk Browser")
-                    .visible(false)
-                    .focused(false)
-                    .decorations(false)
-                    .resizable(false)
-                    .always_on_top(true)
-                    .skip_taskbar(true)
-                    .initialization_script(&init_script);
-
-                if let Some(main_window) = app.get_webview_window("main") {
-                    browser_builder = browser_builder
-                        .parent(&main_window)
-                        .map_err(|e| format!("Failed to attach browser window: {}", e))?;
-                }
-
-                let window = browser_builder
-                    .build()
-                    .map_err(|e| format!("Failed to create browser window: {}", e))?;
-
-                let _ = window.set_position(pos);
-                let _ = window.set_size(size);
-                let _ = window.show();
-                let _ = window.unminimize();
-
-                tabs.insert(id.clone(), window);
-            }
-        }
-
-        "navigate" => {
-            for (other_id, other_window) in tabs.iter() {
-                if other_id != &id {
-                    let _ = other_window.hide();
-                }
-            }
-
-            if let Some(window) = tabs.get(&id) {
-                if !url.is_empty() {
-                    let safe_url = url.replace("\\", "\\\\").replace("'", "\\'");
-                    let _ = window.eval(&format!("window.location.href = '{}';", safe_url));
-                }
-
-                let _ = window.set_position(pos);
-                let _ = window.set_size(size);
-                let _ = window.show();
-                let _ = window.unminimize();
-            } else {
-                let final_url = if url.trim().is_empty() {
-                    "https://duckduckgo.com/".to_string()
-                } else {
-                    url.clone()
-                };
-
-                let webview_url = match final_url.parse() {
-                    Ok(u) => WebviewUrl::External(u),
-                    Err(_) => return Err(format!("Invalid URL: {}", final_url)),
-                };
-
-                let mut browser_builder = tauri::WebviewWindowBuilder::new(&app, &id, webview_url)
-                    .title("txthk Browser")
-                    .visible(false)
-                    .focused(false)
-                    .decorations(false)
-                    .resizable(false)
-                    .always_on_top(true)
-                    .skip_taskbar(true)
-                    .initialization_script(&init_script);
-
-                if let Some(main_window) = app.get_webview_window("main") {
-                    browser_builder = browser_builder
-                        .parent(&main_window)
-                        .map_err(|e| format!("Failed to attach browser window: {}", e))?;
-                }
-
-                let window = browser_builder
-                    .build()
-                    .map_err(|e| format!("Failed to create browser window: {}", e))?;
-
-                let _ = window.set_position(pos);
-                let _ = window.set_size(size);
-                let _ = window.show();
-                let _ = window.unminimize();
-
-                tabs.insert(id.clone(), window);
-            }
-        }
-
-        "resize" => {
-            if let Some(window) = tabs.get(&id) {
-                let _ = window.set_position(pos);
-                let _ = window.set_size(size);
-            }
-        }
-
-        "hide_all" => {
-            for window in tabs.values() {
-                let _ = window.hide();
-            }
-        }
-
-        "hide" => {
-            if let Some(window) = tabs.get(&id) {
-                let _ = window.eval(
-                    r#"
-                    try {
-                        document.querySelectorAll('video').forEach(v => {
-                            try { v.pause(); } catch (e) {}
-                        });
-                        document.querySelectorAll('audio').forEach(a => {
-                            try { a.pause(); } catch (e) {}
-                        });
-                    } catch (e) {}
-                    "#,
-                );
-                let _ = window.hide();
-            }
-        }
-
-        "close" => {
-            if let Some(window) = tabs.remove(&id) {
-                let _ = window.close();
-            }
-        }
-
-        _ => return Err(format!("Unknown action: {}", action)),
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-fn emit_browser_meta(app: AppHandle, id: String, url: String, title: String, favicon: String) {
-    let _ = app.emit(
-        "browser_meta",
-        serde_json::json!({
-            "id": id,
-            "url": url,
-            "title": title,
-            "favicon": favicon
-        }),
-    );
-}
-
-#[tauri::command]
-async fn get_browser_info(
-    state: tauri::State<'_, BrowserState>,
-) -> Result<Vec<(String, String)>, String> {
-    let tabs = state.tabs.lock().unwrap_or_else(|e| e.into_inner());
-    let mut info = Vec::new();
-
-    for (id, window) in tabs.iter() {
-        info.push((
-            id.clone(),
-            window.url().map(|u| u.to_string()).unwrap_or_default(),
-        ));
-    }
-
-    Ok(info)
 }
 
 #[tauri::command]
@@ -2961,7 +1980,10 @@ fn sanitize_main_window_size(main_win: &tauri::WebviewWindow) {
         .ok()
         .flatten()
         .or_else(|| monitors.first().cloned());
-    let scale = monitor.as_ref().map(|item| item.scale_factor()).unwrap_or(1.0);
+    let scale = monitor
+        .as_ref()
+        .map(|item| item.scale_factor())
+        .unwrap_or(1.0);
     let physical_size = match main_win.inner_size() {
         Ok(size) => size,
         Err(_) => return,
@@ -3171,2173 +2193,6 @@ fn update_discord_presence_blocking(
     Ok(())
 }
 
-fn is_kanji(c: &char) -> bool {
-    (*c >= '\u{4e00}' && *c <= '\u{9faf}') || (*c >= '\u{3400}' && *c <= '\u{4dbf}')
-}
-
-fn is_valid_chunk(chars: &[char]) -> bool {
-    let mut seen_kana = false;
-
-    for &c in chars {
-        let kana = (c >= '\u{3040}' && c <= '\u{309f}') || (c >= '\u{30a0}' && c <= '\u{30ff}');
-
-        if kana {
-            seen_kana = true;
-        } else if is_kanji(&c) && seen_kana {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn split_furigana(term: &str, reading: &str) -> Vec<TextToken> {
-    let term_chars: Vec<char> = term.chars().collect();
-    let read_chars: Vec<char> = reading.chars().collect();
-    let mut pre = 0;
-    while pre < term_chars.len() && pre < read_chars.len() && term_chars[pre] == read_chars[pre] {
-        pre += 1;
-    }
-    let mut suf = 0;
-    while suf < term_chars.len() - pre
-        && suf < read_chars.len() - pre
-        && term_chars[term_chars.len() - 1 - suf] == read_chars[read_chars.len() - 1 - suf]
-    {
-        suf += 1;
-    }
-    let mut res = Vec::new();
-    if pre > 0 {
-        res.push(TextToken {
-            text: term_chars[..pre].iter().collect(),
-            reading: None,
-        });
-    }
-    let stem_term: String = term_chars[pre..term_chars.len() - suf].iter().collect();
-    let stem_read: String = read_chars[pre..read_chars.len() - suf].iter().collect();
-    if !stem_term.is_empty() {
-        if stem_term == stem_read {
-            res.push(TextToken {
-                text: stem_term,
-                reading: None,
-            });
-        } else {
-            res.push(TextToken {
-                text: stem_term,
-                reading: Some(stem_read),
-            });
-        }
-    }
-    if suf > 0 {
-        res.push(TextToken {
-            text: term_chars[term_chars.len() - suf..].iter().collect(),
-            reading: None,
-        });
-    }
-    res
-}
-
-fn contextual_suffix_reading(suffix: &str) -> Option<&'static str> {
-    match suffix {
-        "\u{5185}" => Some("\u{306A}\u{3044}"),
-        "\u{5916}" => Some("\u{304C}\u{3044}"),
-        "\u{4E2D}" => Some("\u{3061}\u{3085}\u{3046}"),
-        "\u{9593}" => Some("\u{304B}\u{3093}"),
-        "\u{524D}" => Some("\u{307E}\u{3048}"),
-        "\u{5F8C}" => Some("\u{3054}"),
-        "\u{4E0A}" => Some("\u{3058}\u{3087}\u{3046}"),
-        "\u{4E0B}" => Some("\u{304B}"),
-        "\u{7684}" => Some("\u{3066}\u{304D}"),
-        "\u{5316}" => Some("\u{304B}"),
-        "\u{6027}" => Some("\u{305B}\u{3044}"),
-        "\u{7528}" => Some("\u{3088}\u{3046}"),
-        "\u{8005}" => Some("\u{3057}\u{3083}"),
-        "\u{529B}" => Some("\u{308A}\u{3087}\u{304F}"),
-        "\u{7387}" => Some("\u{308A}\u{3064}"),
-        "\u{5074}" => Some("\u{304C}\u{308F}"),
-        "\u{6BCE}" => Some("\u{3054}\u{3068}"),
-        "\u{5225}" => Some("\u{3079}\u{3064}"),
-        "\u{7D1A}" => Some("\u{304D}\u{3085}\u{3046}"),
-        "\u{5F0F}" => Some("\u{3057}\u{304D}"),
-        "\u{7248}" => Some("\u{3070}\u{3093}"),
-        "\u{88FD}" => Some("\u{305B}\u{3044}"),
-        "\u{6E08}" => Some("\u{305A}\u{307F}"),
-        "\u{540C}\u{58EB}" => Some("\u{3069}\u{3046}\u{3057}"),
-        "\u{8FBC}\u{307F}" => Some("\u{3053}\u{307F}"),
-        "\u{4ED8}\u{304D}" => Some("\u{3064}\u{304D}"),
-        "\u{5411}\u{3051}" => Some("\u{3080}\u{3051}"),
-        "\u{5BA4}" => Some("\u{3057}\u{3064}"),
-        _ => None,
-    }
-}
-
-fn has_kanji(text: &str) -> bool {
-    text.chars().any(|c| is_kanji(&c))
-}
-
-fn is_english_word_letter(c: char) -> bool {
-    c.is_ascii_alphabetic()
-}
-
-fn is_english_word_connector(c: char) -> bool {
-    matches!(
-        c,
-        '\'' | '\u{2019}' | '-' | '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}'
-    )
-}
-
-fn is_english_word_inner(c: char) -> bool {
-    is_english_word_letter(c) || is_english_word_connector(c)
-}
-
-fn is_english_lookup_word(text: &str) -> bool {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() || !chars.iter().any(|c| is_english_word_letter(*c)) {
-        return false;
-    }
-    for (index, c) in chars.iter().enumerate() {
-        if is_english_word_letter(*c) {
-            continue;
-        }
-        if is_english_word_connector(*c)
-            && index > 0
-            && index + 1 < chars.len()
-            && is_english_word_letter(chars[index - 1])
-            && is_english_word_letter(chars[index + 1])
-        {
-            continue;
-        }
-        return false;
-    }
-    true
-}
-
-fn english_token_bounds(chars: &[char], cursor: usize) -> Option<(usize, usize)> {
-    if chars.is_empty() {
-        return None;
-    }
-    let cursor = std::cmp::min(cursor, chars.len().saturating_sub(1));
-    if !is_english_word_inner(chars[cursor]) {
-        return None;
-    }
-
-    let mut start = cursor;
-    while start > 0 && is_english_word_inner(chars[start - 1]) {
-        start -= 1;
-    }
-
-    let mut end = cursor + 1;
-    while end < chars.len() && is_english_word_inner(chars[end]) {
-        end += 1;
-    }
-
-    while start < end && !is_english_word_letter(chars[start]) {
-        start += 1;
-    }
-    while end > start && !is_english_word_letter(chars[end - 1]) {
-        end -= 1;
-    }
-
-    if start >= end {
-        return None;
-    }
-    let word: String = chars[start..end].iter().collect();
-    if is_english_lookup_word(&word) {
-        Some((start, end - start))
-    } else {
-        None
-    }
-}
-
-#[derive(Debug, Clone)]
-struct EnglishPhraseWordSpan {
-    start: usize,
-    end: usize,
-    text: String,
-}
-
-fn collect_english_phrase_words(chars: &[char]) -> Vec<EnglishPhraseWordSpan> {
-    let mut words = Vec::new();
-    let mut index = 0usize;
-    while index < chars.len() {
-        if !is_english_word_letter(chars[index]) {
-            index += 1;
-            continue;
-        }
-
-        let start = index;
-        index += 1;
-        while index < chars.len() && is_english_word_inner(chars[index]) {
-            index += 1;
-        }
-        let mut end = index;
-        while end > start && !is_english_word_letter(chars[end - 1]) {
-            end -= 1;
-        }
-        if start < end {
-            words.push(EnglishPhraseWordSpan {
-                start,
-                end,
-                text: chars[start..end].iter().collect(),
-            });
-        }
-    }
-    words
-}
-
-fn is_english_phrase_gap(chars: &[char], start: usize, end: usize) -> bool {
-    start <= end
-        && chars[start..end].iter().all(|character| {
-            !matches!(character, '\n' | '\r')
-                && (character.is_whitespace() || matches!(character, ','))
-        })
-}
-
-fn push_english_phrase_form(forms: &mut Vec<String>, value: impl Into<String>) {
-    let normalized = value
-        .into()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_lowercase();
-    push_unique_string(forms, normalized.clone());
-    let ascii_apostrophe = normalized.replace('\u{2019}', "'");
-    push_unique_string(forms, ascii_apostrophe);
-}
-
-fn add_english_possessive_idiom_forms(forms: &mut Vec<String>) {
-    let originals = forms.clone();
-    for form in originals {
-        let words = form.split_whitespace().collect::<Vec<_>>();
-        if !words.iter().any(|word| {
-            matches!(
-                *word,
-                "my" | "your" | "his" | "her" | "our" | "their" | "its"
-            )
-        }) {
-            continue;
-        }
-        for replacement in ["one's", "someone's"] {
-            let replaced = words
-                .iter()
-                .map(|word| {
-                    if matches!(
-                        *word,
-                        "my" | "your" | "his" | "her" | "our" | "their" | "its"
-                    ) {
-                        replacement
-                    } else {
-                        *word
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            push_english_phrase_form(forms, replaced);
-        }
-    }
-}
-
-fn english_phrase_lookup_forms(
-    chars: &[char],
-    words: &[EnglishPhraseWordSpan],
-    left: usize,
-    right: usize,
-) -> Vec<String> {
-    let mut forms = Vec::new();
-    let surface: String = chars[words[left].start..words[right].end].iter().collect();
-    let joined = words[left..=right]
-        .iter()
-        .map(|word| word.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let first_word = &words[left].text;
-    let mut base_forms = Vec::new();
-    push_english_base_forms(&mut base_forms, &first_word.to_lowercase());
-    let rest = words[left + 1..=right]
-        .iter()
-        .map(|word| word.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    for base in base_forms {
-        push_english_phrase_form(&mut forms, format!("{base} {rest}"));
-        if let Some(surface_rest) = surface.strip_prefix(first_word.as_str()) {
-            push_english_phrase_form(&mut forms, format!("{base}{surface_rest}"));
-        }
-    }
-
-    // Prefer dictionary headwords over Yomitan non-lemma redirects. For example,
-    // `closed up shop` has a technical redirect entry, while the useful article is
-    // stored under `close up shop`.
-    push_english_phrase_form(&mut forms, surface.clone());
-    push_english_phrase_form(&mut forms, joined);
-
-    add_english_possessive_idiom_forms(&mut forms);
-    forms
-}
-
-fn is_english_phrasal_particle(word: &str) -> bool {
-    matches!(
-        word.to_lowercase().as_str(),
-        "about"
-            | "across"
-            | "ahead"
-            | "along"
-            | "apart"
-            | "around"
-            | "aside"
-            | "away"
-            | "back"
-            | "by"
-            | "down"
-            | "forward"
-            | "in"
-            | "off"
-            | "on"
-            | "out"
-            | "over"
-            | "round"
-            | "through"
-            | "together"
-            | "up"
-    )
-}
-
-fn english_separable_phrasal_forms(verb: &str, particle: &str) -> Vec<String> {
-    let mut base_forms = vec![verb.to_lowercase()];
-    push_english_base_forms(&mut base_forms, &verb.to_lowercase());
-
-    let mut forms = Vec::new();
-    for base in base_forms {
-        push_english_phrase_form(&mut forms, format!("{base} {particle}"));
-    }
-    forms
-}
-
-fn english_token_near_cursor(text: &str, cursor: usize) -> Option<String> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return None;
-    }
-    let cursor = cursor.min(chars.len().saturating_sub(1));
-    let max_distance = std::cmp::min(24, chars.len().saturating_sub(1));
-
-    for distance in 0..=max_distance {
-        let probes = if distance == 0 {
-            vec![cursor]
-        } else {
-            let mut values = Vec::with_capacity(2);
-            if cursor >= distance {
-                values.push(cursor - distance);
-            }
-            if cursor + distance < chars.len() {
-                values.push(cursor + distance);
-            }
-            values
-        };
-
-        for probe in probes {
-            if let Some((start, len)) = english_token_bounds(&chars, probe) {
-                return Some(chars[start..start + len].iter().collect());
-            }
-        }
-    }
-    None
-}
-
-fn is_lookup_punctuation(c: char) -> bool {
-    matches!(
-        c,
-        ' ' | '\n'
-            | '\r'
-            | '\t'
-            | '\u{3000}'
-            | '\u{3002}'
-            | '\u{3001}'
-            | '\u{FF0C}'
-            | '\u{FF0E}'
-            | '\u{FF01}'
-            | '\u{FF1F}'
-            | '\u{300C}'
-            | '\u{300D}'
-            | '\u{300E}'
-            | '\u{300F}'
-            | '\u{FF08}'
-            | '\u{FF09}'
-            | '('
-            | ')'
-            | '['
-            | ']'
-            | '\u{300A}'
-            | '\u{300B}'
-    )
-}
-
-fn is_japanese_lookup_char(c: char) -> bool {
-    is_kanji(&c)
-        || ('\u{3040}'..='\u{309f}').contains(&c)
-        || ('\u{30a0}'..='\u{30ff}').contains(&c)
-        || matches!(c, '\u{3005}' | '\u{30fc}' | '\u{30fd}' | '\u{30fe}')
-}
-
-fn is_hiragana_char(c: char) -> bool {
-    ('\u{3040}'..='\u{309f}').contains(&c)
-}
-
-fn is_kana_lookup_char(c: char) -> bool {
-    is_hiragana_char(c) || is_katakana_char(c) || c == '\u{30fc}'
-}
-
-fn is_kana_only_lookup(text: &str) -> bool {
-    let mut has_kana = false;
-    for c in text.chars() {
-        if is_kana_lookup_char(c) {
-            has_kana = true;
-            continue;
-        }
-        return false;
-    }
-    has_kana
-}
-
-fn common_prefix_char_count(a: &str, b: &str) -> usize {
-    a.chars()
-        .zip(b.chars())
-        .take_while(|(left, right)| left == right)
-        .count()
-}
-
-fn entry_tags_allow_deinflection(tags: &str) -> bool {
-    if tags.trim().is_empty() {
-        return true;
-    }
-
-    tags.to_ascii_lowercase()
-        .split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == '|')
-        .any(|tag| {
-            tag.starts_with("v1")
-                || tag.starts_with("v5")
-                || matches!(
-                    tag,
-                    "vk" | "vn"
-                        | "vr"
-                        | "vs"
-                        | "vs-i"
-                        | "vs-s"
-                        | "vz"
-                        | "vi"
-                        | "vt"
-                        | "aux-v"
-                        | "adj-i"
-                        | "adj-ix"
-                        | "aux-adj"
-                        | "cop"
-                )
-        })
-}
-
-fn split_entry_tags(tags: &str) -> Vec<String> {
-    tags.to_ascii_lowercase()
-        .split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == '|')
-        .filter(|tag| !tag.is_empty())
-        .map(|tag| tag.to_string())
-        .collect()
-}
-
-fn tags_contain_prefix(tags: &[String], prefix: &str) -> bool {
-    tags.iter().any(|tag| {
-        tag == prefix
-            || tag
-                .strip_prefix(prefix)
-                .map(|rest| {
-                    rest.starts_with('-')
-                        || rest
-                            .chars()
-                            .next()
-                            .map(|c| c.is_ascii_digit())
-                            .unwrap_or(false)
-                })
-                .unwrap_or(false)
-            || (prefix == "v5" && tag.starts_with("v5"))
-    })
-}
-
-fn required_tags_for_deinflection_step(in_s: &str, out_s: &str) -> Vec<&'static str> {
-    if out_s.is_empty() || out_s == "ます" || out_s == "ない" || out_s == "て" || out_s == "で"
-    {
-        return Vec::new();
-    }
-
-    if out_s.ends_with("する") || out_s.ends_with("為る") {
-        return vec!["vs"];
-    }
-    if out_s.ends_with("ずる") {
-        return vec!["vz"];
-    }
-    if out_s.ends_with("くる") || out_s.ends_with("来る") || out_s.ends_with("來る") {
-        return vec!["vk"];
-    }
-
-    match out_s {
-        "う" => vec!["v5u"],
-        "く" => vec!["v5k"],
-        "ぐ" => vec!["v5g"],
-        "す" => vec!["v5s"],
-        "つ" => vec!["v5t"],
-        "ぬ" => vec!["v5n"],
-        "ぶ" => vec!["v5b"],
-        "む" => vec!["v5m"],
-        "る" => {
-            if matches!(in_s, "った" | "って" | "らない" | "ります" | "れ" | "ろう") {
-                vec!["v5r"]
-            } else if matches!(in_s, "た" | "て" | "ない" | "ます" | "ません" | "ました")
-            {
-                vec!["v1"]
-            } else {
-                vec!["v1", "v5r", "vk", "vs", "vz"]
-            }
-        }
-        "い" => vec!["adj-i", "adj-ix", "aux-adj"],
-        _ => Vec::new(),
-    }
-}
-
-fn deinflection_reasons_match_tags(reasons: &[DeinflectReason], tags: &str) -> bool {
-    let tags = split_entry_tags(tags);
-    if tags.is_empty() {
-        return true;
-    }
-
-    for reason in reasons {
-        let required = required_tags_for_deinflection_step(&reason.in_suffix, &reason.out_suffix);
-        if required.is_empty() {
-            continue;
-        }
-        if !required
-            .iter()
-            .any(|required_tag| tags_contain_prefix(&tags, required_tag))
-        {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn deinflected_kana_match_is_plausible(surface: &str, term: &str, reading: &str) -> bool {
-    if !is_kana_only_lookup(surface) {
-        return true;
-    }
-
-    let surface_kana = kata_to_hira(surface);
-    let candidate = if reading.trim().is_empty() {
-        term
-    } else {
-        reading
-    };
-    let candidate_kana = kata_to_hira(candidate);
-    let surface_len = surface_kana.chars().count();
-    let candidate_len = candidate_kana.chars().count();
-    let common_prefix = common_prefix_char_count(&surface_kana, &candidate_kana);
-
-    if surface_len >= 4 && candidate_len <= 2 && common_prefix < 2 {
-        return false;
-    }
-
-    true
-}
-
-fn deinflected_surface_rank(entry: &DictEntry, surface: &str) -> i32 {
-    if entry.deinflection_reasons.is_empty() {
-        return 0;
-    }
-
-    let candidate = if entry.reading.trim().is_empty() {
-        &entry.term
-    } else {
-        &entry.reading
-    };
-    let surface_kana = kata_to_hira(surface);
-    let candidate_kana = kata_to_hira(candidate);
-    let common_prefix = common_prefix_char_count(&surface_kana, &candidate_kana);
-    let candidate_len = candidate_kana.chars().count();
-    let surface_len = surface_kana.chars().count();
-    let near_full_prefix =
-        candidate_len > 0 && common_prefix + 1 >= std::cmp::min(surface_len, candidate_len);
-
-    let similarity_rank = if near_full_prefix {
-        1
-    } else if common_prefix >= 2 {
-        2
-    } else if common_prefix == 1 {
-        4
-    } else {
-        6
-    };
-
-    similarity_rank + entry.deinflection_reasons.len() as i32
-}
-
-fn is_lookup_digit(c: char) -> bool {
-    c.is_ascii_digit() || ('\u{ff10}'..='\u{ff19}').contains(&c)
-}
-
-fn numeric_prefix_len(chars: &[char]) -> usize {
-    let mut len = 0;
-    while len < chars.len() && is_lookup_digit(chars[len]) {
-        len += 1;
-    }
-
-    if len > 0 && len < chars.len() && is_japanese_lookup_char(chars[len]) {
-        len
-    } else {
-        0
-    }
-}
-
-fn is_common_japanese_particle(c: char) -> bool {
-    matches!(
-        c,
-        '\u{3092}' // を
-            | '\u{304C}' // が
-            | '\u{306F}' // は
-            | '\u{306B}' // に
-            | '\u{3078}' // へ
-            | '\u{3067}' // で
-            | '\u{3068}' // と
-            | '\u{306E}' // の
-            | '\u{3082}' // も
-    )
-}
-
-fn scan_start_candidates(chars: &[char], cursor: usize) -> Vec<usize> {
-    let cursor_char = chars.get(cursor).copied().unwrap_or('\0');
-    let mut starts = vec![cursor];
-    if is_lookup_punctuation(cursor_char) {
-        return starts;
-    }
-
-    let cursor_is_japanese = is_japanese_lookup_char(cursor_char);
-    for offset in 1..LOOKUP_MAX_SCAN_CHARS {
-        let Some(start) = cursor.checked_sub(offset) else {
-            break;
-        };
-
-        let between = &chars[start + 1..=cursor];
-        if between.iter().any(|c| is_lookup_punctuation(*c)) {
-            break;
-        }
-
-        if cursor_is_japanese && is_common_japanese_particle(chars[start]) {
-            break;
-        }
-
-        starts.push(start);
-    }
-    starts
-}
-
-fn scan_start_boundary_penalty(chars: &[char], start: usize, cursor: usize) -> u8 {
-    if start >= cursor || cursor == 0 {
-        return 0;
-    }
-
-    let cursor_char = chars.get(cursor).copied().unwrap_or('\0');
-    let prev_char = chars.get(cursor - 1).copied().unwrap_or('\0');
-    if is_kanji(&cursor_char) && (is_hiragana_char(prev_char) || is_katakana_char(prev_char)) {
-        return 1;
-    }
-
-    let mut saw_kanji_before_kana = false;
-    for idx in start..=cursor {
-        let c = chars[idx];
-        if is_kanji(&c) {
-            if idx > start && saw_kanji_before_kana && chars[idx - 1] == '\u{3044}' {
-                return 1;
-            }
-            saw_kanji_before_kana = true;
-        }
-    }
-
-    0
-}
-
-fn scan_end_boundary_penalty(chars: &[char], start: usize, len: usize, cursor: usize) -> u8 {
-    if len == 0 {
-        return 3;
-    }
-    let end = start + len;
-    if end <= cursor {
-        return 3;
-    }
-    if end < chars.len() {
-        let tail: String = chars[end..std::cmp::min(chars.len(), end + 8)]
-            .iter()
-            .collect();
-        if [
-            "\u{307E}\u{3059}",
-            "\u{307E}\u{3057}\u{305F}",
-            "\u{307E}\u{305B}\u{3093}",
-            "\u{307E}\u{3057}\u{3087}\u{3046}",
-        ]
-        .iter()
-        .any(|suffix| tail.starts_with(suffix))
-        {
-            return 2;
-        }
-
-        let next = chars[end];
-        if is_common_japanese_particle(next) {
-            return 0;
-        }
-        if is_hiragana_char(next) && chars[start..end].iter().any(|c| is_kanji(c)) {
-            return 1;
-        }
-    }
-    let last = chars.get(end - 1).copied().unwrap_or('\0');
-    if end - 1 > cursor && is_common_japanese_particle(last) {
-        return 3;
-    }
-    if end - 1 > cursor
-        && is_hiragana_char(last)
-        && chars[start..end - 1].iter().any(|c| is_kanji(c))
-        && !matches!(
-            last,
-            '\u{3044}'
-                | '\u{3046}'
-                | '\u{304F}'
-                | '\u{3059}'
-                | '\u{305F}'
-                | '\u{3060}'
-                | '\u{3066}'
-                | '\u{306A}'
-                | '\u{308B}'
-        )
-    {
-        return 1;
-    }
-    0
-}
-
-fn scan_entry_morphology_cost(entry: &DictEntry, surface: &str) -> usize {
-    if !entry.deinflection_reasons.is_empty() {
-        return entry.deinflection_reasons.len();
-    }
-
-    let normalized_surface = kata_to_hira(surface);
-    let literal_term = kata_to_hira(&entry.term) == normalized_surface;
-    let literal_reading =
-        !entry.reading.trim().is_empty() && kata_to_hira(&entry.reading) == normalized_surface;
-    if literal_term || literal_reading {
-        0
-    } else {
-        // lookup_forms also creates stem/base variants (for example 行い -> 行う).
-        // Treat that implicit conversion like one deinflection step during scanning.
-        1
-    }
-}
-
-fn is_katakana_char(c: char) -> bool {
-    ('\u{30a0}'..='\u{30ff}').contains(&c) || c == '\u{30fc}'
-}
-
-fn is_plain_katakana_lookup(text: &str) -> bool {
-    let mut has_katakana = false;
-    for c in text.chars() {
-        if is_katakana_char(c) {
-            has_katakana = true;
-            continue;
-        }
-        return false;
-    }
-    has_katakana
-}
-
-fn keep_literal_kana_entries(entries: Vec<DictEntry>, query: &str) -> Vec<DictEntry> {
-    let normalized_query = kata_to_hira(query);
-    let mut literal_surface_entries = Vec::new();
-    let mut fallback_entries = Vec::new();
-
-    for entry in entries {
-        if is_kana_only_lookup(&entry.term) && kata_to_hira(&entry.term) == normalized_query {
-            literal_surface_entries.push(entry);
-        } else {
-            fallback_entries.push(entry);
-        }
-    }
-
-    if literal_surface_entries.is_empty() {
-        fallback_entries
-    } else {
-        literal_surface_entries
-    }
-}
-
-fn lookup_numeric_prefix_fallback<'a>(
-    freq_stmt: &mut rusqlite::Statement<'a>,
-    pitch_stmt: &mut rusqlite::Statement<'a>,
-    pronunciation_stmt: &mut rusqlite::Statement<'a>,
-    stmt: &mut rusqlite::Statement<'a>,
-    chars: &[char],
-    rules: &Vec<(Value, Value, String, String)>,
-    source_len: usize,
-    max_depth: usize,
-) -> Vec<DictEntry> {
-    let prefix_len = numeric_prefix_len(chars);
-    if prefix_len == 0 {
-        return Vec::new();
-    }
-
-    let suffix_chars = &chars[prefix_len..];
-    if suffix_chars.len() < 2 && !suffix_chars.iter().any(is_kanji) {
-        return Vec::new();
-    }
-
-    let suffix: String = suffix_chars.iter().collect();
-    internal_lookup(
-        freq_stmt,
-        pitch_stmt,
-        pronunciation_stmt,
-        stmt,
-        &suffix,
-        rules,
-        source_len,
-        max_depth,
-    )
-}
-
-fn entries_have_definition(entries: &[DictEntry]) -> bool {
-    entries.iter().any(|entry| {
-        let definition = entry.definition.trim();
-        !definition.is_empty() && definition != "[]" && definition != "null" && definition != "\"\""
-    })
-}
-
-fn lookup_emphatic_do_prefix_fallback<'a>(
-    freq_stmt: &mut rusqlite::Statement<'a>,
-    pitch_stmt: &mut rusqlite::Statement<'a>,
-    pronunciation_stmt: &mut rusqlite::Statement<'a>,
-    stmt: &mut rusqlite::Statement<'a>,
-    chars: &[char],
-    rules: &Vec<(Value, Value, String, String)>,
-    source_len: usize,
-    max_depth: usize,
-) -> Vec<DictEntry> {
-    if chars.first().copied() != Some('\u{30c9}') || chars.len() < 3 {
-        return Vec::new();
-    }
-
-    let base: String = chars[1..].iter().collect();
-    internal_lookup(
-        freq_stmt,
-        pitch_stmt,
-        pronunciation_stmt,
-        stmt,
-        &base,
-        rules,
-        source_len,
-        max_depth,
-    )
-}
-
-fn lookup_furigana_reading_candidates(
-    stmt: &mut rusqlite::Statement<'_>,
-    term: &str,
-) -> Vec<String> {
-    let Ok(rows) = stmt.query_map(params![term], |row| row.get::<_, String>(0)) else {
-        return Vec::new();
-    };
-    rows.flatten()
-        .filter(|reading| !reading.is_empty())
-        .collect()
-}
-
-fn lookup_furigana_reading(stmt: &mut rusqlite::Statement<'_>, term: &str) -> Option<String> {
-    lookup_furigana_reading_candidates(stmt, term)
-        .into_iter()
-        .next()
-}
-
-#[cfg(test)]
-fn lookup_furigana_reading_prefer(
-    stmt: &mut rusqlite::Statement<'_>,
-    term: &str,
-    preferred: Option<&str>,
-) -> Option<String> {
-    let candidates = lookup_furigana_reading_candidates(stmt, term);
-    if let Some(preferred) = preferred.filter(|value| !value.is_empty()) {
-        if let Some(candidate) = candidates
-            .iter()
-            .find(|candidate| candidate.as_str() == preferred)
-        {
-            return Some(candidate.clone());
-        }
-    }
-    candidates.into_iter().next()
-}
-
-fn lookup_deinflected_furigana(
-    stmt: &mut rusqlite::Statement<'_>,
-    deinflect_rules: &[(String, String)],
-    term: &str,
-) -> Option<String> {
-    for (in_s, out_s) in deinflect_rules {
-        if term.ends_with(in_s) {
-            let mut new_term = term[..term.len() - in_s.len()].to_string();
-            new_term.push_str(out_s);
-
-            if let Some(base_read) = lookup_furigana_reading(stmt, &new_term) {
-                if base_read.ends_with(out_s) {
-                    let mut conj_read = base_read[..base_read.len() - out_s.len()].to_string();
-                    conj_read.push_str(in_s);
-                    return Some(conj_read);
-                }
-            }
-        }
-    }
-
-    None
-}
-
-fn contextual_furigana_tokens(
-    stmt: &mut rusqlite::Statement<'_>,
-    deinflect_rules: &[(String, String)],
-    chars: &[char],
-) -> Option<Vec<TextToken>> {
-    if chars.len() < 2 {
-        return None;
-    }
-
-    let max_suffix_len = std::cmp::min(3, chars.len() - 1);
-    for suffix_len in (1..=max_suffix_len).rev() {
-        let prefix_chars = &chars[..chars.len() - suffix_len];
-        let suffix: String = chars[chars.len() - suffix_len..].iter().collect();
-        let Some(suffix_reading) = contextual_suffix_reading(&suffix) else {
-            continue;
-        };
-
-        let prefix: String = prefix_chars.iter().collect();
-        if prefix_chars.len() < 2 || !has_kanji(&prefix) || !is_valid_chunk(prefix_chars) {
-            continue;
-        }
-
-        let prefix_reading = lookup_furigana_reading(stmt, &prefix)
-            .or_else(|| lookup_deinflected_furigana(stmt, deinflect_rules, &prefix));
-
-        if let Some(prefix_reading) = prefix_reading {
-            if prefix_reading.is_empty() {
-                continue;
-            }
-
-            let mut tokens = split_furigana(&prefix, &prefix_reading);
-            tokens.push(TextToken {
-                text: suffix,
-                reading: Some(suffix_reading.to_string()),
-            });
-            return Some(tokens);
-        }
-    }
-
-    None
-}
-
-#[tauri::command]
-async fn get_furigana(
-    app: tauri::AppHandle,
-    text: String,
-    context_before: Option<String>,
-    context_after: Option<String>,
-) -> Result<Vec<TextToken>, String> {
-    let db = open_db(&app)?;
-    let before = context_before.unwrap_or_default();
-    let after = context_after.unwrap_or_default();
-
-    if before.is_empty() && after.is_empty() {
-        return build_furigana_tokens(&db, &text);
-    }
-
-    let before_tail: String = before
-        .chars()
-        .rev()
-        .take(48)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    let after_head: String = after.chars().take(48).collect();
-    let combined = format!("{}{}{}", before_tail, text, after_head);
-    let start = before_tail.chars().count();
-    let len = text.chars().count();
-    let combined_tokens = build_furigana_tokens(&db, &combined)?;
-
-    Ok(slice_furigana_tokens(&combined_tokens, start, len))
-}
-
-fn build_furigana_tokens(db: &Connection, text: &str) -> Result<Vec<TextToken>, String> {
-    let mut tokens = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    let rules = load_rules();
-    let mut deinflect_rules = Vec::new();
-    for (_, _, in_s, out_s) in rules {
-        deinflect_rules.push((in_s, out_s));
-    }
-    let mut stmt = db.prepare("SELECT reading FROM entries WHERE term = ?1 AND reading != term AND reading NOT LIKE '% %' AND reading NOT LIKE '%.%' AND dict_name NOT LIKE '%kanji%' COLLATE NOCASE ORDER BY (SELECT value FROM frequencies WHERE frequencies.term = entries.term AND (frequencies.reading = entries.reading OR frequencies.reading = '') LIMIT 1) ASC NULLS LAST LIMIT 8").map_err(|e| e.to_string())?;
-
-    while i < chars.len() {
-        if !is_kanji(&chars[i]) {
-            let mut j = i;
-            while j < chars.len() && !is_kanji(&chars[j]) {
-                j += 1;
-            }
-            tokens.push(TextToken {
-                text: chars[i..j].iter().collect(),
-                reading: None,
-            });
-            i = j;
-            continue;
-        }
-        let mut found = false;
-        for len in (1..=std::cmp::min(8, chars.len() - i)).rev() {
-            let sub_chars = &chars[i..i + len];
-            if !is_valid_chunk(sub_chars) {
-                continue;
-            }
-            let sub: String = sub_chars.iter().collect();
-
-            if let Some(reading) = lookup_furigana_reading(&mut stmt, &sub)
-                .or_else(|| lookup_deinflected_furigana(&mut stmt, &deinflect_rules, &sub))
-            {
-                if !reading.is_empty() {
-                    let mut split_toks = split_furigana(&sub, &reading);
-                    tokens.append(&mut split_toks);
-                    i += len;
-                    found = true;
-                    break;
-                }
-            }
-
-            if let Some(mut contextual_tokens) =
-                contextual_furigana_tokens(&mut stmt, &deinflect_rules, sub_chars)
-            {
-                tokens.append(&mut contextual_tokens);
-                i += len;
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            tokens.push(TextToken {
-                text: chars[i].to_string(),
-                reading: None,
-            });
-            i += 1;
-        }
-    }
-    Ok(tokens)
-}
-
-fn slice_furigana_tokens(tokens: &[TextToken], start: usize, len: usize) -> Vec<TextToken> {
-    let end = start + len;
-    let mut pos = 0;
-    let mut sliced = Vec::new();
-
-    for token in tokens {
-        let token_len = token.text.chars().count();
-        let token_start = pos;
-        let token_end = pos + token_len;
-        pos = token_end;
-
-        if token_end <= start || token_start >= end {
-            continue;
-        }
-
-        let local_start = start.saturating_sub(token_start);
-        let local_end = std::cmp::min(token_len, end.saturating_sub(token_start));
-        let text: String = token
-            .text
-            .chars()
-            .skip(local_start)
-            .take(local_end.saturating_sub(local_start))
-            .collect();
-
-        if !text.is_empty() {
-            sliced.push(TextToken {
-                text,
-                reading: token.reading.clone(),
-            });
-        }
-    }
-
-    sliced
-}
-
-fn internal_lookup<'a>(
-    freq_stmt: &mut rusqlite::Statement<'a>,
-    pitch_stmt: &mut rusqlite::Statement<'a>,
-    pronunciation_stmt: &mut rusqlite::Statement<'a>,
-    stmt: &mut rusqlite::Statement<'a>,
-    word: &str,
-    rules: &Vec<(Value, Value, String, String)>,
-    source_len: usize,
-    max_depth: usize,
-) -> Vec<DictEntry> {
-    let mut all_results = Vec::new();
-    let mut terms_found = HashSet::new();
-    let mut queue: VecDeque<(String, Vec<DeinflectReason>, usize)> = VecDeque::new();
-    queue.push_back((word.to_string(), vec![], 0));
-    let mut visited = HashSet::new();
-    let mut expanded = 0usize;
-
-    while let Some((current_term, current_reasons, depth)) = queue.pop_front() {
-        if visited.contains(&current_term) {
-            continue;
-        }
-        visited.insert(current_term.clone());
-        expanded += 1;
-        if expanded > 48 {
-            break;
-        }
-        let forms = lookup_forms(&current_term);
-
-        let mut raw_entries: Vec<(String, String, String, String, String)> = Vec::new();
-        if let Ok(rows) = stmt.query_map(
-            params![
-                &forms[0], &forms[1], &forms[2], &forms[3], &forms[4], &forms[5], &forms[6],
-                &forms[7]
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0).unwrap_or_default(),
-                    row.get::<_, String>(1).unwrap_or_default(),
-                    row.get::<_, String>(2).unwrap_or_default(),
-                    row.get::<_, String>(3).unwrap_or_default(),
-                    row.get::<_, String>(4).unwrap_or_default(),
-                ))
-            },
-        ) {
-            for row in rows.flatten() {
-                raw_entries.push(row);
-            }
-        }
-
-        if !raw_entries.is_empty() {
-            for (term, reading, definition, dict_name, tags) in raw_entries {
-                if !current_reasons.is_empty() && !entry_tags_allow_deinflection(&tags) {
-                    continue;
-                }
-                if !current_reasons.is_empty()
-                    && !deinflection_reasons_match_tags(&current_reasons, &tags)
-                {
-                    continue;
-                }
-                if !current_reasons.is_empty()
-                    && !deinflected_kana_match_is_plausible(word, &term, &reading)
-                {
-                    continue;
-                }
-
-                let mut valid_freqs = Vec::new();
-                if let Ok(f_rows) = freq_stmt.query_map(params![&term, &reading], |row| {
-                    Ok((
-                        row.get::<_, String>(0).unwrap_or_default(),
-                        row.get::<_, String>(1).unwrap_or_default(),
-                        row.get::<_, i64>(2).unwrap_or_default(),
-                    ))
-                }) {
-                    for f in f_rows.flatten() {
-                        valid_freqs.push(FrequencyData {
-                            dict_name: f.0,
-                            display_value: f.1,
-                            value: f.2,
-                        });
-                    }
-                }
-
-                let mut valid_pitches = Vec::new();
-                if let Ok(p_rows) = pitch_stmt.query_map(params![&term, &reading], |row| {
-                    Ok((
-                        row.get::<_, String>(0).unwrap_or_default(),
-                        row.get::<_, i64>(1).unwrap_or_default(),
-                        row.get::<_, String>(2).unwrap_or_default(),
-                    ))
-                }) {
-                    for p in p_rows.flatten() {
-                        valid_pitches.push(PitchData {
-                            dict_name: p.0,
-                            reading: p.2,
-                            position: p.1,
-                        });
-                    }
-                }
-
-                let mut valid_pronunciations = Vec::new();
-                if let Ok(rows) = pronunciation_stmt.query_map(params![&term, &reading], |row| {
-                    Ok((
-                        row.get::<_, String>(0).unwrap_or_default(),
-                        row.get::<_, String>(1).unwrap_or_default(),
-                        row.get::<_, String>(2).unwrap_or_default(),
-                        row.get::<_, String>(3).unwrap_or_default(),
-                    ))
-                }) {
-                    for pronunciation in rows.flatten() {
-                        valid_pronunciations.push(PronunciationData {
-                            dict_name: pronunciation.0,
-                            reading: pronunciation.1,
-                            ipa: pronunciation.2,
-                            tags: pronunciation.3,
-                        });
-                    }
-                }
-
-                let entry = DictEntry {
-                    term,
-                    reading,
-                    definition,
-                    dict_name,
-                    tags,
-                    deinflection_reasons: current_reasons.clone(),
-                    frequencies: valid_freqs,
-                    pitches: valid_pitches,
-                    pronunciations: valid_pronunciations,
-                    source_length: source_len,
-                };
-                let uniq_key = format!(
-                    "{}|{}|{}|{}|{}",
-                    entry.term, entry.reading, entry.dict_name, entry.tags, entry.definition
-                );
-                if !terms_found.contains(&uniq_key) {
-                    terms_found.insert(uniq_key);
-                    all_results.push(entry);
-                }
-            }
-        } else {
-            let mut frequencies = Vec::new();
-            if let Ok(rows) = freq_stmt.query_map(params![&current_term, ""], |row| {
-                Ok((
-                    row.get::<_, String>(0).unwrap_or_default(),
-                    row.get::<_, String>(1).unwrap_or_default(),
-                    row.get::<_, i64>(2).unwrap_or_default(),
-                ))
-            }) {
-                for row in rows.flatten() {
-                    frequencies.push(FrequencyData {
-                        dict_name: row.0,
-                        display_value: row.1,
-                        value: row.2,
-                    });
-                }
-            }
-
-            let mut pronunciations = Vec::new();
-            if let Ok(rows) = pronunciation_stmt.query_map(params![&current_term, ""], |row| {
-                Ok((
-                    row.get::<_, String>(0).unwrap_or_default(),
-                    row.get::<_, String>(1).unwrap_or_default(),
-                    row.get::<_, String>(2).unwrap_or_default(),
-                    row.get::<_, String>(3).unwrap_or_default(),
-                ))
-            }) {
-                for row in rows.flatten() {
-                    pronunciations.push(PronunciationData {
-                        dict_name: row.0,
-                        reading: row.1,
-                        ipa: row.2,
-                        tags: row.3,
-                    });
-                }
-            }
-
-            if !frequencies.is_empty() || !pronunciations.is_empty() {
-                let dict_name = pronunciations
-                    .first()
-                    .map(|value| value.dict_name.clone())
-                    .or_else(|| frequencies.first().map(|value| value.dict_name.clone()))
-                    .unwrap_or_else(|| "Metadata".to_string());
-                let reading = pronunciations
-                    .first()
-                    .map(|value| value.reading.clone())
-                    .unwrap_or_default();
-                all_results.push(DictEntry {
-                    term: current_term.clone(),
-                    reading,
-                    definition: String::new(),
-                    dict_name,
-                    tags: String::new(),
-                    deinflection_reasons: current_reasons.clone(),
-                    frequencies,
-                    pitches: Vec::new(),
-                    pronunciations,
-                    source_length: source_len,
-                });
-            }
-        }
-        if depth >= max_depth || all_results.len() >= 120 {
-            continue;
-        }
-        for (reason, desc, in_s, out_s) in rules {
-            if in_s.is_empty() {
-                continue;
-            }
-            if current_term.ends_with(in_s) {
-                if in_s.is_empty() && current_reasons.iter().any(|r| r.rule == *reason) {
-                    continue;
-                }
-                let mut new_term = current_term[..current_term.len() - in_s.len()].to_string();
-                new_term.push_str(out_s);
-                if new_term.chars().count() > 24 || new_term.chars().count() < 2 {
-                    continue;
-                }
-                let mut new_reasons = current_reasons.clone();
-                new_reasons.insert(
-                    0,
-                    DeinflectReason {
-                        rule: reason.clone(),
-                        desc: desc.clone(),
-                        in_suffix: in_s.clone(),
-                        out_suffix: out_s.clone(),
-                    },
-                );
-                queue.push_back((new_term, new_reasons, depth + 1));
-                if queue.len() > 64 {
-                    break;
-                }
-            }
-        }
-    }
-    let query_forms = lookup_forms(word);
-    all_results.sort_by(|a, b| {
-        deinflected_surface_rank(a, word)
-            .cmp(&deinflected_surface_rank(b, word))
-            .then_with(|| {
-                lookup_entry_rank(a, &query_forms).cmp(&lookup_entry_rank(b, &query_forms))
-            })
-            .then_with(|| best_frequency_value(a).cmp(&best_frequency_value(b)))
-            .then_with(|| b.source_length.cmp(&a.source_length))
-    });
-    all_results
-}
-
-#[tauri::command]
-async fn lookup_word(app: tauri::AppHandle, word: String) -> Result<Vec<DictEntry>, String> {
-    let db = open_db(&app)?;
-    let rules = load_rules();
-    let clean_word = word.trim();
-    let chars: Vec<char> = clean_word.chars().collect();
-    let mut all_entries = Vec::new();
-    let mut found_terms = HashSet::new();
-    let max_len = std::cmp::min(20, chars.len());
-    let mut freq_stmt = db.prepare("SELECT dict_name, display_value, value FROM frequencies WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') ORDER BY CASE WHEN value > 0 THEN 0 ELSE 1 END, value ASC LIMIT 32").map_err(|e| e.to_string())?;
-    let mut pitch_stmt = db.prepare("SELECT dict_name, position, reading FROM pitches WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') LIMIT 16").map_err(|e| e.to_string())?;
-    let mut pronunciation_stmt = db.prepare("SELECT dict_name, reading, ipa, tags FROM pronunciations WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') LIMIT 32").map_err(|e| e.to_string())?;
-    let mut stmt = db.prepare("SELECT e.term, e.reading, e.definition, e.dict_name, e.tags FROM entries e WHERE e.term != '' AND (e.term IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) OR (e.reading != '' AND e.reading IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8))) ORDER BY CASE WHEN e.term = ?1 THEN 0 WHEN e.reading = ?1 THEN 1 WHEN e.term IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 2 WHEN e.reading IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 3 ELSE 4 END, e.id ASC LIMIT 80").map_err(|e| e.to_string())?;
-
-    for len in (1..=max_len).rev() {
-        let sub: String = chars[0..len].iter().collect();
-        if len < 2 && !has_kanji(&sub) && !is_english_lookup_word(&sub) {
-            continue;
-        }
-        let mut entries = internal_lookup(
-            &mut freq_stmt,
-            &mut pitch_stmt,
-            &mut pronunciation_stmt,
-            &mut stmt,
-            &sub,
-            &rules,
-            len,
-            LOOKUP_DIRECT_DEINFLECT_DEPTH,
-        );
-        if entries.is_empty() {
-            entries = lookup_numeric_prefix_fallback(
-                &mut freq_stmt,
-                &mut pitch_stmt,
-                &mut pronunciation_stmt,
-                &mut stmt,
-                &chars[0..len],
-                &rules,
-                len,
-                LOOKUP_DIRECT_DEINFLECT_DEPTH,
-            );
-        }
-        if entries.is_empty() || !entries_have_definition(&entries) {
-            let fallback = lookup_emphatic_do_prefix_fallback(
-                &mut freq_stmt,
-                &mut pitch_stmt,
-                &mut pronunciation_stmt,
-                &mut stmt,
-                &chars[0..len],
-                &rules,
-                len,
-                LOOKUP_DIRECT_DEINFLECT_DEPTH,
-            );
-            if entries.is_empty() || entries_have_definition(&fallback) {
-                entries = fallback;
-            }
-        }
-        if is_plain_katakana_lookup(&sub) {
-            entries = keep_literal_kana_entries(entries, &sub);
-        }
-        let mut added_for_len = false;
-        for entry in entries {
-            let key = format!(
-                "{}|{}|{}|{}",
-                entry.term, entry.reading, entry.dict_name, entry.source_length
-            );
-            if !found_terms.contains(&key) {
-                found_terms.insert(key);
-                all_entries.push(entry);
-                added_for_len = true;
-            }
-        }
-        if added_for_len {
-            break;
-        }
-    }
-    let query_forms = lookup_forms(clean_word);
-    all_entries.sort_by(|a, b| {
-        b.source_length
-            .cmp(&a.source_length)
-            .then_with(|| {
-                lookup_entry_rank(a, &query_forms).cmp(&lookup_entry_rank(b, &query_forms))
-            })
-            .then_with(|| best_frequency_value(a).cmp(&best_frequency_value(b)))
-    });
-    Ok(all_entries)
-}
-
-fn decode_basic_html_entities(value: &str) -> String {
-    value
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-}
-
-fn strip_html_to_lookup_text(html: &str) -> String {
-    let mut text = String::with_capacity(html.len().min(16_384));
-    let mut tag = String::new();
-    let mut in_tag = false;
-
-    for ch in html.chars() {
-        if in_tag {
-            if ch == '>' {
-                let lower = tag.trim().to_ascii_lowercase();
-                let block = lower.starts_with("br")
-                    || lower.starts_with("li")
-                    || lower.starts_with("/li")
-                    || lower.starts_with("p")
-                    || lower.starts_with("/p")
-                    || lower.starts_with("div")
-                    || lower.starts_with("/div")
-                    || lower.starts_with("section")
-                    || lower.starts_with("/section")
-                    || lower.starts_with("article")
-                    || lower.starts_with("/article")
-                    || lower.starts_with("h1")
-                    || lower.starts_with("/h1")
-                    || lower.starts_with("h2")
-                    || lower.starts_with("/h2")
-                    || lower.starts_with("h3")
-                    || lower.starts_with("/h3")
-                    || lower.starts_with("ol")
-                    || lower.starts_with("/ol")
-                    || lower.starts_with("ul")
-                    || lower.starts_with("/ul");
-                if block && !text.ends_with('\n') {
-                    text.push('\n');
-                }
-                tag.clear();
-                in_tag = false;
-            } else if tag.len() < 256 {
-                tag.push(ch);
-            }
-            continue;
-        }
-
-        if ch == '<' {
-            in_tag = true;
-            tag.clear();
-        } else {
-            text.push(ch);
-        }
-    }
-
-    let decoded = decode_basic_html_entities(&text);
-    let mut out = String::new();
-    let mut last_blank = false;
-    for line in decoded.lines() {
-        let clean = line.split_whitespace().collect::<Vec<_>>().join(" ");
-        if clean.is_empty() {
-            if !last_blank && !out.is_empty() {
-                out.push('\n');
-                last_blank = true;
-            }
-        } else {
-            if !out.is_empty() && !out.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(&clean);
-            last_blank = false;
-        }
-    }
-    out.trim().to_string()
-}
-
-fn collect_cambridge_definition(value: &Value, output: &mut Vec<String>) {
-    match value {
-        Value::Object(map) => {
-            for key in [
-                "entryContent",
-                "definition",
-                "html",
-                "content",
-                "text",
-                "guideWord",
-            ] {
-                if let Some(Value::String(text)) = map.get(key) {
-                    let cleaned = if text.contains('<') && text.contains('>') {
-                        strip_html_to_lookup_text(text)
-                    } else {
-                        text.trim().to_string()
-                    };
-                    if !cleaned.is_empty() {
-                        output.push(cleaned);
-                    }
-                }
-            }
-            for child in map.values() {
-                collect_cambridge_definition(child, output);
-            }
-        }
-        Value::Array(items) => {
-            for child in items {
-                collect_cambridge_definition(child, output);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn cambridge_response_to_definition(body: &str) -> String {
-    if let Ok(json) = serde_json::from_str::<Value>(body) {
-        let mut chunks = Vec::new();
-        collect_cambridge_definition(&json, &mut chunks);
-        chunks.dedup();
-        if !chunks.is_empty() {
-            return chunks.join("\n\n");
-        }
-        return serde_json::to_string_pretty(&json).unwrap_or_else(|_| body.to_string());
-    }
-
-    if body.contains('<') && body.contains('>') {
-        strip_html_to_lookup_text(body)
-    } else {
-        body.trim().to_string()
-    }
-}
-
-fn encode_query_component(value: &str) -> String {
-    let mut out = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(byte as char)
-            }
-            b' ' => out.push_str("%20"),
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
-fn cambridge_cache_now_ms() -> u64 {
-    unix_time_ms().min(u64::MAX as u128) as u64
-}
-
-fn cambridge_cache_key(base_url: &str, dictionary_code: &str, word: &str) -> String {
-    format!(
-        "{}|{}|{}",
-        base_url.trim_end_matches('/').to_ascii_lowercase(),
-        dictionary_code.to_ascii_lowercase(),
-        word.to_ascii_lowercase()
-    )
-}
-
-fn read_cambridge_cache_file(app: &tauri::AppHandle) -> HashMap<String, CambridgeCacheRecord> {
-    let path = match get_data_path(app, CAMBRIDGE_CACHE_FILE) {
-        Ok(path) => path,
-        Err(_) => return HashMap::new(),
-    };
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(_) => return HashMap::new(),
-    };
-    serde_json::from_str(&text).unwrap_or_default()
-}
-
-fn get_cambridge_cached_entries(
-    app: &tauri::AppHandle,
-    cache_key: &str,
-    now_ms: u64,
-) -> Option<Vec<DictEntry>> {
-    let cache = read_cambridge_cache_file(app);
-    cache.get(cache_key).and_then(|record| {
-        if record.expires_at_ms >= now_ms {
-            Some(record.entries.clone())
-        } else {
-            None
-        }
-    })
-}
-
-fn write_cambridge_cache_entries(
-    app: &tauri::AppHandle,
-    cache_key: String,
-    entries: Vec<DictEntry>,
-    ttl_ms: u64,
-) {
-    let estimated_entry_size: usize = entries
-        .iter()
-        .map(|entry| {
-            entry.term.len()
-                + entry.reading.len()
-                + entry.definition.len()
-                + entry.dict_name.len()
-                + entry.tags.len()
-        })
-        .sum();
-    if estimated_entry_size > CAMBRIDGE_CACHE_MAX_ENTRY_BYTES {
-        return;
-    }
-
-    let path = match get_data_path(app, CAMBRIDGE_CACHE_FILE) {
-        Ok(path) => path,
-        Err(_) => return,
-    };
-    let now_ms = cambridge_cache_now_ms();
-    let mut cache = read_cambridge_cache_file(app);
-    cache.retain(|_, record| record.expires_at_ms >= now_ms);
-    cache.insert(
-        cache_key,
-        CambridgeCacheRecord {
-            saved_at_ms: now_ms,
-            expires_at_ms: now_ms.saturating_add(ttl_ms),
-            entries,
-        },
-    );
-
-    if cache.len() > CAMBRIDGE_CACHE_MAX_RECORDS {
-        let mut keys_by_age: Vec<(String, u64)> = cache
-            .iter()
-            .map(|(key, record)| (key.clone(), record.saved_at_ms))
-            .collect();
-        keys_by_age.sort_by_key(|(_, saved_at)| *saved_at);
-        let remove_count = cache.len().saturating_sub(CAMBRIDGE_CACHE_MAX_RECORDS);
-        for (key, _) in keys_by_age.into_iter().take(remove_count) {
-            cache.remove(&key);
-        }
-    }
-
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(text) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(path, text);
-    }
-}
-
-#[tauri::command]
-async fn lookup_cambridge_api(
-    app: tauri::AppHandle,
-    word: String,
-    config: CambridgeApiConfig,
-) -> Result<Vec<DictEntry>, String> {
-    if !config.enabled {
-        return Ok(Vec::new());
-    }
-
-    let clean_word = word.trim();
-    if clean_word.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let dictionary_code = config.dictionary_code.trim();
-    if dictionary_code.is_empty()
-        || !dictionary_code
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-    {
-        return Err("Cambridge dictionary code is invalid".into());
-    }
-
-    let base_url = config
-        .base_url
-        .as_deref()
-        .unwrap_or("https://dictionary.cambridge.org/api/v1")
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
-        return Err("Cambridge API base URL must start with http:// or https://".into());
-    }
-
-    let cache_key = cambridge_cache_key(&base_url, dictionary_code, clean_word);
-    if let Some(entries) = get_cambridge_cached_entries(&app, &cache_key, cambridge_cache_now_ms())
-    {
-        return Ok(entries);
-    }
-
-    let api_key = config.api_key.trim();
-    if api_key.is_empty() {
-        return Err("Cambridge API key is empty".into());
-    }
-
-    let url = format!(
-        "{base_url}/dictionaries/{dictionary_code}/search/first?q={}&format=html",
-        encode_query_component(clean_word)
-    );
-    let client = reqwest::Client::new();
-    let response = client
-        .get(url)
-        .header("accessKey", api_key)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| format!("Cambridge API request failed: {e}"))?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("Cambridge API response read failed: {e}"))?;
-    if !status.is_success() {
-        if status.as_u16() == 404 || status.as_u16() == 204 {
-            write_cambridge_cache_entries(
-                &app,
-                cache_key,
-                Vec::new(),
-                CAMBRIDGE_NEGATIVE_CACHE_TTL_MS,
-            );
-            return Ok(Vec::new());
-        }
-
-        let message = cambridge_response_to_definition(&body);
-        return Err(format!(
-            "Cambridge API returned {}{}",
-            status.as_u16(),
-            if message.is_empty() {
-                String::new()
-            } else {
-                format!(": {}", message.chars().take(220).collect::<String>())
-            }
-        ));
-    }
-    if body.len() > 768 * 1024 {
-        return Err("Cambridge API response is too large".into());
-    }
-
-    let definition = cambridge_response_to_definition(&body);
-    if definition.trim().is_empty() {
-        write_cambridge_cache_entries(&app, cache_key, Vec::new(), CAMBRIDGE_NEGATIVE_CACHE_TTL_MS);
-        return Ok(Vec::new());
-    }
-
-    let entries = vec![DictEntry {
-        term: clean_word.to_string(),
-        reading: String::new(),
-        definition,
-        dict_name: format!("Cambridge API ({dictionary_code})"),
-        tags: "en cambridge online".into(),
-        deinflection_reasons: Vec::new(),
-        frequencies: Vec::new(),
-        pitches: Vec::new(),
-        pronunciations: Vec::new(),
-        source_length: clean_word.chars().count(),
-    }];
-    write_cambridge_cache_entries(&app, cache_key, entries.clone(), CAMBRIDGE_CACHE_TTL_MS);
-    Ok(entries)
-}
-
-fn scan_english_phrase_in_db<'a>(
-    chars: &[char],
-    cursor: usize,
-    freq_stmt: &mut rusqlite::Statement<'a>,
-    pitch_stmt: &mut rusqlite::Statement<'a>,
-    pronunciation_stmt: &mut rusqlite::Statement<'a>,
-    stmt: &mut rusqlite::Statement<'a>,
-    rules: &Vec<(Value, Value, String, String)>,
-) -> Option<CursorLookupResult> {
-    const MAX_PHRASE_WORDS: usize = 8;
-
-    let words = collect_english_phrase_words(chars);
-    let hit_index = words
-        .iter()
-        .position(|word| word.start <= cursor && cursor < word.end)?;
-
-    let mut component_start = hit_index;
-    while component_start > 0
-        && hit_index - component_start + 1 < MAX_PHRASE_WORDS
-        && is_english_phrase_gap(
-            chars,
-            words[component_start - 1].end,
-            words[component_start].start,
-        )
-    {
-        component_start -= 1;
-    }
-
-    let mut component_end = hit_index;
-    while component_end + 1 < words.len()
-        && component_end - hit_index + 1 < MAX_PHRASE_WORDS
-        && is_english_phrase_gap(
-            chars,
-            words[component_end].end,
-            words[component_end + 1].start,
-        )
-    {
-        component_end += 1;
-    }
-
-    let max_words = MAX_PHRASE_WORDS.min(component_end - component_start + 1);
-    // Prefer the nearest useful expression under the pointer. Longer idioms remain
-    // available by pointing at a word which is unique to that longer expression.
-    for word_count in 2..=max_words {
-        for left in component_start..=hit_index {
-            let right = left + word_count - 1;
-            if right > component_end || hit_index > right {
-                continue;
-            }
-
-            let source_length = words[right].end - words[left].start;
-            for form in english_phrase_lookup_forms(chars, &words, left, right) {
-                let mut entries = internal_lookup(
-                    freq_stmt,
-                    pitch_stmt,
-                    pronunciation_stmt,
-                    stmt,
-                    &form,
-                    rules,
-                    source_length,
-                    0,
-                );
-                if entries.is_empty() {
-                    continue;
-                }
-
-                let query_forms = lookup_forms(&form);
-                entries.sort_by(|left_entry, right_entry| {
-                    right_entry
-                        .source_length
-                        .cmp(&left_entry.source_length)
-                        .then_with(|| {
-                            lookup_entry_rank(left_entry, &query_forms)
-                                .cmp(&lookup_entry_rank(right_entry, &query_forms))
-                        })
-                        .then_with(|| {
-                            best_frequency_value(left_entry)
-                                .cmp(&best_frequency_value(right_entry))
-                        })
-                });
-                let word = entries
-                    .first()
-                    .map(|entry| entry.term.clone())
-                    .filter(|term| !term.is_empty())
-                    .unwrap_or(form);
-                return Some(CursorLookupResult {
-                    entries,
-                    match_start: words[left].start,
-                    match_len: source_length,
-                    word,
-                });
-            }
-        }
-    }
-
-    const MAX_INTERVENING_WORDS: usize = 4;
-    for span_word_count in 3..=MAX_INTERVENING_WORDS + 2 {
-        for left in component_start..=hit_index {
-            let right = left + span_word_count - 1;
-            if right > component_end || hit_index > right {
-                continue;
-            }
-            if !is_english_phrasal_particle(&words[right].text) {
-                continue;
-            }
-
-            let source_length = words[right].end - words[left].start;
-            for form in
-                english_separable_phrasal_forms(&words[left].text, &words[right].text)
-            {
-                let mut entries = internal_lookup(
-                    freq_stmt,
-                    pitch_stmt,
-                    pronunciation_stmt,
-                    stmt,
-                    &form,
-                    rules,
-                    source_length,
-                    0,
-                );
-                if entries.is_empty() {
-                    continue;
-                }
-
-                let query_forms = lookup_forms(&form);
-                entries.sort_by(|left_entry, right_entry| {
-                    right_entry
-                        .source_length
-                        .cmp(&left_entry.source_length)
-                        .then_with(|| {
-                            lookup_entry_rank(left_entry, &query_forms)
-                                .cmp(&lookup_entry_rank(right_entry, &query_forms))
-                        })
-                        .then_with(|| {
-                            best_frequency_value(left_entry)
-                                .cmp(&best_frequency_value(right_entry))
-                        })
-                });
-                let word = entries
-                    .first()
-                    .map(|entry| entry.term.clone())
-                    .filter(|term| !term.is_empty())
-                    .unwrap_or(form);
-                return Some(CursorLookupResult {
-                    entries,
-                    match_start: words[left].start,
-                    match_len: source_length,
-                    word,
-                });
-            }
-        }
-    }
-
-    None
-}
-
-#[tauri::command]
-async fn scan_cursor(
-    app: tauri::AppHandle,
-    sentence: String,
-    cursor: usize,
-) -> Result<CursorLookupResult, String> {
-    let db = open_db(&app)?;
-    scan_cursor_in_db(&db, &sentence, cursor)
-}
-
-fn scan_cursor_in_db(
-    db: &Connection,
-    sentence: &str,
-    cursor: usize,
-) -> Result<CursorLookupResult, String> {
-    let rules = load_rules();
-    let chars: Vec<char> = sentence.chars().collect();
-    if chars.is_empty() {
-        return Err("Empty sentence".into());
-    }
-    let cursor = std::cmp::min(cursor, chars.len().saturating_sub(1));
-    let mut best_start = cursor;
-    let mut best_score: Option<(u8, u8, u8, usize, u8, usize, std::cmp::Reverse<usize>)> = None;
-    let mut best_entries = Vec::new();
-    let starts = scan_start_candidates(&chars, cursor);
-
-    let mut freq_stmt = db.prepare("SELECT dict_name, display_value, value FROM frequencies WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') ORDER BY CASE WHEN value > 0 THEN 0 ELSE 1 END, value ASC LIMIT 32").map_err(|e| e.to_string())?;
-    let mut pitch_stmt = db.prepare("SELECT dict_name, position, reading FROM pitches WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') LIMIT 16").map_err(|e| e.to_string())?;
-    let mut pronunciation_stmt = db.prepare("SELECT dict_name, reading, ipa, tags FROM pronunciations WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') LIMIT 32").map_err(|e| e.to_string())?;
-    let mut stmt = db.prepare("SELECT e.term, e.reading, e.definition, e.dict_name, e.tags FROM entries e WHERE e.term != '' AND (e.term IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) OR (e.reading != '' AND e.reading IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8))) ORDER BY CASE WHEN e.term = ?1 THEN 0 WHEN e.reading = ?1 THEN 1 WHEN e.term IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 2 WHEN e.reading IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 3 ELSE 4 END, e.id ASC LIMIT 80").map_err(|e| e.to_string())?;
-
-    if let Some(result) = scan_english_phrase_in_db(
-        &chars,
-        cursor,
-        &mut freq_stmt,
-        &mut pitch_stmt,
-        &mut pronunciation_stmt,
-        &mut stmt,
-        &rules,
-    ) {
-        return Ok(result);
-    }
-
-    if let Some((start, len)) = english_token_bounds(&chars, cursor) {
-        let word: String = chars[start..start + len].iter().collect();
-        let mut entries = internal_lookup(
-            &mut freq_stmt,
-            &mut pitch_stmt,
-            &mut pronunciation_stmt,
-            &mut stmt,
-            &word,
-            &rules,
-            len,
-            0,
-        );
-        if entries.is_empty() {
-            let lower = word.to_lowercase();
-            if lower != word {
-                entries = internal_lookup(
-                    &mut freq_stmt,
-                    &mut pitch_stmt,
-                    &mut pronunciation_stmt,
-                    &mut stmt,
-                    &lower,
-                    &rules,
-                    len,
-                    0,
-                );
-            }
-        }
-        if !entries.is_empty() {
-            let query_forms = lookup_forms(&word);
-            entries.sort_by(|a, b| {
-                b.source_length
-                    .cmp(&a.source_length)
-                    .then_with(|| {
-                        lookup_entry_rank(a, &query_forms).cmp(&lookup_entry_rank(b, &query_forms))
-                    })
-                    .then_with(|| best_frequency_value(a).cmp(&best_frequency_value(b)))
-            });
-            return Ok(CursorLookupResult {
-                entries,
-                match_start: start,
-                match_len: len,
-                word,
-            });
-        }
-    }
-
-    for start in starts {
-        let max_len = std::cmp::min(12, chars.len() - start);
-        let mut current_start_entries = Vec::new();
-        let mut current_len = 0;
-        let mut current_score: Option<(
-            u8,
-            u8,
-            u8,
-            usize,
-            u8,
-            usize,
-            std::cmp::Reverse<usize>,
-        )> = None;
-        for len in 1..=max_len {
-            if start + len <= cursor {
-                continue;
-            }
-            let sub_chars = &chars[start..start + len];
-            if sub_chars.iter().any(|c| is_lookup_punctuation(*c)) {
-                continue;
-            }
-            let sub: String = sub_chars.iter().collect();
-            if len < 2 && !has_kanji(&sub) {
-                continue;
-            }
-            let mut entries = internal_lookup(
-                &mut freq_stmt,
-                &mut pitch_stmt,
-                &mut pronunciation_stmt,
-                &mut stmt,
-                &sub,
-                &rules,
-                len,
-                LOOKUP_SCAN_DEINFLECT_DEPTH,
-            );
-            if entries.is_empty() {
-                entries = lookup_numeric_prefix_fallback(
-                    &mut freq_stmt,
-                    &mut pitch_stmt,
-                    &mut pronunciation_stmt,
-                    &mut stmt,
-                    sub_chars,
-                    &rules,
-                    len,
-                    LOOKUP_SCAN_DEINFLECT_DEPTH,
-                );
-            }
-            if entries.is_empty() || !entries_have_definition(&entries) {
-                let fallback = lookup_emphatic_do_prefix_fallback(
-                    &mut freq_stmt,
-                    &mut pitch_stmt,
-                    &mut pronunciation_stmt,
-                    &mut stmt,
-                    sub_chars,
-                    &rules,
-                    len,
-                    LOOKUP_SCAN_DEINFLECT_DEPTH,
-                );
-                if entries.is_empty() || entries_have_definition(&fallback) {
-                    entries = fallback;
-                }
-            }
-            if is_plain_katakana_lookup(&sub) {
-                entries = keep_literal_kana_entries(entries, &sub);
-            }
-            if !entries.is_empty() {
-                let distance = cursor.saturating_sub(start);
-                let single_kanji_penalty = if len == 1 && has_kanji(&sub) { 2 } else { 0 };
-                let deinflection_depth = entries
-                    .iter()
-                    .map(|entry| scan_entry_morphology_cost(entry, &sub))
-                    .min()
-                    .unwrap_or(usize::MAX);
-                let score = (
-                    if entries_have_definition(&entries) {
-                        0
-                    } else {
-                        1
-                    },
-                    single_kanji_penalty,
-                    scan_end_boundary_penalty(&chars, start, len, cursor),
-                    deinflection_depth,
-                    scan_start_boundary_penalty(&chars, start, cursor),
-                    distance,
-                    std::cmp::Reverse(len),
-                );
-                if current_score.map(|best| score < best).unwrap_or(true) {
-                    current_score = Some(score);
-                    current_len = len;
-                    current_start_entries = entries;
-                }
-            }
-        }
-        if current_len > 0 {
-            let score = current_score.unwrap_or((
-                1,
-                3,
-                3,
-                usize::MAX,
-                scan_start_boundary_penalty(&chars, start, cursor),
-                cursor.saturating_sub(start),
-                std::cmp::Reverse(current_len),
-            ));
-            if best_score.map(|best| score < best).unwrap_or(true) {
-                best_score = Some(score);
-                best_start = start;
-                best_entries = current_start_entries;
-            }
-        }
-    }
-    if let Some((_, _, _, _, _, _, std::cmp::Reverse(best_len))) = best_score {
-        let best_word: String = chars[best_start..best_start + best_len].iter().collect();
-        let query_forms = lookup_forms(&best_word);
-        best_entries.sort_by(|a, b| {
-            b.source_length
-                .cmp(&a.source_length)
-                .then_with(|| {
-                    lookup_entry_rank(a, &query_forms).cmp(&lookup_entry_rank(b, &query_forms))
-                })
-                .then_with(|| best_frequency_value(a).cmp(&best_frequency_value(b)))
-        });
-        Ok(CursorLookupResult {
-            entries: best_entries,
-            match_start: best_start,
-            match_len: best_len,
-            word: chars[best_start..best_start + best_len].iter().collect(),
-        })
-    } else {
-        Err("No match".into())
-    }
-}
-
 #[cfg(target_os = "windows")]
 fn get_icon_as_base64(path: &str) -> Option<String> {
     let wide_path: Vec<u16> = std::ffi::OsStr::new(path)
@@ -5420,7 +2275,12 @@ fn xdg_data_dirs() -> Vec<PathBuf> {
     }
     let system = std::env::var("XDG_DATA_DIRS")
         .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
-    dirs.extend(system.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
+    dirs.extend(
+        system
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from),
+    );
     dirs
 }
 
@@ -5455,8 +2315,9 @@ fn desktop_entry_icons() -> &'static HashMap<String, String> {
                         if icon.is_none() {
                             icon = Some(value.trim().to_string());
                         }
-                    } else if let Some(value) =
-                        line.strip_prefix("Exec=").or_else(|| line.strip_prefix("TryExec="))
+                    } else if let Some(value) = line
+                        .strip_prefix("Exec=")
+                        .or_else(|| line.strip_prefix("TryExec="))
                     {
                         // Exec may carry a full command line and %-field codes.
                         if let Some(program) = value.split_whitespace().next() {
@@ -6482,7 +3343,6 @@ fn publish_text_sync_line_to_state(state: &TextSyncState, text: String) -> Resul
         .map_err(|_| "Text sync seq lock failed".to_string())?;
     *seq_guard = seq_guard.saturating_add(1);
     let seq = *seq_guard;
-    drop(seq_guard);
 
     let line = TextSyncLine {
         seq,
@@ -6528,7 +3388,6 @@ fn publish_text_sync_event_to_shared(
         .map_err(|_| "Text sync seq lock failed".to_string())?;
     *seq_guard = seq_guard.saturating_add(1);
     let seq = *seq_guard;
-    drop(seq_guard);
 
     let line = TextSyncLine {
         seq,
@@ -6541,6 +3400,10 @@ fn publish_text_sync_event_to_shared(
     let mut lines = lines_state
         .lock()
         .map_err(|_| "Text sync buffer lock failed".to_string())?;
+    // A state event is a complete workspace, so every older state/line is
+    // superseded. Retaining 500 snapshots multiplied history by 500 and sent
+    // them all to a reconnecting WebView in one giant response.
+    if line.kind == "state" { lines.clear(); }
     lines.push_back(line.clone());
     while lines.len() > 500 {
         lines.pop_front();
@@ -7462,6 +4325,22 @@ async fn take_smart_screenshot(
 mod tests {
     use super::*;
 
+    #[test]
+    fn text_sync_retains_only_the_latest_full_workspace() {
+        let lines = Arc::new(Mutex::new(VecDeque::new()));
+        let seq = Arc::new(Mutex::new(0));
+        for index in 0..600 {
+            publish_text_sync_event_to_shared(&lines, &seq, "state".into(),
+                serde_json::json!({"tabs": [{"lines": [format!("snapshot {index}")]}]})).unwrap();
+        }
+        publish_text_sync_event_to_shared(&lines, &seq, "line".into(), serde_json::json!({"text": "next"})).unwrap();
+        let buffer = lines.lock().unwrap();
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(buffer[0].seq, 600);
+        assert_eq!(buffer[0].payload.as_ref().unwrap()["tabs"][0]["lines"][0], "snapshot 599");
+        assert_eq!(buffer[1].seq, 601);
+    }
+
     fn test_db() -> Connection {
         let db = Connection::open_in_memory().unwrap();
         db.execute(
@@ -7512,8 +4391,7 @@ mod tests {
         let mut pronunciation_stmt = db
             .prepare("SELECT dict_name, reading, ipa, tags FROM pronunciations WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') LIMIT 32")
             .unwrap();
-        let mut stmt = db
-            .prepare("SELECT e.term, e.reading, e.definition, e.dict_name, e.tags FROM entries e WHERE e.term != '' AND (e.term IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) OR (e.reading != '' AND e.reading IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8))) ORDER BY CASE WHEN e.term = ?1 THEN 0 WHEN e.reading = ?1 THEN 1 WHEN e.term IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 2 WHEN e.reading IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 3 ELSE 4 END, e.id ASC LIMIT 80")
+        let mut stmt = core::database::prepare_term_lookup(&db)
             .unwrap();
 
         internal_lookup(
@@ -7697,8 +4575,7 @@ mod tests {
         let mut pronunciation_stmt = db
             .prepare("SELECT dict_name, reading, ipa, tags FROM pronunciations WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') LIMIT 32")
             .unwrap();
-        let mut stmt = db
-            .prepare("SELECT e.term, e.reading, e.definition, e.dict_name, e.tags FROM entries e WHERE e.term != '' AND (e.term IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) OR (e.reading != '' AND e.reading IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8))) ORDER BY CASE WHEN e.term = ?1 THEN 0 WHEN e.reading = ?1 THEN 1 WHEN e.term IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 2 WHEN e.reading IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 3 ELSE 4 END, e.id ASC LIMIT 80")
+        let mut stmt = core::database::prepare_term_lookup(&db)
             .unwrap();
 
         let entries = internal_lookup(
@@ -7718,57 +4595,17 @@ mod tests {
     }
 
     #[test]
-    fn plain_katakana_lookup_does_not_promote_kanji_homophones() {
-        let entries = vec![
-            DictEntry {
-                term: "\u{5C3A}\u{86FE}".to_string(),
-                reading: "\u{30B7}\u{30E3}\u{30AF}\u{30AC}".to_string(),
-                definition: "geometer moth".to_string(),
-                dict_name: "test".to_string(),
-                tags: String::new(),
-                deinflection_reasons: Vec::new(),
-                frequencies: Vec::new(),
-                pitches: Vec::new(),
-                pronunciations: Vec::new(),
-                source_length: 4,
-            },
-            DictEntry {
-                term: "\u{30B7}\u{30E3}\u{30AF}\u{30AC}".to_string(),
-                reading: "\u{30B7}\u{30E3}\u{30AF}\u{30AC}".to_string(),
-                definition: "literal katakana".to_string(),
-                dict_name: "test".to_string(),
-                tags: String::new(),
-                deinflection_reasons: Vec::new(),
-                frequencies: Vec::new(),
-                pitches: Vec::new(),
-                pronunciations: Vec::new(),
-                source_length: 4,
-            },
-        ];
-
-        let filtered = keep_literal_kana_entries(entries, "\u{30B7}\u{30E3}\u{30AF}\u{30AC}");
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].term, "\u{30B7}\u{30E3}\u{30AF}\u{30AC}");
+    fn lookup_forms_keep_literal_katakana_first() {
+        let forms = lookup_forms("\u{30ea}\u{30d0}\u{30fc}\u{30b7}");
+        assert_eq!(forms[0], "\u{30ea}\u{30d0}\u{30fc}\u{30b7}");
+        assert!(forms.contains(&"\u{308a}\u{3070}\u{30fc}\u{3057}".to_string()));
     }
 
     #[test]
-    fn plain_katakana_lookup_keeps_reading_matches_without_literal_surface() {
-        let entries = vec![DictEntry {
-            term: "\u{73C8}\u{7432}".to_string(),
-            reading: "\u{30B3}\u{30FC}\u{30D2}\u{30FC}".to_string(),
-            definition: "coffee".to_string(),
-            dict_name: "test".to_string(),
-            tags: String::new(),
-            deinflection_reasons: Vec::new(),
-            frequencies: Vec::new(),
-            pitches: Vec::new(),
-            pronunciations: Vec::new(),
-            source_length: 4,
-        }];
-
-        let filtered = keep_literal_kana_entries(entries, "\u{30B3}\u{30FC}\u{30D2}\u{30FC}");
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].term, "\u{73C8}\u{7432}");
+    fn lookup_forms_include_prolonged_and_loose_yoon_readings() {
+        let forms = lookup_forms("\u{3058}\u{3085}\u{30fc}");
+        assert!(forms.contains(&"\u{3058}\u{3085}\u{3046}".to_string()));
+        assert!(forms.contains(&"\u{3058}\u{3086}\u{3046}".to_string()));
     }
 
     #[test]
@@ -7794,8 +4631,7 @@ mod tests {
         let mut pronunciation_stmt = db
             .prepare("SELECT dict_name, reading, ipa, tags FROM pronunciations WHERE term = ?1 AND (reading = ?2 OR reading = '' OR ?2 = '') LIMIT 32")
             .unwrap();
-        let mut stmt = db
-            .prepare("SELECT e.term, e.reading, e.definition, e.dict_name, e.tags FROM entries e WHERE e.term != '' AND (e.term IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) OR (e.reading != '' AND e.reading IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8))) ORDER BY CASE WHEN e.term = ?1 THEN 0 WHEN e.reading = ?1 THEN 1 WHEN e.term IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 2 WHEN e.reading IN (?2, ?3, ?4, ?5, ?6, ?7, ?8) THEN 3 ELSE 4 END, e.id ASC LIMIT 80")
+        let mut stmt = core::database::prepare_term_lookup(&db)
             .unwrap();
 
         let entries = internal_lookup(
@@ -7837,7 +4673,7 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{982C}\u{3092}\u{7D05}\u{6F6E}\u{3055}\u{305B}\u{3066}\u{3002}";
-        let result = scan_cursor_in_db(&db, sentence, 6).unwrap();
+        let result = scan_cursor_in_db(&db, sentence, 2).unwrap();
 
         assert_eq!(result.match_start, 2);
         assert_eq!(result.match_len, 5);
@@ -7865,7 +4701,7 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{30B3}\u{30F3}\u{30D3}\u{30CB}\u{3067}\u{8CB7}\u{3046}";
-        let result = scan_cursor_in_db(&db, sentence, 2).unwrap();
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
 
         assert_eq!(result.match_start, 0);
         assert_eq!(result.match_len, 4);
@@ -7890,7 +4726,7 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{30B3}\u{30FC}\u{30D2}\u{30FC}\u{3092}\u{98F2}\u{3080}";
-        let result = scan_cursor_in_db(&db, sentence, 2).unwrap();
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
 
         assert_eq!(result.match_start, 0);
         assert_eq!(result.match_len, 4);
@@ -7920,7 +4756,7 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{826F}\u{3044}\u{5177}\u{5408}\u{306B}";
-        let result = scan_cursor_in_db(&db, sentence, 3).unwrap();
+        let result = scan_cursor_in_db(&db, sentence, 2).unwrap();
 
         assert_eq!(result.match_start, 2);
         assert_eq!(result.match_len, 2);
@@ -7928,7 +4764,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_cursor_prefers_word_before_trailing_particle() {
+    fn scan_cursor_keeps_entries_for_every_matching_prefix() {
         let db = test_db();
         db.execute(
             "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, 'test', 'adj-na')",
@@ -7950,15 +4786,23 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{76DB}\u{5927}\u{306B}\u{3063}";
-        let result = scan_cursor_in_db(&db, sentence, 1).unwrap();
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
 
         assert_eq!(result.match_start, 0);
-        assert_eq!(result.match_len, 2);
-        assert_eq!(result.word, "\u{76DB}\u{5927}");
+        assert_eq!(result.match_len, 3);
+        assert_eq!(result.word, "\u{76DB}\u{5927}\u{306B}");
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| { entry.term == "\u{76DB}\u{5927}\u{306B}" && entry.source_length == 3 }));
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| { entry.term == "\u{76DB}\u{5927}" && entry.source_length == 2 }));
     }
 
     #[test]
-    fn scan_cursor_can_still_backtrack_inside_one_word() {
+    fn scan_cursor_deinflects_from_the_selected_source_start() {
         let db = test_db();
         db.execute(
             "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, 'test', '')",
@@ -7971,7 +4815,7 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{611F}\u{6168}\u{6DF1}\u{304F}";
-        let result = scan_cursor_in_db(&db, sentence, 2).unwrap();
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
 
         assert_eq!(result.match_start, 0);
         assert_eq!(result.match_len, 4);
@@ -7995,19 +4839,14 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{5F7C}\u{304C}\u{898B}\u{3048}\u{306A}\u{3044}\u{3093}\u{3060}\u{3051}\u{3069}\u{3002}";
-        for cursor in 2..6 {
-            let result = scan_cursor_in_db(&db, sentence, cursor).unwrap();
-            assert_eq!(result.match_start, 2, "cursor={cursor}");
-            assert_eq!(result.match_len, 4, "cursor={cursor}");
-            assert_eq!(
-                result.word, "\u{898B}\u{3048}\u{306A}\u{3044}",
-                "cursor={cursor}"
-            );
-            assert!(result
-                .entries
-                .iter()
-                .any(|entry| entry.term == "\u{898B}\u{3048}\u{308B}"));
-        }
+        let result = scan_cursor_in_db(&db, sentence, 2).unwrap();
+        assert_eq!(result.match_start, 2);
+        assert_eq!(result.match_len, 4);
+        assert_eq!(result.word, "\u{898B}\u{3048}\u{306A}\u{3044}");
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "\u{898B}\u{3048}\u{308B}"));
     }
 
     #[test]
@@ -8024,19 +4863,14 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{4F5C}\u{696D}\u{3092}\u{884C}\u{3044}\u{307E}\u{3059}\u{3002}";
-        for cursor in 3..7 {
-            let result = scan_cursor_in_db(&db, sentence, cursor).unwrap();
-            assert_eq!(result.match_start, 3, "cursor={cursor}");
-            assert_eq!(result.match_len, 4, "cursor={cursor}");
-            assert_eq!(
-                result.word, "\u{884C}\u{3044}\u{307E}\u{3059}",
-                "cursor={cursor}"
-            );
-            assert!(result
-                .entries
-                .iter()
-                .any(|entry| entry.term == "\u{884C}\u{3046}"));
-        }
+        let result = scan_cursor_in_db(&db, sentence, 3).unwrap();
+        assert_eq!(result.match_start, 3);
+        assert_eq!(result.match_len, 4);
+        assert_eq!(result.word, "\u{884C}\u{3044}\u{307E}\u{3059}");
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "\u{884C}\u{3046}"));
     }
 
     #[test]
@@ -8062,34 +4896,27 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{53D7}\u{3051}\u{53D6}\u{308A}\u{3092}\u{884C}\u{3046}";
-        for cursor in 0..4 {
-            let result = scan_cursor_in_db(&db, sentence, cursor).unwrap();
-            assert_eq!(result.match_start, 0, "cursor={cursor}");
-            assert_eq!(result.match_len, 4, "cursor={cursor}");
-            assert_eq!(
-                result.word, "\u{53D7}\u{3051}\u{53D6}\u{308A}",
-                "cursor={cursor}"
-            );
-            assert!(result.entries.iter().any(|entry| {
-                entry.term == "\u{53D7}\u{3051}\u{53D6}\u{308A}"
-                    && entry.deinflection_reasons.is_empty()
-            }));
-        }
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
+        assert_eq!(result.match_start, 0);
+        assert_eq!(result.match_len, 4);
+        assert_eq!(result.word, "\u{53D7}\u{3051}\u{53D6}\u{308A}");
+        assert!(result.entries.iter().any(|entry| {
+            entry.term == "\u{53D7}\u{3051}\u{53D6}\u{308A}"
+                && entry.deinflection_reasons.is_empty()
+        }));
 
         let polite_sentence = "\u{53D7}\u{3051}\u{53D6}\u{308A}\u{307E}\u{3059}\u{3002}";
-        for cursor in 0..6 {
-            let result = scan_cursor_in_db(&db, polite_sentence, cursor).unwrap();
-            assert_eq!(result.match_start, 0, "cursor={cursor}");
-            assert_eq!(result.match_len, 6, "cursor={cursor}");
-            assert_eq!(
-                result.word, "\u{53D7}\u{3051}\u{53D6}\u{308A}\u{307E}\u{3059}",
-                "cursor={cursor}"
-            );
-            assert!(result
-                .entries
-                .iter()
-                .any(|entry| entry.term == "\u{53D7}\u{3051}\u{53D6}\u{308B}"));
-        }
+        let result = scan_cursor_in_db(&db, polite_sentence, 0).unwrap();
+        assert_eq!(result.match_start, 0);
+        assert_eq!(result.match_len, 6);
+        assert_eq!(
+            result.word,
+            "\u{53D7}\u{3051}\u{53D6}\u{308A}\u{307E}\u{3059}"
+        );
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "\u{53D7}\u{3051}\u{53D6}\u{308B}"));
     }
 
     #[test]
@@ -8115,16 +4942,14 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{7A81}\u{3063}\u{5F35}\u{308A}\u{306E}\u{56DE}\u{8EE2}\u{901F}\u{5EA6}";
-        for cursor in 0..4 {
-            let result = scan_cursor_in_db(&db, sentence, cursor).unwrap();
-            assert_eq!(result.match_start, 0, "cursor={cursor}");
-            assert_eq!(result.match_len, 4, "cursor={cursor}");
-            assert_eq!(result.word, "\u{7A81}\u{3063}\u{5F35}\u{308A}", "cursor={cursor}");
-            assert!(result
-                .entries
-                .iter()
-                .any(|entry| entry.term == "\u{7A81}\u{3063}\u{5F35}\u{308B}"));
-        }
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
+        assert_eq!(result.match_start, 0);
+        assert_eq!(result.match_len, 4);
+        assert_eq!(result.word, "\u{7A81}\u{3063}\u{5F35}\u{308A}");
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "\u{7A81}\u{3063}\u{5F35}\u{308B}"));
     }
 
     #[test]
@@ -8174,19 +4999,14 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{3072}\u{3088}\u{3063}\u{305F}\u{3002}";
-        let result = scan_cursor_in_db(&db, sentence, 1).unwrap();
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
 
         assert_eq!(result.match_start, 0);
         assert_eq!(result.match_len, 4);
         assert_eq!(result.entries[0].term, "\u{65E5}\u{548C}\u{308B}");
-        assert!(!result
-            .entries
-            .iter()
-            .any(|entry| entry.term == "\u{5E72}\u{308B}"));
-        assert!(!result
-            .entries
-            .iter()
-            .any(|entry| entry.term == "\u{98DB}\u{63DA}"));
+        assert!(result.entries.iter().any(|entry| {
+            entry.term == "\u{5E72}\u{308B}" && entry.source_length < result.match_len
+        }));
     }
 
     #[test]
@@ -8213,14 +5033,11 @@ mod tests {
 
         let sentence = "\u{826F}\u{3044}\u{5177}\u{5408}\u{306B}\u{4F55}\u{304B}";
         let result = scan_cursor_in_db(&db, sentence, 2).unwrap();
-        let result_inside_noun = scan_cursor_in_db(&db, sentence, 3).unwrap();
 
         assert_eq!(result.match_start, 2);
         assert_eq!(result.match_len, 2);
         assert_eq!(result.word, "\u{5177}\u{5408}");
-        assert_eq!(result_inside_noun.match_start, 2);
-        assert_eq!(result_inside_noun.match_len, 2);
-        assert_eq!(result_inside_noun.word, "\u{5177}\u{5408}");
+        assert!(scan_cursor_in_db(&db, sentence, 3).is_err());
     }
 
     #[test]
@@ -8249,7 +5066,252 @@ mod tests {
     }
 
     #[test]
-    fn scan_cursor_falls_back_from_emphatic_do_when_exact_hit_has_only_metadata() {
+    fn scan_cursor_prefers_the_full_inflected_source_over_a_short_exact_prefix() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, 'test', 'adj-na')",
+            params!["可愛", "かわい", "cute"],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, 'test', 'v5r vt')",
+            params!["可愛がる", "かわいがる", "to love; to cherish"],
+        )
+        .unwrap();
+
+        let sentence = "可愛がりたい！";
+        let direct = lookup_in_test_db(&db, "可愛がりたい", 6, LOOKUP_SCAN_DEINFLECT_DEPTH);
+        assert!(
+            direct.iter().any(|entry| entry.term == "可愛がる"),
+            "direct deinflection missed 可愛がる: {:?}",
+            direct
+                .iter()
+                .map(|entry| (&entry.term, &entry.tags, entry.deinflection_reasons.len()))
+                .collect::<Vec<_>>()
+        );
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
+        assert_eq!(result.match_start, 0);
+        assert_eq!(result.match_len, 6);
+        assert_eq!(result.entries[0].term, "可愛がる");
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "可愛" && entry.source_length == 2));
+    }
+
+    #[test]
+    fn scan_cursor_keeps_an_exact_compound_instead_of_its_verb_prefix() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, 'test', 'v5r')",
+            params!["乗る", "のる", "to ride"],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, 'test', 'n adj-na')",
+            params!["乗り気", "のりき", "interest; enthusiasm"],
+        )
+        .unwrap();
+
+        let sentence = "乗り気だな";
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
+        assert_eq!(result.match_start, 0);
+        assert_eq!(result.match_len, 3);
+        assert_eq!(result.entries[0].term, "乗り気");
+    }
+
+    #[test]
+    fn scan_cursor_returns_all_katakana_prefix_groups() {
+        let db = test_db();
+        for (term, definition) in [
+            ("リバーシ", "Reversi"),
+            ("リバー", "liver; river"),
+            ("リバ", "reversible"),
+        ] {
+            db.execute(
+                "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?1, ?2, 'test', 'n')",
+                params![term, definition],
+            )
+            .unwrap();
+        }
+
+        let result = scan_cursor_in_db(&db, "リバーシを始める", 0).unwrap();
+        assert_eq!(result.word, "リバーシ");
+        assert_eq!(result.match_len, 4);
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "リバーシ" && entry.source_length == 4));
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "リバー" && entry.source_length == 3));
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "リバ" && entry.source_length == 2));
+    }
+
+    #[test]
+    fn scan_cursor_uses_longest_kana_reading_and_keeps_shorter_homophones() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES ('制限', 'せいげん', 'restriction', 'test', 'n')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES ('所為', 'せい', 'cause', 'test', 'n')",
+            [],
+        )
+        .unwrap();
+
+        let result = scan_cursor_in_db(&db, "せいげんを超える", 0).unwrap();
+        assert_eq!(result.word, "せいげん");
+        assert_eq!(result.match_len, 4);
+        assert_eq!(result.entries[0].term, "制限");
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "所為" && entry.source_length == 2));
+    }
+
+    #[test]
+    #[ignore = "requires SETSUNA_REAL_DICTIONARY_DB"]
+    fn real_dictionary_lookup_regressions() {
+        let path = std::env::var("SETSUNA_REAL_DICTIONARY_DB")
+            .expect("SETSUNA_REAL_DICTIONARY_DB must point to dictionary.db");
+        let db = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .unwrap();
+
+        let kawaii = scan_cursor_in_db(&db, "可愛がりたい！", 0).unwrap();
+        assert_eq!(kawaii.word, "可愛がりたい");
+        assert!(kawaii.entries.iter().any(|entry| entry.term == "可愛がる"));
+
+        let hibi = scan_cursor_in_db(&db, "こころどころヒビだらけで、いまにもくずれちゃいそうです", 6).unwrap();
+        assert_eq!(hibi.word, "ヒビ");
+        assert_ne!(hibi.entries[0].term, "日々");
+        assert!(hibi.entries.iter().any(|entry| entry.term == "罅"));
+        println!("Hibi first headword: {} ({})", hibi.entries[0].term, hibi.entries[0].dict_name);
+
+        let noriki = scan_cursor_in_db(&db, "乗り気だな", 0).unwrap();
+        assert_eq!(noriki.word, "乗り気");
+        assert!(noriki.entries.iter().any(|entry| entry.term == "乗り気"));
+
+        let doji = scan_cursor_in_db(&db, "そんなにドジじゃない。", 4).unwrap();
+        assert_eq!(doji.word, "ドジ");
+        assert_eq!(doji.match_len, 2);
+        assert!(doji.entries.iter().any(|entry| entry.reading == "どじ"));
+        assert!(!doji.entries.iter().any(|entry| entry.term == "爺"));
+
+        let seigen = scan_cursor_in_db(&db, "せいげんを超える", 0).unwrap();
+        assert_eq!(seigen.word, "せいげん");
+        assert_eq!(seigen.match_len, 4);
+        assert!(seigen.entries.iter().any(|entry| entry.term == "制限"));
+        assert!(seigen
+            .entries
+            .iter()
+            .any(|entry| entry.term == "所為" && entry.source_length == 2));
+
+        let long_vowel = scan_cursor_in_db(&db, "じゅーが必要", 0).unwrap();
+        assert_eq!(long_vowel.word, "じゅー");
+        assert!(long_vowel
+            .entries
+            .iter()
+            .any(|entry| entry.term == "事由" || entry.term == "自由"));
+        assert!(!long_vowel.entries.is_empty());
+
+        let reversi = scan_cursor_in_db(&db, "リバーシを始める", 0).unwrap();
+        assert_eq!(reversi.word, "リバーシ");
+        assert!(reversi
+            .entries
+            .iter()
+            .any(|entry| entry.term == "リバーシ" && entry.source_length == 4));
+        assert!(reversi
+            .entries
+            .iter()
+            .any(|entry| entry.term == "リバー" && entry.source_length == 3));
+        assert!(reversi
+            .entries
+            .iter()
+            .any(|entry| entry.term == "リバ" && entry.source_length == 2));
+    }
+
+    #[test]
+    fn scan_cursor_uses_yomitan_grammar_for_long_and_halfwidth_inflections() {
+        let mut db = test_db();
+        core::database::ensure_canonical_schema(&mut db).unwrap();
+        db.execute("INSERT INTO entries (term, reading, definition, dict_name, tags, lookup_rules, score)
+            VALUES ('食べる', 'たべる', '[\"eat\"]', 'Grammar', 'custom-display-tag', 'v1', 10)", []).unwrap();
+        db.execute("INSERT INTO entries (term, reading, definition, dict_name, tags, lookup_rules)
+            VALUES ('食べる', 'たべる', '[\"noun homograph\"]', 'Nouns', 'v1', '')", []).unwrap();
+        for surface in ["食べさせられませんでした", "ﾀﾍﾞﾀ"] {
+            let result = scan_cursor_in_db(&db, &format!("{surface}。"), 0).unwrap();
+            assert_eq!(result.word, surface);
+            assert!(result.entries.iter().any(|entry| entry.term == "食べる" && entry.dict_name == "Grammar"));
+            assert!(!result.entries.iter().any(|entry| entry.dict_name == "Nouns"));
+        }
+    }
+
+    #[test]
+    fn scan_cursor_respects_dictionary_score_for_equivalent_entries() {
+        let mut db = test_db();
+        core::database::ensure_canonical_schema(&mut db).unwrap();
+        db.execute("INSERT INTO entries (term, reading, definition, dict_name, score) VALUES
+            ('橋', 'はし', '[\"bridge\"]', 'Test', 1), ('箸', 'はし', '[\"chopsticks\"]', 'Test', 50)", []).unwrap();
+        let result = scan_cursor_in_db(&db, "はし", 0).unwrap();
+        assert_eq!(result.entries[0].term, "箸");
+    }
+
+    #[test]
+    fn scan_cursor_keeps_do_in_doji_before_ja_nai() {
+        let db = test_db();
+        db.execute("INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES
+            ('ドジ', 'どじ', 'clumsy', 'test', 'n'),
+            ('爺', 'じじ', 'old man', 'test', 'n')", []).unwrap();
+
+        for sentence in ["ドジじゃない", "そんなにドジじゃない。"] {
+            let cursor = sentence.chars().position(|ch| ch == 'ド').unwrap();
+            let result = scan_cursor_in_db(&db, sentence, cursor).unwrap();
+            assert_eq!(result.word, "ドジ");
+            assert_eq!((result.match_start, result.match_len), (cursor, 2));
+            assert_eq!(result.entries[0].term, "ドジ");
+            assert!(!result.entries.iter().any(|entry| entry.term == "爺"));
+        }
+    }
+
+    #[test]
+    fn scan_cursor_prioritizes_kana_headwords_over_frequent_kanji_homophones() {
+        let db = test_db();
+        db.execute_batch("INSERT INTO entries(term,reading,definition,dict_name,tags) VALUES
+            ('日々','ひび','every day','test','n'),('ひび','ひび','crack','test','n'),
+            ('ヒビ','ひび','crack in katakana','test','n'),('ビ','び','second character','test','n');
+            INSERT INTO frequencies(term,reading,dict_name,display_value,value) VALUES
+            ('日々','ひび','freq','1',1),('ひび','ひび','freq','20000',20000),('ヒビ','ひび','freq','30000',30000);").unwrap();
+        for surface in ["ヒビ", "ひび", "ﾋﾋﾞ"] {
+            let result = scan_cursor_in_db(&db, &format!("{surface}だらけで、いまにもくずれちゃいそうです"), 0).unwrap();
+            assert_ne!(result.entries[0].term, "日々", "{surface}");
+            assert!(result.entries.iter().any(|entry| entry.term == "日々"));
+            assert_eq!(result.match_start, 0);
+        }
+        assert_eq!(scan_cursor_in_db(&db, "ヒビだらけ", 1).unwrap().entries[0].term, "ビ");
+        db.execute("DELETE FROM entries WHERE term='ヒビ'", []).unwrap();
+        assert_eq!(scan_cursor_in_db(&db, "ヒビだらけ", 0).unwrap().entries[0].term, "ひび");
+    }
+
+    #[test]
+    fn scan_cursor_does_not_invent_do_prefixed_headwords() {
+        let db = test_db();
+        db.execute("INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES
+            ('爺', 'じじ', 'old man', 'test', 'n')", []).unwrap();
+        assert!(scan_cursor_in_db(&db, "ドジじゃない", 0).is_err());
+    }
+
+    #[test]
+    fn scan_cursor_preserves_do_even_when_exact_hit_has_only_metadata() {
         let db = test_db();
         db.execute(
             "INSERT INTO frequencies (term, reading, value, display_value, dict_name) VALUES (?1, '', 22740, '22740', 'frequency')",
@@ -8267,16 +5329,22 @@ mod tests {
         .unwrap();
 
         let sentence = "\u{30C9}\u{5909}\u{614B}\u{304C}\u{3042}\u{3063}\u{305F}";
-        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
-
-        assert_eq!(result.match_start, 0);
-        assert_eq!(result.match_len, 3);
-        assert_eq!(result.word, "\u{30C9}\u{5909}\u{614B}");
+        assert!(scan_cursor_in_db(&db, sentence, 0).is_err());
+        let result = scan_cursor_in_db(&db, sentence, 1).unwrap();
+        assert_eq!(result.match_start, 1);
+        assert_eq!(result.match_len, 2);
+        assert_eq!(result.word, "変態");
         assert!(result.entries.iter().any(|entry| {
             entry.term == "\u{5909}\u{614B}"
                 && entry.definition == "pervert"
-                && entry.source_length == 3
+                && entry.source_length == 2
         }));
+
+        db.execute("INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES
+            ('ド変態', 'どへんたい', 'complete pervert', 'test', 'n')", []).unwrap();
+        let full = scan_cursor_in_db(&db, sentence, 0).unwrap();
+        assert_eq!(full.word, "ド変態");
+        assert_eq!(full.entries[0].term, "ド変態");
     }
 
     #[test]
@@ -8441,7 +5509,7 @@ mod tests {
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn show_main_from_tray(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -8454,7 +5522,7 @@ fn hide_windows_to_tray(app: &AppHandle) {
     let discord_state = app.state::<DiscordPresenceState>();
     let _ = clear_discord_runtime(discord_state.inner());
     let _ = app.emit("setsuna://tray-state", true);
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.hide();
     }
     if let Some(window) = app.get_webview_window("jl_mode") {
@@ -8462,12 +5530,6 @@ fn hide_windows_to_tray(app: &AppHandle) {
     }
     if let Some(window) = app.get_webview_window("jl_lookup") {
         let _ = window.hide();
-    }
-    let state = app.state::<BrowserState>();
-    if let Ok(tabs) = state.inner().tabs.try_lock() {
-        for window in tabs.values() {
-            let _ = window.hide();
-        }
     }
 }
 
@@ -8566,9 +5628,6 @@ fn main() {
 
     install_panic_logger();
 
-    let browser_state = BrowserState {
-        tabs: Mutex::new(HashMap::new()),
-    };
     let foreground_history = ForegroundHistory {
         hwnds: Mutex::new(VecDeque::with_capacity(24)),
     };
@@ -8625,7 +5684,6 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(browser_state)
         .manage(foreground_history)
         .manage(capture_agent_state)
         .manage(text_sync_state)
@@ -8634,20 +5692,30 @@ fn main() {
         .manage(jl_mode_state)
         .manage(jl_lookup_state)
         .manage(flow_timer_state)
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+            let handler: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> = Box::new(tauri::generate_handler![
+            #[cfg(feature = "private-reader")]
+            yatsu::set_yatsu_workspace,
+            #[cfg(feature = "private-reader")]
+            yatsu::show_yatsu_lookup,
+            #[cfg(feature = "private-reader")]
+            yatsu::dismiss_yatsu_lookup,
+            #[cfg(feature = "private-reader")]
+            yatsu::get_yatsu_request,
+            #[cfg(feature = "private-reader")]
+            yatsu::highlight_yatsu_match,
+            local_audio::inspect_local_audio_database,
+            local_audio::lookup_local_audio,
+            local_audio::lookup_online_audio,
             import_dictionary,
             import_dictionaries,
             import_epub,
             get_diagnostics_log_path,
             log_frontend_diagnostics,
-            lookup_word,
-            lookup_cambridge_api,
-            get_installed_dicts,
-            check_dictionary_updates,
-            update_dictionary_from_source,
-            manage_browser,
-            emit_browser_meta,
-            get_browser_info,
+            dictionary_engine::lookup_word,
+            dictionary_engine::get_installed_dicts,
+            dictionary_engine::check_dictionary_updates,
+            dictionary_engine::update_dictionary_from_source,
             open_jl_mode_window,
             close_jl_mode_window,
             show_jl_lookup_window,
@@ -8672,11 +5740,11 @@ fn main() {
             anki_request,
             configure_ankiconnect,
             extract_player_clip,
-            delete_dictionary,
-            delete_dictionaries,
-            clear_database,
-            get_furigana,
-            scan_cursor,
+            dictionary_engine::delete_dictionary,
+            dictionary_engine::delete_dictionaries,
+            dictionary_engine::clear_database,
+            dictionary_engine::get_furigana,
+            dictionary_engine::scan_cursor,
             start_oauth_server,
             store_google_refresh_token,
             load_google_refresh_token,
@@ -8715,8 +5783,22 @@ fn main() {
             cancel_lookup_region_capture,
             finish_lookup_region_capture,
             update_lookup_agent_shortcut
-        ])
+            ]);
+            move |invoke: tauri::ipc::Invoke| {
+                // App commands do not require an ACL manifest by default in Tauri.
+                // The external reader must never gain access to the filesystem,
+                // credentials, Anki commands or other application IPC.
+                #[cfg(feature = "private-reader")]
+                if invoke.message.webview().label() == "yatsu_reader" {
+                    invoke.resolver.reject("Native commands are disabled in the external reader");
+                    return true;
+                }
+                handler(invoke)
+            }
+        })
         .setup(|app| {
+            #[cfg(feature = "private-reader")]
+            app.manage(yatsu::YatsuState::default());
             start_diagnostics_logger(app.handle().clone());
 
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -8743,30 +5825,13 @@ fn main() {
 
             if let Some(main_win) = app.get_webview_window("main") {
                 sanitize_main_window_size(&main_win);
+                #[cfg(target_os = "windows")]
+                webview_recovery::install(&main_win);
 
                 let app_handle = app.handle().clone();
-                let main_win_for_events = main_win.clone();
 
                 main_win.on_window_event(move |event| {
-                    let state = app_handle.state::<BrowserState>();
-
                     match event {
-                        tauri::WindowEvent::Focused(focused) => {
-                            if let Ok(tabs) = state.inner().tabs.try_lock() {
-                                for window in tabs.values() {
-                                    let _ = window.set_always_on_top(*focused);
-                                }
-                            }
-
-                            if !focused && main_win_for_events.is_minimized().unwrap_or(false) {
-                                if let Ok(tabs) = state.inner().tabs.try_lock() {
-                                    for window in tabs.values() {
-                                        let _ = window.hide();
-                                    }
-                                }
-                            }
-                        }
-
                         tauri::WindowEvent::CloseRequested { api, .. } => {
                             if !APP_EXIT_REQUESTED.load(Ordering::SeqCst) {
                                 api.prevent_close();
@@ -8777,13 +5842,6 @@ fn main() {
                         tauri::WindowEvent::Destroyed => {
                             if let Some(window) = app_handle.get_webview_window("jl_mode") {
                                 let _ = window.close();
-                            }
-                            if let Ok(mut tabs) = state.inner().tabs.try_lock() {
-                                let windows: Vec<_> = tabs.drain().map(|(_, w)| w).collect();
-                                drop(tabs);
-                                for window in windows {
-                                    let _ = window.close();
-                                }
                             }
                         }
 

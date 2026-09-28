@@ -97,12 +97,7 @@ async fn ensure_accessibility_enabled() -> Result<(), String> {
             .map_err(|error| localized(ERR_ACCESSIBILITY, error))?;
     }
     // Qt in particular keys off the screen-reader flag rather than IsEnabled.
-    if proxy
-        .get_property::<bool>("ScreenReaderEnabled")
-        .await
-        .ok()
-        != Some(true)
-    {
+    if proxy.get_property::<bool>("ScreenReaderEnabled").await.ok() != Some(true) {
         proxy
             .set_property("ScreenReaderEnabled", true)
             .await
@@ -145,7 +140,10 @@ async fn deepest_at_point(
         let Ok(component) = interfaces.component().await else {
             break;
         };
-        let child = match component.get_accessible_at_point(x, y, CoordType::Screen).await {
+        let child = match component
+            .get_accessible_at_point(x, y, CoordType::Screen)
+            .await
+        {
             Ok(child) if !child.is_null() => child,
             _ => break,
         };
@@ -382,7 +380,9 @@ mod tests {
                 let Some(pending) = build_proxy(&connection, &app) else {
                     continue;
                 };
-                let Ok(app_proxy) = pending.await else { continue };
+                let Ok(app_proxy) = pending.await else {
+                    continue;
+                };
                 let app_name = app_proxy.name().await.unwrap_or_default();
 
                 // Breadth-limited walk looking for anything with text.

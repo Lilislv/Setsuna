@@ -4,6 +4,7 @@
 };
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { invoke } from '@tauri-apps/api/core';
+import { resolveDictionaryAudio, type LocalAudioClip } from './dictionaryAudio';
 
 type AnkiDroidBridge = {
     isAvailable: () => string;
@@ -286,7 +287,11 @@ export const splitJapaneseFurigana = (term: string, reading: string): FuriganaCh
         let blockReading = "";
 
         if (nextLiteral) {
-            const nextPos = reading.indexOf(nextLiteral, readingIndex);
+            // Final okurigana is a suffix. Its first occurrence may instead be
+            // part of the kanji reading, e.g. 祝[いわ]い in お祝い.
+            const nextPos = probe === term.length && reading.endsWith(nextLiteral)
+                ? reading.length - nextLiteral.length
+                : reading.indexOf(nextLiteral, readingIndex);
             if (nextPos >= readingIndex) {
                 blockReading = reading.slice(readingIndex, nextPos);
                 readingIndex = nextPos;
@@ -317,8 +322,10 @@ export const formatLapisFurigana = (term: string, reading: string): string => {
             prev &&
             !prev.reading &&
             prev.text.length > 0 &&
-            !/^[ぁ-ゖァ-ヺーの]+$/.test(prev.text)
+            !/\s$/.test(prev.text)
         ) {
+            // Anki treats everything since the last space as the ruby base,
+            // including kana: むず 痒[がゆ]い must keep むず outside the ruby.
             parts.push(" ");
         }
 
@@ -363,6 +370,8 @@ const isSameReading = (
 
     if (clean === expectedReading) return true;
     if (clean === expectedLapis) return true;
+    // Recognize cards exported before ruby-base separators were corrected.
+    if (clean.replace(/\s+/g, '') === expectedLapis.replace(/\s+/g, '')) return true;
     if (clean.includes(`[${expectedReading}]`)) return true;
     if (extractReadingFromLapis(clean) === expectedReading) return true;
 
@@ -386,6 +395,9 @@ type AnkiCheckPair = {
 
 export const addNote = async (settings: any, noteData: any) => {
     const fields: Record<string, string> = {};
+    const bridge = getAnkiDroidBridge();
+    let localAudio: LocalAudioClip | null = null;
+    let audioWarning: string | undefined;
 
     const rawWord = noteData.word || "";
     const rawReading = noteData.rawReading || noteData.reading || "";
@@ -433,7 +445,24 @@ export const addNote = async (settings: any, noteData: any) => {
     };
 
     const safeWord = String(rawWord || "clip").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 48);
-    if (noteData.audioPath && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
+    if (!noteData.audioPath && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
+        try {
+            const audio = await resolveDictionaryAudio(settings, rawWord, rawReading);
+            if (audio.kind !== 'none' && audio.clip) localAudio = audio.clip;
+            else if (audio.kind === 'online') noteData = { ...noteData, audioUrl: audio.url };
+            else {
+                noteData = { ...noteData, audioUrl: undefined };
+                audioWarning = settings.appLanguage === 'en' ? 'Card added without audio: no recording found in the selected sources.' : 'Карточка добавлена без озвучки: в выбранных источниках запись не найдена.';
+            }
+        } catch (error: any) { return { error: error?.message || String(error) }; }
+    }
+    if (localAudio && !bridge) {
+        try {
+            const storedName = await invokeAnki('storeMediaFile', { filename: localAudio.filename, data: localAudio.data });
+            if (typeof storedName !== 'string' || !storedName) throw new Error('Anki did not store the recording');
+            fields[settings.ankiFieldAudio] = `${fields[settings.ankiFieldAudio] || ''} [sound:${storedName}]`.trim();
+        } catch (error: any) { return { error: error?.message || String(error) }; }
+    } else if (noteData.audioPath && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
         const filename = noteData.audioFilename || `setsuna_player_${safeWord}_${Date.now()}${noteData.audioMediaType === 'video' ? '.mp4' : '.mp3'}`;
         try {
             await invokeAnki('storeMediaFile', {
@@ -445,7 +474,7 @@ export const addNote = async (settings: any, noteData: any) => {
         } catch (error: any) {
             return { error: error.message };
         }
-    } else if (noteData.audioUrl && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
+    } else if (!localAudio && noteData.audioUrl && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
         note.audio = [
             {
                 url: noteData.audioUrl,
@@ -470,7 +499,6 @@ export const addNote = async (settings: any, noteData: any) => {
         ];
     }
 
-    const bridge = getAnkiDroidBridge();
     if (bridge) {
         try {
             const payload = {
@@ -485,12 +513,15 @@ export const addNote = async (settings: any, noteData: any) => {
                         ? settings.ankiFieldScreenshot
                         : "",
                 screenshotBase64: noteData.screenshot || "",
+                audioField: localAudio ? settings.ankiFieldAudio : '',
+                audioBase64: localAudio?.data || '',
+                audioFilename: localAudio?.filename || '',
             };
             const result = parseBridgeResult<{ result: number | null }>(
                 bridge.addNote(JSON.stringify(payload)),
             );
             wordStatusCache.clear();
-            return { result: result.result };
+            return { result: result.result, warning: audioWarning };
         } catch (error: any) {
             return { error: error.message || String(error) };
         }
@@ -499,7 +530,7 @@ export const addNote = async (settings: any, noteData: any) => {
     try {
         const result = await invokeAnki('addNote', { note });
         wordStatusCache.clear();
-        return { result };
+        return { result, warning: audioWarning };
     } catch (error: any) {
         if (note.audio?.length) {
             const audioError = error?.message || String(error);

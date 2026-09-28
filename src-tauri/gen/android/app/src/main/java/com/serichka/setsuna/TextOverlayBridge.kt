@@ -10,8 +10,19 @@ import org.json.JSONObject
 
 class TextOverlayBridge(private val activity: Activity) {
     @JavascriptInterface
+    fun timerSnapshot(): String = NativeDictionary.flowTimer(0)
+
+    @JavascriptInterface
     fun status(): String = wrap {
         JSONObject().put("granted", Settings.canDrawOverlays(activity))
+            .put("dismissed", activity.getSharedPreferences(TextCaptureService.PREFS, Activity.MODE_PRIVATE).getBoolean("overlay_dismissed", false))
+    }
+
+    @JavascriptInterface
+    fun enable(): String = wrap {
+        activity.getSharedPreferences(TextCaptureService.PREFS, Activity.MODE_PRIVATE).edit()
+            .putBoolean("overlay_dismissed", false).apply()
+        JSONObject().put("enabled", true)
     }
 
     @JavascriptInterface
@@ -28,6 +39,9 @@ class TextOverlayBridge(private val activity: Activity) {
 
     @JavascriptInterface
     fun show(text: String, optionsJson: String): String = wrap {
+        if (activity.getSharedPreferences(TextCaptureService.PREFS, Activity.MODE_PRIVATE).getBoolean("overlay_dismissed", false)) {
+            return@wrap JSONObject().put("shown", false).put("dismissed", true)
+        }
         if (!Settings.canDrawOverlays(activity)) error("Allow display over other apps for Setsuna first.")
         activity.getSharedPreferences(TextCaptureService.PREFS, Activity.MODE_PRIVATE).edit()
             .putBoolean("overlay_active", true)

@@ -3,11 +3,15 @@ import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
 const devHost = process.env.TAURI_DEV_HOST || "";
+// @ts-expect-error process is a nodejs global
+const privateReader = process.env.VITE_PRIVATE_READER === "1";
 const host = devHost ? "0.0.0.0" : "127.0.0.1";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+  define: { "import.meta.env.VITE_PRIVATE_READER": JSON.stringify(privateReader ? "1" : "0") },
+  resolve: { alias: privateReader ? [] : [{ find: "./components/YatsuWorkspace", replacement: "/src/components/DisabledReaderWorkspace.tsx" }] },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
@@ -37,6 +41,7 @@ export default defineConfig(async () => ({
         jl: "jl-window.html",
         jlPopup: "jl-popup.html",
         lookup: "lookup-window.html",
+        ...(privateReader ? { yatsuLookup: "yatsu-lookup.html" } : {}),
         captureRegion: "capture-region.html",
       },
     },

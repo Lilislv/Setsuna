@@ -12,12 +12,11 @@ const LEGACY_BACKUP_PREFIX = 'txthk_backup_';
 // requests can be blocked by CORS and may hide the resumable upload Location
 // header even when Google accepted the request.
 const driveFetch: typeof globalThis.fetch = async (input, init) => {
-    try {
-        return await tauriFetch(input, init as any) as Response;
-    } catch (error) {
-        if (typeof globalThis.fetch === 'function') return globalThis.fetch(input, init);
-        throw error;
+    const options = { ...init, signal: init?.signal ?? AbortSignal.timeout(120_000) };
+    if ('__TAURI_INTERNALS__' in window) {
+        return await tauriFetch(input, { ...options, connectTimeout: 20_000 }) as Response;
     }
+    return globalThis.fetch(input, options);
 };
 
 export interface GooglePkceSession {
@@ -549,7 +548,10 @@ export async function downloadFromDrive(accessToken: string, fileId: string, onP
 
 export async function getDictDriveInfo(accessToken: string): Promise<DriveFileInfo | null> {
     const files = await listAllAppDataFiles(accessToken);
-    return files.find((file) => file.appProperties?.setsunaKind === 'dictionary' || file.name === 'dictionary.db') || null;
+    const dictionaries = files.filter((file) => file.appProperties?.setsunaKind === 'dictionary' || file.name === 'dictionary.db');
+    // Metadata is created before upload. A failed upload can leave a newer empty file.
+    dictionaries.sort((a, b) => (b.modifiedTime || b.createdTime || '').localeCompare(a.modifiedTime || a.createdTime || ''));
+    return dictionaries.find((file) => Number(file.size) > 0) || dictionaries[0] || null;
 }
 
 export async function createDictFileMetadata(accessToken: string) {

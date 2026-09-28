@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 
-pub const DICTIONARY_SCHEMA_VERSION: i64 = 3;
+pub const DICTIONARY_SCHEMA_VERSION: i64 = 4;
 
 const CANONICAL_SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS entries (
@@ -12,7 +12,9 @@ const CANONICAL_SCHEMA: &str = "
         reading TEXT,
         definition TEXT NOT NULL,
         dict_name TEXT DEFAULT 'Unknown',
-        tags TEXT DEFAULT ''
+        tags TEXT DEFAULT '',
+        lookup_rules TEXT,
+        score INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS frequencies (
         id INTEGER PRIMARY KEY,
@@ -70,6 +72,12 @@ pub fn ensure_canonical_schema(conn: &mut Connection) -> Result<LegacyMigrationR
     conn.execute_batch(CANONICAL_SCHEMA)
         .map_err(|error| format!("Failed to prepare dictionary database: {error}"))?;
 
+    for (name, definition) in [("lookup_rules", "TEXT"), ("score", "INTEGER DEFAULT 0")] {
+        if !table_has_column(conn, "entries", name)? {
+            conn.execute_batch(&format!("ALTER TABLE entries ADD COLUMN {name} {definition}"))
+                .map_err(|error| format!("Failed to preserve Yomitan metadata: {error}"))?;
+        }
+    }
     let report = migrate_legacy_mobile_dictionary(conn)?;
     rebuild_indexes(conn)?;
     conn.pragma_update(None, "user_version", DICTIONARY_SCHEMA_VERSION)
@@ -109,11 +117,29 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|error| format!("Failed to inspect dictionary table columns: {error}"))?;
     for name in rows {
-        if name.map_err(|error| format!("Failed to read dictionary table column: {error}"))? == column {
+        if name.map_err(|error| format!("Failed to read dictionary table column: {error}"))?
+            == column
+        {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Also works with an unmigrated read-only backup. NULL means legacy metadata
+/// is unavailable; an empty rules string is an explicit non-conjugating entry.
+pub fn prepare_term_lookup(conn: &Connection) -> Result<rusqlite::Statement<'_>, rusqlite::Error> {
+    let metadata = if table_has_column(conn, "entries", "lookup_rules").unwrap_or(false) {
+        "e.lookup_rules, COALESCE(e.score, 0)"
+    } else { "NULL, 0" };
+    conn.prepare(&format!(
+        "SELECT e.term, COALESCE(e.reading, ''), e.definition, e.dict_name, COALESCE(e.tags, ''), {metadata}
+         FROM entries e WHERE e.term != '' AND
+         (e.term IN (?1,?2,?3,?4,?5,?6,?7,?8) OR
+          (e.reading != '' AND e.reading IN (?1,?2,?3,?4,?5,?6,?7,?8)))
+         ORDER BY CASE WHEN e.term = ?1 THEN 0 WHEN e.reading = ?1 THEN 1 ELSE 2 END,
+         7 DESC, e.id ASC"
+    ))
 }
 
 pub fn migrate_legacy_mobile_dictionary(
@@ -157,7 +183,8 @@ pub fn migrate_legacy_mobile_dictionary(
         .map_err(|error| format!("Failed to start legacy dictionary migration: {error}"))?;
     let inserted_rows = transaction
         .execute(&sql, [])
-        .map_err(|error| format!("Failed to migrate legacy mobile dictionary: {error}"))? as i64;
+        .map_err(|error| format!("Failed to migrate legacy mobile dictionary: {error}"))?
+        as i64;
     let after_entries: i64 = transaction
         .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
         .map_err(|error| format!("Failed to validate migrated dictionary rows: {error}"))?;
@@ -210,8 +237,11 @@ pub fn delete_dictionaries(conn: &Connection, names: &[String]) -> Result<(), St
             conn.execute(&sql, params![name])
                 .map_err(|error| format!("Failed to delete dictionary '{name}': {error}"))?;
         }
-        conn.execute("DELETE FROM dictionary_meta WHERE title = ?1", params![name])
-            .map_err(|error| format!("Failed to delete dictionary metadata '{name}': {error}"))?;
+        conn.execute(
+            "DELETE FROM dictionary_meta WHERE title = ?1",
+            params![name],
+        )
+        .map_err(|error| format!("Failed to delete dictionary metadata '{name}': {error}"))?;
     }
     Ok(())
 }
@@ -248,6 +278,20 @@ pub fn dictionary_entry_count(path: &Path) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upgrading_dictionary_preserves_legacy_rules_and_explicit_empty_rules() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE entries (id INTEGER PRIMARY KEY, term TEXT NOT NULL, reading TEXT, definition TEXT NOT NULL, dict_name TEXT, tags TEXT);
+            INSERT INTO entries VALUES (1, '食べる', 'たべる', 'eat', 'Legacy', 'v1');").unwrap();
+        ensure_canonical_schema(&mut conn).unwrap();
+        let legacy: (Option<String>, i64) = conn.query_row("SELECT lookup_rules, score FROM entries WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(legacy, (None, 0));
+        conn.execute("INSERT INTO entries (term, definition, lookup_rules, score) VALUES ('食べる', 'noun', '', 100)", []).unwrap();
+        ensure_canonical_schema(&mut conn).unwrap();
+        let explicit: (Option<String>, i64) = conn.query_row("SELECT lookup_rules, score FROM entries WHERE id = 2", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(explicit, (Some(String::new()), 100));
+    }
 
     #[test]
     fn legacy_mobile_dictionary_migrates_to_canonical_entries() {
@@ -311,7 +355,11 @@ mod tests {
         let report = ensure_canonical_schema(&mut conn).unwrap();
         assert_eq!(report.inserted_rows, 0);
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entries WHERE term = '読む'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE term = '読む'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
     }

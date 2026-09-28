@@ -73,10 +73,10 @@ export const ImportProgressModal = ({ jsonProgress, dictProgress, language = 'ru
                         {dictProgress.dict_name}
                     </h3>
                     <div style={{ width: '100%', height: '10px', backgroundColor: 'var(--bg-main)', borderRadius: '5px', overflow: 'hidden', margin: '20px 0' }}>
-                        <div style={{ width: `${(dictProgress.current_file / dictProgress.total_files) * 100}%`, height: '100%', backgroundColor: '#4CAF50', transition: 'width 0.2s' }} />
+                        <div style={{ width: `${dictProgress.percent ?? (dictProgress.current_file / dictProgress.total_files) * 100}%`, height: '100%', backgroundColor: '#4CAF50', transition: 'width 0.2s' }} />
                     </div>
                     <div style={{ color: 'var(--text-muted)', fontSize: '13px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-main)', paddingBottom: '10px', marginBottom: '10px' }}>
-                        <span>{t('modal.files')}: {dictProgress.current_file} / {dictProgress.total_files}</span>
+                        <span>{dictProgress.percent != null ? `${Math.floor(dictProgress.percent)}%` : `${t('modal.files')}: ${dictProgress.current_file} / ${dictProgress.total_files}`}</span>
                         <span>{t('modal.words')}: {dictProgress.words_added}</span>
                     </div>
                     {dictProgress.status && <div style={{ color: '#4fa6ff', fontSize: '13px' }}>{dictProgress.status}</div>}

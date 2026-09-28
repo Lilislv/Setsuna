@@ -1,16 +1,25 @@
+mod dictionary_engine;
+mod database_access;
+mod dictionary_import;
+use dictionary_engine::{DictEntry, lookup_word_in_db, scan_cursor_in_db};
 mod core;
 mod japanese_tokenizer;
+mod lookup_normalization;
+mod japanese_deinflector;
+mod local_audio;
+mod flow_timer;
+mod drive_download;
+#[cfg(target_os = "android")]
+mod android_lookup;
 
 use japanese_tokenizer::{segment_text as segment_japanese_text, TextToken};
 use rusqlite::{params, Connection, Transaction};
-use serde::de::DeserializeSeed;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::Disks;
@@ -22,28 +31,6 @@ pub struct DictResult {
     pub term: String,
     pub reading: String,
     pub meanings: Value,
-}
-
-#[derive(Serialize, Clone)]
-pub struct DictEntry {
-    pub term: String,
-    pub reading: String,
-    pub definitions: Vec<String>,
-    pub dict_name: String,
-    pub score: i64,
-    pub tags: String,
-    pub deinflection_reasons: Vec<Value>,
-    pub frequencies: Vec<Value>,
-    pub pitches: Vec<Value>,
-    pub source_length: usize,
-}
-
-#[derive(Serialize)]
-pub struct CursorLookupResult {
-    pub word: String,
-    pub start: usize,
-    pub end: usize,
-    pub entries: Vec<DictEntry>,
 }
 
 pub struct AppState {
@@ -58,8 +45,6 @@ pub struct TextSyncServerStart {
     pub token: String,
 }
 
-static MOBILE_DICTIONARY_IMPORT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static MOBILE_FLOW_TIMER_PAUSED: AtomicBool = AtomicBool::new(true);
 
 #[derive(Serialize)]
 pub struct OAuthServerStart {
@@ -105,7 +90,9 @@ async fn start_oauth_server(app: tauri::AppHandle) -> Result<OAuthServerStart, S
         .map_err(|e| format!("Failed to configure OAuth callback server: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     {
-        let mut guard = oauth_server_port_state().lock().map_err(|e| e.to_string())?;
+        let mut guard = oauth_server_port_state()
+            .lock()
+            .map_err(|e| e.to_string())?;
         *guard = Some(port);
     }
 
@@ -128,7 +115,8 @@ async fn start_oauth_server(app: tauri::AppHandle) -> Result<OAuthServerStart, S
                                         matches!(kv.next(), Some("code") | Some("error"))
                                     });
                                     if has_code_or_error {
-                                        let callback_url = format!("http://127.0.0.1:{}{}", port, path);
+                                        let callback_url =
+                                            format!("http://127.0.0.1:{}{}", port, path);
                                         let _ = app.emit("oauth_code", callback_url);
                                         let html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Setsuna</title></head><body style=\"background:#1a1a1a;color:#fff;text-align:center;padding:48px 24px;font-family:sans-serif;\"><h1>Code received</h1><p>Return to Setsuna to finish connecting Google Drive.</p><p style=\"color:#999\">Код получен. Вернитесь в Setsuna для завершения подключения.</p></body></html>";
                                         let _ = stream.write_all(
@@ -165,142 +153,6 @@ async fn start_oauth_server(app: tauri::AppHandle) -> Result<OAuthServerStart, S
     })
 }
 
-#[tauri::command]
-async fn import_dictionary(path: String, state: State<'_, AppState>) -> Result<usize, String> {
-    run_mobile_dictionary_import(vec![path], state.db_path.clone()).await
-}
-
-#[tauri::command]
-async fn import_dictionaries(
-    paths: Vec<String>,
-    state: State<'_, AppState>,
-) -> Result<usize, String> {
-    if paths.is_empty() {
-        return Err("No dictionary files selected".to_string());
-    }
-
-    run_mobile_dictionary_import(paths, state.db_path.clone()).await
-}
-
-async fn run_mobile_dictionary_import(
-    paths: Vec<String>,
-    db_path: PathBuf,
-) -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let _guard = MOBILE_DICTIONARY_IMPORT_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .map_err(|_| "Dictionary import lock is poisoned".to_string())?;
-        let mut conn = Connection::open(&db_path)
-            .map_err(|error| format!("Failed to open dictionary database: {error}"))?;
-        core::database::configure_connection(&conn)?;
-        init_mobile_db(&mut conn)?;
-
-        let mut total = 0usize;
-        for path in paths {
-            total += import_mobile_dictionary_path(&mut conn, &path)
-                .map_err(|error| format!("{}: {}", fallback_dict_name(&path), error))?;
-        }
-        Ok(total)
-    })
-    .await
-    .map_err(|error| format!("Dictionary import worker failed: {error}"))?
-}
-
-fn import_mobile_dictionary_path(conn: &mut Connection, path: &str) -> Result<usize, String> {
-    if path.to_lowercase().ends_with(".zip") {
-        import_yomitan_zip(conn, path)
-    } else if path.to_lowercase().ends_with(".json") {
-        import_yomitan_json(conn, path)
-    } else {
-        Err(
-            "Unsupported mobile dictionary format. Select a Yomitan ZIP or term_bank JSON file."
-                .to_string(),
-        )
-    }
-}
-
-fn fallback_dict_name(path: &str) -> String {
-    Path::new(path)
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or("Imported dictionary")
-        .to_string()
-}
-
-fn import_yomitan_json(conn: &mut Connection, path: &str) -> Result<usize, String> {
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
-    let dict_name = fallback_dict_name(path);
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    clear_mobile_dictionary_records(&tx, &dict_name)?;
-    let count = stream_mobile_term_bank(reader, &tx, &dict_name)?;
-    upsert_mobile_dictionary_meta(&tx, &dict_name, None)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(count)
-}
-
-fn import_yomitan_zip(conn: &mut Connection, path: &str) -> Result<usize, String> {
-    let file = File::open(path).map_err(|e| format!("Zip open error: {}", e))?;
-    let mut archive = ZipArchive::new(file).map_err(|e| format!("Zip read error: {}", e))?;
-    let mut dict_name = fallback_dict_name(path);
-
-    let mut index_meta: Option<Value> = None;
-    if let Ok(mut index_file) = archive.by_name("index.json") {
-        let mut index_text = String::new();
-        index_file
-            .read_to_string(&mut index_text)
-            .map_err(|e| format!("index.json read error: {}", e))?;
-        if let Ok(index_json) = serde_json::from_str::<Value>(&index_text) {
-            if let Some(title) = index_json
-                .get("title")
-                .or_else(|| index_json.get("name"))
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.trim().is_empty())
-            {
-                dict_name = title.to_string();
-            }
-            index_meta = Some(index_json);
-        }
-    }
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    clear_mobile_dictionary_records(&tx, &dict_name)?;
-    let mut total = 0usize;
-    for index in 0..archive.len() {
-        let file = archive
-            .by_index(index)
-            .map_err(|e| format!("Zip entry error: {}", e))?;
-        let name = file.name().to_string();
-        let lower = name.to_lowercase();
-        if !lower.ends_with(".json") {
-            continue;
-        }
-
-        let imported = if lower.contains("term_bank") {
-            stream_mobile_term_bank(file, &tx, &dict_name)
-        } else if lower.contains("frequency") || lower.contains("freq_bank") {
-            stream_mobile_frequency_bank(file, &tx, &dict_name)
-        } else if lower.contains("pitch") {
-            stream_mobile_pitch_bank(file, &tx, &dict_name)
-        } else if lower.contains("pronunciation") {
-            stream_mobile_pronunciation_bank(file, &tx, &dict_name)
-        } else {
-            continue;
-        };
-        total += imported.map_err(|error| format!("{}: {}", name, error))?;
-    }
-
-    if total == 0 {
-        return Err("No supported Yomitan bank files were found in this zip.".to_string());
-    }
-
-    upsert_mobile_dictionary_meta(&tx, &dict_name, index_meta.as_ref())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(total)
-}
-
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DriveTransferProgress {
@@ -332,499 +184,12 @@ fn clear_mobile_dictionary_records(tx: &Transaction<'_>, dict_name: &str) -> Res
         tx.execute(&sql, params![dict_name])
             .map_err(|error| format!("Failed to replace existing dictionary: {error}"))?;
     }
-    tx.execute("DELETE FROM dictionary_meta WHERE title = ?1", params![dict_name])
-        .map_err(|error| format!("Failed to replace existing dictionary metadata: {error}"))?;
-    Ok(())
-}
-
-fn upsert_mobile_dictionary_meta(
-    tx: &Transaction<'_>,
-    dict_name: &str,
-    index_meta: Option<&Value>,
-) -> Result<(), String> {
-    let revision = index_meta
-        .and_then(|value| value.get("revision"))
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    let format = index_meta
-        .and_then(|value| value.get("format"))
-        .and_then(|value| value.as_i64())
-        .unwrap_or_default();
     tx.execute(
-        "INSERT OR REPLACE INTO dictionary_meta (title, revision, format, imported_at_ms)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![dict_name, revision, format, unix_now_ms()],
+        "DELETE FROM dictionary_meta WHERE title = ?1",
+        params![dict_name],
     )
-    .map_err(|error| format!("Failed to save dictionary metadata: {error}"))?;
+    .map_err(|error| format!("Failed to replace existing dictionary metadata: {error}"))?;
     Ok(())
-}
-
-fn stream_mobile_term_bank<R: Read>(
-    reader: R,
-    tx: &Transaction<'_>,
-    dict_name: &str,
-) -> Result<usize, String> {
-    stream_mobile_json_array(reader, |entry| {
-        let Some(arr) = entry.as_array() else {
-            return Ok(false);
-        };
-        let term = arr.first().and_then(|value| value.as_str()).unwrap_or("");
-        if term.trim().is_empty() {
-            return Ok(false);
-        }
-        let reading = arr.get(1).and_then(|value| value.as_str()).unwrap_or("");
-        let meanings = arr.get(5).unwrap_or(&Value::Null);
-        let meanings_str = serde_json::to_string(meanings).unwrap_or_else(|_| "[]".to_string());
-        let definition_tags = arr.get(2).and_then(|value| value.as_str()).unwrap_or("");
-        let term_tags = arr.get(7).and_then(|value| value.as_str()).unwrap_or("");
-        let tags = format!("{definition_tags} {term_tags}").trim().to_string();
-        tx.execute(
-            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![term, reading, meanings_str, dict_name, tags],
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(true)
-    })
-}
-
-fn stream_mobile_json_array<R, F>(reader: R, mut on_value: F) -> Result<usize, String>
-where
-    R: Read,
-    F: FnMut(Value) -> Result<bool, String>,
-{
-    struct ArraySeed<'a, F> {
-        on_value: &'a mut F,
-    }
-
-    impl<'de, 'a, F> DeserializeSeed<'de> for ArraySeed<'a, F>
-    where
-        F: FnMut(Value) -> Result<bool, String>,
-    {
-        type Value = usize;
-
-        fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            struct ArrayVisitor<'a, F> {
-                on_value: &'a mut F,
-            }
-
-            impl<'de, 'a, F> serde::de::Visitor<'de> for ArrayVisitor<'a, F>
-            where
-                F: FnMut(Value) -> Result<bool, String>,
-            {
-                type Value = usize;
-
-                fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    formatter.write_str("a Yomitan term bank array")
-                }
-
-                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: serde::de::SeqAccess<'de>,
-                {
-                    let mut count = 0usize;
-                    while let Some(value) = seq.next_element::<Value>()? {
-                        if (self.on_value)(value).map_err(serde::de::Error::custom)? {
-                            count += 1;
-                        }
-                    }
-                    Ok(count)
-                }
-            }
-
-            deserializer.deserialize_seq(ArrayVisitor {
-                on_value: self.on_value,
-            })
-        }
-    }
-
-    let mut deserializer = serde_json::Deserializer::from_reader(reader);
-    let count = ArraySeed {
-        on_value: &mut on_value,
-    }
-    .deserialize(&mut deserializer)
-    .map_err(|error| format!("JSON parse error: {error}"))?;
-    deserializer
-        .end()
-        .map_err(|error| format!("Invalid data after term bank: {error}"))?;
-    Ok(count)
-}
-
-#[tauri::command]
-async fn lookup_text(
-    text: String,
-    state: State<'_, AppState>,
-) -> Result<Option<DictResult>, String> {
-    let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-
-    let chars: Vec<char> = text.chars().collect();
-    let max_len = std::cmp::min(15, chars.len());
-
-    for i in (1..=max_len).rev() {
-        let snippet: String = chars[0..i].iter().collect();
-
-        let mut stmt = conn
-            .prepare("SELECT term, reading, definition FROM entries WHERE term = ?1 LIMIT 1")
-            .map_err(|e| e.to_string())?;
-
-        let mut rows = stmt.query(params![snippet]).map_err(|e| e.to_string())?;
-
-        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let term: String = row.get(0).map_err(|e| e.to_string())?;
-            let reading: String = row.get(1).map_err(|e| e.to_string())?;
-            let meanings_str: String = row.get(2).map_err(|e| e.to_string())?;
-
-            let meanings: Value = serde_json::from_str(&meanings_str).unwrap_or(Value::Null);
-
-            return Ok(Some(DictResult {
-                term,
-                reading,
-                meanings,
-            }));
-        }
-    }
-
-    Ok(None)
-}
-
-#[tauri::command]
-async fn get_installed_dicts(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-    core::database::installed_dictionary_names(&conn)
-}
-
-fn stream_mobile_frequency_bank<R: Read>(
-    reader: R,
-    tx: &Transaction<'_>,
-    dict_name: &str,
-) -> Result<usize, String> {
-    stream_mobile_json_array(reader, |entry| {
-        let Some(arr) = entry.as_array() else { return Ok(false); };
-        let term = arr.first().and_then(|value| value.as_str()).unwrap_or("");
-        if term.trim().is_empty() { return Ok(false); }
-        let reading = arr.get(1).and_then(|value| value.as_str()).unwrap_or("");
-        let raw_value = arr.get(2).cloned().unwrap_or(Value::Null);
-        let value = raw_value.as_i64().or_else(|| raw_value.get("value").and_then(|item| item.as_i64()));
-        let display_value = raw_value
-            .as_str()
-            .map(str::to_string)
-            .or_else(|| raw_value.get("displayValue").and_then(|item| item.as_str()).map(str::to_string))
-            .or_else(|| raw_value.get("display_value").and_then(|item| item.as_str()).map(str::to_string));
-        tx.execute(
-            "INSERT INTO frequencies (term, reading, value, display_value, dict_name) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![term, reading, value, display_value, dict_name],
-        ).map_err(|error| error.to_string())?;
-        Ok(true)
-    })
-}
-
-fn stream_mobile_pitch_bank<R: Read>(
-    reader: R,
-    tx: &Transaction<'_>,
-    dict_name: &str,
-) -> Result<usize, String> {
-    stream_mobile_json_array(reader, |entry| {
-        let Some(arr) = entry.as_array() else { return Ok(false); };
-        let term = arr.first().and_then(|value| value.as_str()).unwrap_or("");
-        if term.trim().is_empty() { return Ok(false); }
-        let reading = arr.get(1).and_then(|value| value.as_str()).unwrap_or("");
-        let position = arr.get(2).and_then(|value| value.as_i64()).or_else(|| {
-            arr.get(2).and_then(|value| value.get("position")).and_then(|value| value.as_i64())
-        });
-        let Some(position) = position else { return Ok(false); };
-        tx.execute(
-            "INSERT INTO pitches (term, reading, position, dict_name) VALUES (?1, ?2, ?3, ?4)",
-            params![term, reading, position, dict_name],
-        ).map_err(|error| error.to_string())?;
-        Ok(true)
-    })
-}
-
-fn stream_mobile_pronunciation_bank<R: Read>(
-    reader: R,
-    tx: &Transaction<'_>,
-    dict_name: &str,
-) -> Result<usize, String> {
-    stream_mobile_json_array(reader, |entry| {
-        let Some(arr) = entry.as_array() else { return Ok(false); };
-        let term = arr.first().and_then(|value| value.as_str()).unwrap_or("");
-        if term.trim().is_empty() { return Ok(false); }
-        let reading = arr.get(1).and_then(|value| value.as_str()).unwrap_or("");
-        let data = arr.get(2).cloned().unwrap_or(Value::Null);
-        let ipa = data.as_str()
-            .map(str::to_string)
-            .or_else(|| data.get("ipa").and_then(|value| value.as_str()).map(str::to_string))
-            .unwrap_or_default();
-        if ipa.is_empty() { return Ok(false); }
-        let tags = data.get("tags").map(|value| value.to_string()).unwrap_or_default();
-        tx.execute(
-            "INSERT INTO pronunciations (term, reading, ipa, tags, dict_name) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![term, reading, ipa, tags, dict_name],
-        ).map_err(|error| error.to_string())?;
-        Ok(true)
-    })
-}
-
-#[tauri::command]
-async fn clear_database(state: State<'_, AppState>) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-    core::database::clear_dictionary_data(&conn)
-}
-
-#[tauri::command]
-async fn delete_dictionaries(
-    dict_names: Vec<String>,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-    core::database::delete_dictionaries(&conn, &dict_names)
-}
-
-fn meanings_to_definitions(value: Value) -> Vec<String> {
-    match value {
-        Value::Array(items) => items
-            .into_iter()
-            .filter_map(|item| match item {
-                Value::String(text) => Some(text),
-                Value::Array(parts) => Some(
-                    parts
-                        .into_iter()
-                        .filter_map(|part| part.as_str().map(|s| s.to_string()))
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                ),
-                Value::Object(obj) => obj
-                    .get("content")
-                    .or_else(|| obj.get("text"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
-                other => Some(other.to_string()),
-            })
-            .filter(|text| !text.trim().is_empty())
-            .collect(),
-        Value::String(text) => vec![text],
-        Value::Null => Vec::new(),
-        other => vec![other.to_string()],
-    }
-}
-
-// Deinflection rules ported from the desktop engine (deinflect.json): each rule replaces
-// a conjugated suffix `in` with the dictionary-form suffix `out`, carrying a localized reason.
-fn deinflect_rules() -> &'static Vec<(String, String, Value, Value)> {
-    static RULES: OnceLock<Vec<(String, String, Value, Value)>> = OnceLock::new();
-    RULES.get_or_init(|| {
-        let raw = include_str!("deinflect.json").trim_start_matches('\u{feff}');
-        let mut out = Vec::new();
-        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-        if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(raw) {
-            for item in arr {
-                let in_s = item.get("in").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let out_s = item.get("out").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if in_s.is_empty() {
-                    continue;
-                }
-                if seen.insert((in_s.clone(), out_s.clone())) {
-                    let reason = item.get("reason").cloned().unwrap_or(Value::Null);
-                    let desc = item.get("desc").cloned().unwrap_or(Value::Null);
-                    out.push((in_s, out_s, reason, desc));
-                }
-            }
-        }
-        out
-    })
-}
-
-fn is_kana(ch: char) -> bool {
-    matches!(ch, '\u{3040}'..='\u{309f}' | '\u{30a0}'..='\u{30ff}')
-}
-
-// Only accept a deinflected match if the entry looks conjugatable (verb / i-adjective / aux),
-// or has no POS tags at all — this blocks a conjugated surface from matching a random noun.
-fn tags_allow_deinflection(tags: &str) -> bool {
-    if tags.trim().is_empty() {
-        return true;
-    }
-    ["v1", "v5", "v4", "v2", "vk", "vs", "vz", "vn", "vr", "adj-i", "adj-ix", "aux", "cop", "iku"]
-        .iter()
-        .any(|m| tags.contains(m))
-}
-
-// Exact term/reading query against the shared canonical schema, building entries for a given
-// source_length and (optional) deinflection reason chain.
-fn query_exact_forms(
-    conn: &Connection,
-    snippet: &str,
-    source_length: usize,
-    reasons: &[Value],
-) -> Result<Vec<DictEntry>, String> {
-    let mut entries = Vec::new();
-    let mut stmt = conn
-        .prepare(
-            "SELECT term, reading, definition, dict_name, tags FROM entries
-             WHERE term = ?1 OR reading = ?1
-             LIMIT 30",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![snippet], |row| {
-            let term: String = row.get(0)?;
-            let reading: String = row.get::<_, Option<String>>(1)?.unwrap_or_default();
-            let definition: String = row.get::<_, Option<String>>(2)?.unwrap_or_default();
-            let dict_name: String =
-                row.get::<_, Option<String>>(3)?.unwrap_or_else(|| "Unknown".to_string());
-            let tags: String = row.get::<_, Option<String>>(4)?.unwrap_or_default();
-            Ok(DictEntry {
-                term,
-                reading,
-                definitions: meanings_to_definitions(
-                    serde_json::from_str(&definition).unwrap_or(Value::String(definition)),
-                ),
-                dict_name,
-                score: 0,
-                tags,
-                deinflection_reasons: reasons.to_vec(),
-                frequencies: Vec::new(),
-                pitches: Vec::new(),
-                source_length,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    for row in rows {
-        entries.push(row.map_err(|e| e.to_string())?);
-    }
-    drop(stmt);
-    for entry in &mut entries {
-        entry.frequencies = query_mobile_frequencies(conn, &entry.term, &entry.reading)?;
-        entry.pitches = query_mobile_pitches(conn, &entry.term, &entry.reading)?;
-    }
-    Ok(entries)
-}
-
-fn query_mobile_frequencies(conn: &Connection, term: &str, reading: &str) -> Result<Vec<Value>, String> {
-    let mut statement = conn.prepare(
-        "SELECT value, display_value, dict_name FROM frequencies
-         WHERE term = ?1 OR (?2 <> '' AND reading = ?2)
-         ORDER BY CASE WHEN value IS NULL THEN 1 ELSE 0 END, value ASC LIMIT 16",
-    ).map_err(|error| error.to_string())?;
-    let rows = statement.query_map(params![term, reading], |row| {
-        Ok(serde_json::json!({
-            "value": row.get::<_, Option<i64>>(0)?,
-            "displayValue": row.get::<_, Option<String>>(1)?,
-            "dictName": row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-        }))
-    }).map_err(|error| error.to_string())?;
-    rows.map(|row| row.map_err(|error| error.to_string())).collect()
-}
-
-fn query_mobile_pitches(conn: &Connection, term: &str, reading: &str) -> Result<Vec<Value>, String> {
-    let mut statement = conn.prepare(
-        "SELECT position, dict_name FROM pitches
-         WHERE term = ?1 OR (?2 <> '' AND reading = ?2)
-         ORDER BY position ASC LIMIT 16",
-    ).map_err(|error| error.to_string())?;
-    let rows = statement.query_map(params![term, reading], |row| {
-        Ok(serde_json::json!({
-            "position": row.get::<_, i64>(0)?,
-            "dictName": row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-        }))
-    }).map_err(|error| error.to_string())?;
-    rows.map(|row| row.map_err(|error| error.to_string())).collect()
-}
-
-// BFS deinflection of a single surface form (bounded depth/expansion), returning dictionary-form
-// entries whose POS tags permit the applied conjugation.
-fn deinflect_forms(
-    conn: &Connection,
-    snippet: &str,
-    source_length: usize,
-) -> Result<Vec<DictEntry>, String> {
-    let rules = deinflect_rules();
-    let mut results: Vec<DictEntry> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut queue: std::collections::VecDeque<(String, Vec<Value>, usize)> =
-        std::collections::VecDeque::new();
-    queue.push_back((snippet.to_string(), Vec::new(), 0));
-    let mut expanded = 0usize;
-
-    while let Some((form, reasons, depth)) = queue.pop_front() {
-        if !visited.insert(form.clone()) {
-            continue;
-        }
-        expanded += 1;
-        if expanded > 40 {
-            break;
-        }
-
-        if depth > 0 {
-            for entry in query_exact_forms(conn, &form, source_length, &reasons)? {
-                if !tags_allow_deinflection(&entry.tags) {
-                    continue;
-                }
-                let key = format!("{}|{}|{}", entry.term, entry.reading, entry.dict_name);
-                if seen.insert(key) {
-                    results.push(entry);
-                }
-            }
-        }
-
-        if depth < 3 {
-            let form_chars: Vec<char> = form.chars().collect();
-            for (in_s, out_s, reason, desc) in rules.iter() {
-                if !form.ends_with(in_s.as_str()) {
-                    continue;
-                }
-                let in_len = in_s.chars().count();
-                if form_chars.len() < in_len {
-                    continue;
-                }
-                let base: String = form_chars[..form_chars.len() - in_len].iter().collect();
-                let candidate = format!("{}{}", base, out_s);
-                if candidate.is_empty() || visited.contains(&candidate) {
-                    continue;
-                }
-                let mut next = reasons.clone();
-                next.push(serde_json::json!({ "rule": reason.clone(), "desc": desc.clone() }));
-                queue.push_back((candidate, next, depth + 1));
-            }
-        }
-    }
-
-    Ok(results)
-}
-
-// Longest-prefix lookup with deinflection fallback. Used by tap lookup (scan_cursor), manual
-// lookup, and greedy segmentation (get_furigana) — so conjugated words resolve everywhere.
-fn lookup_word_in_db(conn: &Connection, word: &str) -> Result<Vec<DictEntry>, String> {
-    let clean = word.trim();
-    if clean.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let chars: Vec<char> = clean.chars().collect();
-    let max_len = std::cmp::min(24, chars.len());
-
-    for len in (1..=max_len).rev() {
-        let snippet: String = chars[0..len].iter().collect();
-
-        let exact = query_exact_forms(conn, &snippet, len, &[])?;
-        if !exact.is_empty() {
-            return Ok(exact);
-        }
-
-        // Deinflect only when the surface could be a conjugation (ends in kana, >=2 chars) —
-        // this keeps segmentation fast and avoids spurious noun matches.
-        if len >= 2 && chars.get(len - 1).copied().map(is_kana).unwrap_or(false) {
-            let deinflected = deinflect_forms(conn, &snippet, len)?;
-            if !deinflected.is_empty() {
-                return Ok(deinflected);
-            }
-        }
-    }
-
-    Ok(Vec::new())
 }
 
 const STARTER_DICTIONARY_REVISION: &str = "2026-09-02.1";
@@ -844,7 +209,12 @@ struct EmbeddedStarterEntry {
 }
 
 const STARTER_JP_RU: &[(&str, &str, &str, &str)] = &[
-    ("米屋", "こめや", "рисовая лавка; магазин или продавец риса", "n"),
+    (
+        "米屋",
+        "こめや",
+        "рисовая лавка; магазин или продавец риса",
+        "n",
+    ),
     ("日本", "にほん", "Япония", "n"),
     ("日本人", "にほんじん", "японец; японка", "n"),
     ("私", "わたし", "я; я сам", "pn"),
@@ -873,15 +243,40 @@ const STARTER_JP_RU: &[(&str, &str, &str, &str)] = &[
     ("来る", "くる", "приходить; приезжать", "vk vi"),
     ("する", "する", "делать", "vs vt"),
     ("上げる", "あげる", "поднимать; повышать", "v1 vt"),
-    ("外れる", "はずれる", "соскочить; промахнуться; оказаться неверным", "v1 vi"),
+    (
+        "外れる",
+        "はずれる",
+        "соскочить; промахнуться; оказаться неверным",
+        "v1 vi",
+    ),
     ("薄い", "うすい", "тонкий; слабый; бледный", "adj-i"),
-    ("変態", "へんたい", "извращенец; превращение; метаморфоз", "n"),
-    ("突っ張り", "つっぱり", "распорка; толчок ладонями; упрямство", "n"),
+    (
+        "変態",
+        "へんたい",
+        "извращенец; превращение; метаморфоз",
+        "n",
+    ),
+    (
+        "突っ張り",
+        "つっぱり",
+        "распорка; толчок ладонями; упрямство",
+        "n",
+    ),
     ("回転", "かいてん", "вращение; оборот", "n vs"),
     ("回転速度", "かいてんそくど", "скорость вращения", "n"),
     ("速度", "そくど", "скорость", "n"),
-    ("大昔", "おおむかし", "давным-давно; глубокая древность", "n"),
-    ("納得", "なっとく", "понимание; согласие; убеждённость", "n vs"),
+    (
+        "大昔",
+        "おおむかし",
+        "давным-давно; глубокая древность",
+        "n",
+    ),
+    (
+        "納得",
+        "なっとく",
+        "понимание; согласие; убеждённость",
+        "n vs",
+    ),
     ("本", "ほん", "книга", "n"),
     ("猫", "ねこ", "кошка", "n"),
     ("友達", "ともだち", "друг; приятель", "n"),
@@ -904,7 +299,12 @@ const STARTER_JP_EN: &[(&str, &str, &str, &str)] = &[
     ("行く", "いく", "to go", "v5k vi"),
     ("来る", "くる", "to come", "vk vi"),
     ("上げる", "あげる", "to raise; to increase", "v1 vt"),
-    ("外れる", "はずれる", "to come off; to miss; to be wrong", "v1 vi"),
+    (
+        "外れる",
+        "はずれる",
+        "to come off; to miss; to be wrong",
+        "v1 vi",
+    ),
     ("薄い", "うすい", "thin; weak; pale", "adj-i"),
     ("変態", "へんたい", "transformation; pervert", "n"),
     ("突っ張り", "つっぱり", "thrust; brace; stubbornness", "n"),
@@ -912,8 +312,18 @@ const STARTER_JP_EN: &[(&str, &str, &str, &str)] = &[
 ];
 
 const STARTER_GRAMMAR: &[(&str, &str, &str, &str)] = &[
-    ("ではない", "ではない", "не является; отрицательная связка", "exp"),
-    ("なくてはいけない", "なくてはいけない", "нужно; необходимо сделать", "exp"),
+    (
+        "ではない",
+        "ではない",
+        "не является; отрицательная связка",
+        "exp",
+    ),
+    (
+        "なくてはいけない",
+        "なくてはいけない",
+        "нужно; необходимо сделать",
+        "exp",
+    ),
     ("はず", "はず", "ожидание; должно быть; предположение", "n"),
     ("こと", "こと", "факт; дело; номинализатор действия", "n"),
     ("もの", "もの", "вещь; причина или пояснение", "n"),
@@ -977,7 +387,8 @@ fn seed_mobile_starter_dictionary(
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     clear_mobile_dictionary_records(&tx, name)?;
     for (term, reading, definition, tags) in rows {
-        let definition = serde_json::to_string(&[*definition]).map_err(|error| error.to_string())?;
+        let definition =
+            serde_json::to_string(&[*definition]).map_err(|error| error.to_string())?;
         tx.execute(
             "INSERT INTO entries (term, reading, definition, dict_name, tags)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1067,13 +478,19 @@ fn seed_mobile_core_dictionaries(conn: &mut Connection) -> Result<(), String> {
 
     for (line_index, line) in reader.lines().enumerate() {
         let line = line.map_err(|error| {
-            format!("Failed to read embedded dictionary line {}: {error}", line_index + 1)
+            format!(
+                "Failed to read embedded dictionary line {}: {error}",
+                line_index + 1
+            )
         })?;
         if line.trim().is_empty() {
             continue;
         }
         let entry: EmbeddedStarterEntry = serde_json::from_str(&line).map_err(|error| {
-            format!("Failed to parse embedded dictionary line {}: {error}", line_index + 1)
+            format!(
+                "Failed to parse embedded dictionary line {}: {error}",
+                line_index + 1
+            )
         })?;
         if !DICTIONARIES.contains(&entry.dict_name.as_str()) {
             continue;
@@ -1125,8 +542,17 @@ fn seed_mobile_core_dictionaries(conn: &mut Connection) -> Result<(), String> {
 fn init_mobile_db(conn: &mut Connection) -> Result<(), String> {
     core::database::configure_connection(conn)?;
     core::database::ensure_canonical_schema(conn)?;
-    seed_mobile_starter_dictionaries(conn)?;
-    seed_mobile_core_dictionaries(conn)?;
+    // Installation bookkeeping is separate from removable dictionary metadata.
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS setsuna_installation (key TEXT PRIMARY KEY);").map_err(|e| e.to_string())?;
+    let seeded: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM setsuna_installation WHERE key='starter-dictionaries')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if !seeded {
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if count == 0 {
+            seed_mobile_starter_dictionaries(conn)?;
+            seed_mobile_core_dictionaries(conn)?;
+        }
+        conn.execute("INSERT INTO setsuna_installation(key) VALUES ('starter-dictionaries')", []).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1181,9 +607,13 @@ fn resumable_next_offset(range: Option<&str>) -> u64 {
 }
 
 #[tauri::command]
-fn get_dictionary_storage_info(state: State<'_, AppState>) -> Result<DictionaryStorageInfo, String> {
+fn get_dictionary_storage_info(
+    state: State<'_, AppState>,
+) -> Result<DictionaryStorageInfo, String> {
     let path = state.db_path.clone();
-    let size = std::fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or(0);
+    let size = std::fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     Ok(DictionaryStorageInfo {
         path: path.to_string_lossy().into_owned(),
         size,
@@ -1234,7 +664,10 @@ async fn upload_db_to_drive(
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Dictionary database upload failed: {} - {}", status, body));
+            return Err(format!(
+                "Dictionary database upload failed: {} - {}",
+                status, body
+            ));
         }
         emit_drive_progress(&app, "upload", file_len, file_len);
         return Ok(());
@@ -1260,7 +693,10 @@ async fn upload_db_to_drive(
                 .bearer_auth(&token)
                 .header("Content-Type", "application/octet-stream")
                 .header("Content-Length", amount.to_string())
-                .header("Content-Range", format!("bytes {}-{}/{}", offset, end, file_len))
+                .header(
+                    "Content-Range",
+                    format!("bytes {}-{}/{}", offset, end, file_len),
+                )
                 .body(chunk.clone())
                 .send()
                 .await
@@ -1271,7 +707,10 @@ async fn upload_db_to_drive(
             }
             if response.status().as_u16() == 308 {
                 let confirmed = resumable_next_offset(
-                    response.headers().get("range").and_then(|value| value.to_str().ok()),
+                    response
+                        .headers()
+                        .get("range")
+                        .and_then(|value| value.to_str().ok()),
                 )
                 .min(file_len);
                 if confirmed > offset {
@@ -1284,862 +723,111 @@ async fn upload_db_to_drive(
             }
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Dictionary database upload failed: {} - {}", status, body));
+            return Err(format!(
+                "Dictionary database upload failed: {} - {}",
+                status, body
+            ));
         }
         emit_drive_progress(&app, "upload", offset, file_len);
     }
     Ok(())
 }
 
+static DRIVE_DOWNLOAD_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct DriveDownloadGuard(PathBuf);
+impl Drop for DriveDownloadGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(format!("{}-wal", self.0.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", self.0.display()));
+        DRIVE_DOWNLOAD_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 #[tauri::command]
 async fn download_db_from_drive(
-    app: tauri::AppHandle,
-    url: String,
-    token: String,
-    expected_size: Option<u64>,
-    state: State<'_, AppState>,
+    app: tauri::AppHandle, url: String, token: String, expected_size: Option<u64>, state: State<'_, AppState>,
 ) -> Result<(), String> {
-    use tokio::io::AsyncWriteExt;
-
+    if DRIVE_DOWNLOAD_ACTIVE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("A dictionary download is already running".into());
+    }
     let db_path = state.db_path.clone();
     let temp_path = db_path.with_extension("db.drive-download");
-    let rollback_path = db_path.with_extension("db.before-drive-restore");
-    let mut response = reqwest::Client::new()
-        .get(&url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to download dictionary database: {}", e))?;
-    if !response.status().is_success() {
-        return Err(format!("Dictionary database download failed: {}", response.status()));
-    }
-    let total = expected_size.or_else(|| response.content_length()).unwrap_or(0);
-    if total > 0 {
-        if let Some(available) = available_space_for_path(&db_path) {
-            let margin = (total / 50).max(32 * 1024 * 1024);
-            if available < total.saturating_add(margin) {
-                return Err(format!(
-                    "Not enough local storage. Need {} bytes, available {} bytes.",
-                    total.saturating_add(margin),
-                    available
-                ));
-            }
+    let guard = DriveDownloadGuard(temp_path.clone());
+    if expected_size == Some(0) { return Err("The dictionary on Google Drive is empty. Upload it again from the PC.".into()); }
+    if let (Some(total), Some(available)) = (expected_size, available_space_for_path(&db_path)) {
+        if available < total.saturating_add((total / 50).max(32 * 1024 * 1024)) {
+            return Err(format!("Not enough storage for the dictionary: {total} bytes needed, {available} available"));
         }
     }
-
-    let _ = tokio::fs::remove_file(&temp_path).await;
-    let mut file = tokio::fs::File::create(&temp_path)
-        .await
-        .map_err(|e| format!("Failed to create temporary dictionary database: {}", e))?;
-    let mut downloaded = 0_u64;
-    emit_drive_progress(&app, "download", 0, total);
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("Failed to read downloaded dictionary database: {}", e))?
-    {
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| format!("Failed to save dictionary database: {}", e))?;
-        downloaded += chunk.len() as u64;
-        emit_drive_progress(&app, "download", downloaded, total.max(downloaded));
-    }
-    file.sync_all()
-        .await
-        .map_err(|e| format!("Failed to flush dictionary database: {}", e))?;
-    drop(file);
-
-    if let Some(expected) = expected_size {
-        if downloaded != expected {
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(format!(
-                "Downloaded dictionary size mismatch: expected {}, received {} bytes.",
-                expected, downloaded
-            ));
+    let downloaded = drive_download::download(&drive_download::client()?, &url, &token, &temp_path, expected_size, |done, total, phase| {
+        let _ = app.emit("drive_dictionary_progress", serde_json::json!({
+            "operation": "download", "transferred": done, "total": total,
+            "percent": if total == 0 { 0.0 } else { (done as f64 / total as f64 * 100.0).min(99.0) },
+            "phase": phase,
+        }));
+    }).await?;
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Keep the cleanup/download guard alive through validation and replacement.
+        let _guard = guard;
+        let mut header = [0u8; 16];
+        File::open(&temp_path).and_then(|mut file| file.read_exact(&mut header)).map_err(|e| e.to_string())?;
+        if &header != b"SQLite format 3\0" { return Err("Google Drive did not return a SQLite dictionary database".into()); }
+        let mut validation = Connection::open(&temp_path).map_err(|e| e.to_string())?;
+        let check: String = validation.query_row("PRAGMA quick_check", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if check != "ok" { return Err(format!("Downloaded dictionary is damaged: {check}")); }
+        if !core::database::table_exists(&validation, "entries")? && !core::database::table_exists(&validation, "dictionary")? {
+            return Err("The downloaded SQLite file is not a Setsuna dictionary".into());
         }
-    }
-
-    let mut validation = Connection::open(&temp_path)
-        .map_err(|e| format!("Downloaded dictionary database is invalid: {}", e))?;
-    init_mobile_db(&mut validation)?;
-    validation
-        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
-        .map_err(|e| format!("Downloaded dictionary database check failed: {}", e))
-        .and_then(|result| {
-            if result == "ok" { Ok(()) } else { Err(format!("Downloaded dictionary database check failed: {}", result)) }
-        })?;
-    drop(validation);
-
-    let mut conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-    *conn = Connection::open_in_memory()
-        .map_err(|e| format!("Failed to release old dictionary database: {}", e))?;
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(&rollback_path);
-    if db_path.exists() {
-        std::fs::rename(&db_path, &rollback_path)
-            .map_err(|e| format!("Failed to prepare dictionary rollback copy: {}", e))?;
-    }
-    if let Err(error) = std::fs::rename(&temp_path, &db_path) {
-        if rollback_path.exists() {
-            let _ = std::fs::rename(&rollback_path, &db_path);
-        }
-        return Err(format!("Failed to apply downloaded dictionary database: {}", error));
-    }
-    let mut replacement = Connection::open(&db_path)
-        .map_err(|e| format!("Failed to open downloaded dictionary database: {}", e))?;
-    init_mobile_db(&mut replacement)?;
-    *conn = replacement;
-    let _ = std::fs::remove_file(&rollback_path);
+        core::database::configure_connection(&validation)?;
+        core::database::ensure_canonical_schema(&mut validation)?;
+        validation.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").map_err(|e| e.to_string())?;
+        drop(validation);
+        let state = worker_app.state::<AppState>();
+        let _exclusive = database_access::replacing()?;
+        let mut conn = state.db.lock().map_err(|_| "DB lock error")?;
+        replace_mobile_database(&mut conn, &db_path, &temp_path)
+    }).await.map_err(|e| format!("Dictionary restore worker failed: {e}"))??;
     emit_drive_progress(&app, "download", downloaded, downloaded);
     Ok(())
 }
 
-#[tauri::command]
-async fn lookup_word(word: String, state: State<'_, AppState>) -> Result<Vec<DictEntry>, String> {
-    let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-    lookup_word_in_db(&conn, &word)
-}
-
-#[tauri::command]
-async fn scan_cursor(
-    sentence: String,
-    cursor: usize,
-    state: State<'_, AppState>,
-) -> Result<Option<CursorLookupResult>, String> {
-    let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-    scan_cursor_in_db(&conn, &sentence, cursor)
-}
-
-fn scan_cursor_in_db(
-    conn: &Connection,
-    sentence: &str,
-    cursor: usize,
-) -> Result<Option<CursorLookupResult>, String> {
-    let chars: Vec<char> = sentence.chars().collect();
-    if chars.is_empty() {
-        return Ok(None);
-    }
-
-    let cursor = cursor.min(chars.len().saturating_sub(1));
-
-    if let Some((start, end)) = scan_latin_word_bounds(&chars, cursor) {
-        if let Some(result) = scan_english_phrase_at_cursor(conn, &chars, cursor)? {
-            return Ok(Some(result));
-        }
-
-        let word: String = chars[start..end].iter().collect();
-        let mut entries = lookup_word_in_db(conn, &word)?;
-        if entries.is_empty() {
-            let lowercase = word.to_lowercase();
-            if lowercase != word {
-                entries = lookup_word_in_db(conn, &lowercase)?;
+fn replace_mobile_database(conn: &mut Connection, db_path: &Path, temp_path: &Path) -> Result<(), String> {
+    let rollback = db_path.with_extension("db.before-drive-restore");
+    let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    if busy != 0 { return Err("The dictionary is busy. Close lookup and retry.".into()); }
+    // A failed earlier restore must never have its only backup overwritten.
+    if rollback.exists() { return Err("A previous dictionary rollback file exists; the current database was left unchanged.".into()); }
+    *conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+    let result = (|| -> Result<Connection, String> {
+        std::fs::rename(db_path, &rollback).map_err(|e| e.to_string())?;
+        std::fs::rename(temp_path, db_path).map_err(|e| e.to_string())?;
+        let replacement = Connection::open(db_path).map_err(|e| e.to_string())?;
+        core::database::configure_connection(&replacement)?;
+        Ok(replacement)
+    })();
+    match result {
+        Ok(replacement) => { *conn = replacement; let _ = std::fs::remove_file(rollback); Ok(()) }
+        Err(error) => {
+            if rollback.exists() {
+                if db_path.exists() { std::fs::rename(db_path, temp_path).map_err(|e| format!("{error}; rollback failed: {e}"))?; }
+                std::fs::rename(&rollback, db_path).map_err(|e| format!("{error}; rollback failed: {e}"))?;
             }
-        }
-        return Ok((!entries.is_empty()).then_some(CursorLookupResult {
-            word,
-            start,
-            end,
-            entries,
-        }));
-    }
-
-    if !is_japanese_word_char(chars[cursor]) {
-        return Ok(None);
-    }
-
-    // Jidoujisho-style lookup: segment first, then search exactly the word block
-    // under the cursor. This keeps visual blocks and dictionary selection in sync.
-    if let Ok(tokens) = segment_japanese_text(sentence) {
-        if let Some(token) = tokens
-            .iter()
-            .find(|token| token.lookup && token.start <= cursor && cursor < token.end)
-        {
-            let entries = lookup_segmented_token(conn, token)?;
-            return Ok((!entries.is_empty()).then_some(CursorLookupResult {
-                word: token.text.clone(),
-                start: token.start,
-                end: token.end,
-                entries,
-            }));
-        }
-        return Ok(None);
-    }
-
-    let mut start = cursor;
-    while start > 0 && is_japanese_word_char(chars[start - 1]) {
-        start -= 1;
-    }
-
-    let mut end = cursor;
-    while end < chars.len() && is_japanese_word_char(chars[end]) {
-        end += 1;
-    }
-
-    if start >= end {
-        return Ok(None);
-    }
-
-    // Search around the tapped character, not from the beginning of the whole Japanese run.
-    // A valid candidate must actually cover the cursor. Longer compounds beat a stray
-    // one-kanji entry, while exact forms beat deinflected fallbacks of the same length.
-    let earliest_start = start.max(cursor.saturating_sub(11));
-    let mut best: Option<(
-        (u8, u8, std::cmp::Reverse<usize>, usize),
-        CursorLookupResult,
-    )> = None;
-
-    for candidate_start in earliest_start..=cursor {
-        let probe: String = chars[candidate_start..end].iter().collect();
-        let entries = lookup_word_in_db(conn, &probe)?;
-        if entries.is_empty() {
-            continue;
-        }
-        let match_len = entries
-            .iter()
-            .map(|entry| entry.source_length.max(1))
-            .max()
-            .unwrap_or(0)
-            .min(end - candidate_start);
-        if match_len == 0 || candidate_start + match_len <= cursor {
-            continue;
-        }
-
-        let word: String = chars[candidate_start..candidate_start + match_len]
-            .iter()
-            .collect();
-        let definition_penalty = if entries.iter().any(|entry| {
-            entry.definitions.iter().any(|definition| !definition.trim().is_empty())
-        }) { 0 } else { 1 };
-        let single_kanji_penalty = if match_len == 1
-            && chars
-                .get(candidate_start)
-                .copied()
-                .map(|ch| matches!(ch, '\u{3400}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'))
-                .unwrap_or(false)
-        { 1 } else { 0 };
-        let morphology_cost = entries
-            .iter()
-            .map(|entry| entry.deinflection_reasons.len())
-            .min()
-            .unwrap_or(usize::MAX);
-        let score = (
-            definition_penalty,
-            single_kanji_penalty,
-            std::cmp::Reverse(match_len),
-            morphology_cost + cursor.saturating_sub(candidate_start),
-        );
-        let result = CursorLookupResult {
-            word,
-            start: candidate_start,
-            end: candidate_start + match_len,
-            entries,
-        };
-        if best.as_ref().map(|(best_score, _)| score < *best_score).unwrap_or(true) {
-            best = Some((score, result));
+            *conn = Connection::open(db_path).map_err(|e| format!("{error}; reopen failed: {e}"))?;
+            core::database::configure_connection(conn)?;
+            Err(format!("Could not replace dictionary; previous database restored: {error}"))
         }
     }
-
-    Ok(best.map(|(_, result)| result))
 }
 
 fn lookup_segmented_token(conn: &Connection, token: &TextToken) -> Result<Vec<DictEntry>, String> {
-    let source_length = token.text.chars().count();
-    let mut entries = query_exact_forms(conn, &token.text, source_length, &[])?;
-    if !entries.is_empty() {
-        return Ok(entries);
+    let length = token.text.chars().count();
+    let entries: Vec<_> = lookup_word_in_db(conn, &token.text)?.into_iter().filter(|e| e.source_length >= length).collect();
+    if !entries.is_empty() { return Ok(entries); }
+    match token.lemma.as_deref().filter(|lemma| *lemma != token.text) {
+        Some(lemma) => lookup_word_in_db(conn, lemma),
+        None => Ok(entries),
     }
-
-    if source_length >= 2 && token.text.chars().last().is_some_and(is_kana) {
-        entries = deinflect_forms(conn, &token.text, source_length)?;
-        if !entries.is_empty() {
-            return Ok(entries);
-        }
-    }
-
-    if let Some(lemma) = token
-        .lemma
-        .as_deref()
-        .filter(|lemma| !lemma.is_empty() && *lemma != token.text)
-    {
-        entries = query_exact_forms(conn, lemma, source_length, &[])?;
-        if !entries.is_empty() {
-            return Ok(entries);
-        }
-        if lemma.chars().count() >= 2 && lemma.chars().last().is_some_and(is_kana) {
-            entries = deinflect_forms(conn, lemma, source_length)?;
-            if !entries.is_empty() {
-                return Ok(entries);
-            }
-        }
-    }
-
-    // The UI already selected this analyzer block. A shorter dictionary prefix
-    // belongs to a different tap target and must not replace the whole block.
-    Ok(lookup_word_in_db(conn, &token.text)?
-        .into_iter()
-        .filter(|entry| entry.source_length >= source_length)
-        .collect())
-}
-
-fn is_japanese_word_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{3040}'..='\u{30ff}'
-            | '\u{3400}'..='\u{9fff}'
-            | '\u{f900}'..='\u{faff}'
-            | '\u{ff66}'..='\u{ff9f}'
-            | '々'
-            | '〆'
-    )
-}
-
-fn is_kanji_char(ch: char) -> bool {
-    matches!(ch, '\u{3400}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
-}
-
-fn is_hiragana_char(ch: char) -> bool {
-    matches!(ch, '\u{3040}'..='\u{309f}')
-}
-
-fn is_katakana_char(ch: char) -> bool {
-    matches!(ch, '\u{30a0}'..='\u{30ff}' | '\u{ff66}'..='\u{ff9f}')
-}
-
-fn is_single_hiragana_particle(ch: char) -> bool {
-    matches!(
-        ch,
-        'は' | 'が' | 'を' | 'に' | 'へ' | 'で' | 'と' | 'の' | 'も' | 'や' | 'か' | 'ね'
-            | 'よ' | 'ぞ' | 'さ'
-    )
-}
-
-// Dictionary matching remains the primary tokenizer. This fallback only decides how far to
-// advance after an unknown surface, so one missing word cannot swallow the rest of a sentence.
-fn fallback_japanese_segment_len(chars: &[char], start: usize) -> usize {
-    if start >= chars.len() {
-        return 0;
-    }
-
-    let first = chars[start];
-    if is_kanji_char(first) {
-        let mut end = start;
-        while end < chars.len() && is_kanji_char(chars[end]) && end - start < 4 {
-            end += 1;
-        }
-        let kanji_end = end;
-        while end < chars.len() && is_hiragana_char(chars[end]) && end - kanji_end < 4 {
-            if end == kanji_end && is_single_hiragana_particle(chars[end]) {
-                break;
-            }
-            end += 1;
-        }
-        return (end - start).max(1);
-    }
-
-    if is_katakana_char(first) {
-        let mut end = start + 1;
-        while end < chars.len() && is_katakana_char(chars[end]) && end - start < 12 {
-            end += 1;
-        }
-        return end - start;
-    }
-
-    if is_hiragana_char(first) {
-        if is_single_hiragana_particle(first) {
-            return 1;
-        }
-        let mut end = start + 1;
-        while end < chars.len() && is_hiragana_char(chars[end]) && end - start < 6 {
-            if is_single_hiragana_particle(chars[end]) {
-                break;
-            }
-            end += 1;
-        }
-        return end - start;
-    }
-
-    1
-}
-
-fn is_latin_word_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric()
-        || matches!(ch, '\u{00c0}'..='\u{024f}' | '\u{1e00}'..='\u{1eff}')
-}
-
-fn is_latin_word_joiner(ch: char) -> bool {
-    matches!(ch, '\'' | '\u{2019}' | '-')
-}
-
-fn scan_latin_word_bounds(chars: &[char], cursor: usize) -> Option<(usize, usize)> {
-    if chars.is_empty() || cursor >= chars.len() || !is_latin_word_char(chars[cursor]) {
-        return None;
-    }
-    let mut start = cursor;
-    while start > 0 && (is_latin_word_char(chars[start - 1]) || is_latin_word_joiner(chars[start - 1])) {
-        start -= 1;
-    }
-    while start < chars.len() && !is_latin_word_char(chars[start]) {
-        start += 1;
-    }
-    let mut end = cursor + 1;
-    while end < chars.len() && (is_latin_word_char(chars[end]) || is_latin_word_joiner(chars[end])) {
-        end += 1;
-    }
-    while end > start && !is_latin_word_char(chars[end - 1]) {
-        end -= 1;
-    }
-    (start < end).then_some((start, end))
-}
-
-#[derive(Debug, Clone)]
-struct LatinWordSpan {
-    start: usize,
-    end: usize,
-    text: String,
-}
-
-fn collect_latin_word_spans(chars: &[char]) -> Vec<LatinWordSpan> {
-    let mut spans = Vec::new();
-    let mut index = 0usize;
-
-    while index < chars.len() {
-        if !is_latin_word_char(chars[index]) {
-            index += 1;
-            continue;
-        }
-
-        let start = index;
-        index += 1;
-        while index < chars.len()
-            && (is_latin_word_char(chars[index]) || is_latin_word_joiner(chars[index]))
-        {
-            index += 1;
-        }
-
-        let mut end = index;
-        while end > start && !is_latin_word_char(chars[end - 1]) {
-            end -= 1;
-        }
-        if start < end {
-            spans.push(LatinWordSpan {
-                start,
-                end,
-                text: chars[start..end].iter().collect(),
-            });
-        }
-    }
-
-    spans
-}
-
-fn is_english_phrase_gap(chars: &[char], start: usize, end: usize) -> bool {
-    start <= end
-        && chars[start..end].iter().all(|ch| {
-            !matches!(ch, '\n' | '\r') && (ch.is_whitespace() || matches!(ch, ','))
-        })
-}
-
-fn normalize_english_phrase_surface(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_string()
-}
-
-fn push_unique_english_form(forms: &mut Vec<String>, value: impl Into<String>) {
-    let value = normalize_english_phrase_surface(&value.into());
-    if value.is_empty() {
-        return;
-    }
-    let value = value.to_lowercase();
-    if !forms.contains(&value) {
-        forms.push(value.clone());
-    }
-    let ascii_apostrophe = value.replace('\u{2019}', "'");
-    if ascii_apostrophe != value && !forms.contains(&ascii_apostrophe) {
-        forms.push(ascii_apostrophe);
-    }
-}
-
-fn english_base_form_candidates(word: &str) -> Vec<String> {
-    let word = word.to_lowercase().replace('\u{2019}', "'");
-    let mut forms = Vec::new();
-    push_unique_english_form(&mut forms, word.clone());
-
-    const IRREGULAR: &[(&str, &str)] = &[
-        ("arose", "arise"),
-        ("arisen", "arise"),
-        ("ate", "eat"),
-        ("eaten", "eat"),
-        ("became", "become"),
-        ("began", "begin"),
-        ("begun", "begin"),
-        ("bit", "bite"),
-        ("bitten", "bite"),
-        ("blew", "blow"),
-        ("blown", "blow"),
-        ("broke", "break"),
-        ("broken", "break"),
-        ("brought", "bring"),
-        ("built", "build"),
-        ("bought", "buy"),
-        ("came", "come"),
-        ("caught", "catch"),
-        ("chose", "choose"),
-        ("chosen", "choose"),
-        ("dealt", "deal"),
-        ("did", "do"),
-        ("done", "do"),
-        ("drew", "draw"),
-        ("drawn", "draw"),
-        ("drank", "drink"),
-        ("drunk", "drink"),
-        ("drove", "drive"),
-        ("driven", "drive"),
-        ("fell", "fall"),
-        ("fallen", "fall"),
-        ("felt", "feel"),
-        ("fled", "flee"),
-        ("flew", "fly"),
-        ("flown", "fly"),
-        ("forgot", "forget"),
-        ("forgotten", "forget"),
-        ("found", "find"),
-        ("gave", "give"),
-        ("given", "give"),
-        ("got", "get"),
-        ("gotten", "get"),
-        ("grew", "grow"),
-        ("grown", "grow"),
-        ("had", "have"),
-        ("heard", "hear"),
-        ("held", "hold"),
-        ("kept", "keep"),
-        ("knew", "know"),
-        ("known", "know"),
-        ("laid", "lay"),
-        ("led", "lead"),
-        ("left", "leave"),
-        ("lent", "lend"),
-        ("lost", "lose"),
-        ("made", "make"),
-        ("met", "meet"),
-        ("paid", "pay"),
-        ("ran", "run"),
-        ("rang", "ring"),
-        ("rung", "ring"),
-        ("rode", "ride"),
-        ("ridden", "ride"),
-        ("rose", "rise"),
-        ("risen", "rise"),
-        ("said", "say"),
-        ("sang", "sing"),
-        ("sung", "sing"),
-        ("sat", "sit"),
-        ("saw", "see"),
-        ("seen", "see"),
-        ("sent", "send"),
-        ("shook", "shake"),
-        ("shaken", "shake"),
-        ("shot", "shoot"),
-        ("slept", "sleep"),
-        ("sold", "sell"),
-        ("spoke", "speak"),
-        ("spoken", "speak"),
-        ("spent", "spend"),
-        ("stood", "stand"),
-        ("stole", "steal"),
-        ("stolen", "steal"),
-        ("swam", "swim"),
-        ("swum", "swim"),
-        ("taught", "teach"),
-        ("thought", "think"),
-        ("threw", "throw"),
-        ("thrown", "throw"),
-        ("told", "tell"),
-        ("took", "take"),
-        ("taken", "take"),
-        ("understood", "understand"),
-        ("went", "go"),
-        ("gone", "go"),
-        ("woke", "wake"),
-        ("woken", "wake"),
-        ("won", "win"),
-        ("wore", "wear"),
-        ("worn", "wear"),
-        ("wrote", "write"),
-        ("written", "write"),
-        ("lying", "lie"),
-    ];
-    if let Some((_, base)) = IRREGULAR.iter().find(|(surface, _)| *surface == word) {
-        push_unique_english_form(&mut forms, *base);
-    }
-
-    let is_double_consonant = |value: &str| {
-        let bytes = value.as_bytes();
-        bytes.len() >= 2
-            && bytes[bytes.len() - 1] == bytes[bytes.len() - 2]
-            && matches!(bytes[bytes.len() - 1] as char, 'b'..='d' | 'f'..='h' | 'j'..='n' | 'p'..='t' | 'v'..='z')
-    };
-
-    if let Some(stem) = word.strip_suffix("ies") {
-        push_unique_english_form(&mut forms, format!("{stem}y"));
-    }
-    if let Some(stem) = word.strip_suffix("ied") {
-        push_unique_english_form(&mut forms, format!("{stem}y"));
-    }
-    if let Some(stem) = word.strip_suffix("ing").filter(|stem| stem.len() >= 2) {
-        push_unique_english_form(&mut forms, stem);
-        push_unique_english_form(&mut forms, format!("{stem}e"));
-        if is_double_consonant(stem) {
-            push_unique_english_form(&mut forms, &stem[..stem.len() - 1]);
-        }
-    }
-    if let Some(stem) = word.strip_suffix("ed").filter(|stem| stem.len() >= 2) {
-        push_unique_english_form(&mut forms, stem);
-        push_unique_english_form(&mut forms, format!("{stem}e"));
-        if is_double_consonant(stem) {
-            push_unique_english_form(&mut forms, &stem[..stem.len() - 1]);
-        }
-    }
-    if word.len() > 3 && word.ends_with('s') && !word.ends_with("ss") {
-        push_unique_english_form(&mut forms, &word[..word.len() - 1]);
-    }
-    if let Some(stem) = word.strip_suffix("es").filter(|stem| stem.len() >= 2) {
-        push_unique_english_form(&mut forms, stem);
-    }
-
-    forms
-}
-
-fn add_possessive_idiom_variants(forms: &mut Vec<String>) {
-    let originals = forms.clone();
-    for form in originals {
-        let words = form.split_whitespace().collect::<Vec<_>>();
-        if !words.iter().any(|word| {
-            matches!(*word, "my" | "your" | "his" | "her" | "our" | "their" | "its")
-        }) {
-            continue;
-        }
-        for replacement in ["one's", "someone's"] {
-            let replaced = words
-                .iter()
-                .map(|word| {
-                    if matches!(*word, "my" | "your" | "his" | "her" | "our" | "their" | "its") {
-                        replacement
-                    } else {
-                        *word
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            push_unique_english_form(forms, replaced);
-        }
-    }
-}
-
-fn english_phrase_lookup_forms(
-    chars: &[char],
-    words: &[LatinWordSpan],
-    left: usize,
-    right: usize,
-) -> Vec<String> {
-    let mut forms = Vec::new();
-    let surface: String = chars[words[left].start..words[right].end].iter().collect();
-    let joined = words[left..=right]
-        .iter()
-        .map(|word| word.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let first_word = &words[left].text;
-    let normalized_first = first_word.to_lowercase().replace('\u{2019}', "'");
-    for base in english_base_form_candidates(first_word)
-        .into_iter()
-        .filter(|base| base != &normalized_first)
-    {
-        let rest = words[left + 1..=right]
-            .iter()
-            .map(|word| word.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        push_unique_english_form(&mut forms, format!("{base} {rest}"));
-
-        if let Some(surface_rest) = surface.strip_prefix(first_word.as_str()) {
-            push_unique_english_form(&mut forms, format!("{base}{surface_rest}"));
-        }
-    }
-
-    // Prefer the canonical lemma before a Yomitan `non-lemma` redirect.
-    push_unique_english_form(&mut forms, surface.clone());
-    push_unique_english_form(&mut forms, joined);
-
-    add_possessive_idiom_variants(&mut forms);
-    forms
-}
-
-fn is_english_phrasal_particle(word: &str) -> bool {
-    matches!(
-        word.to_lowercase().as_str(),
-        "about"
-            | "across"
-            | "ahead"
-            | "along"
-            | "apart"
-            | "around"
-            | "aside"
-            | "away"
-            | "back"
-            | "by"
-            | "down"
-            | "forward"
-            | "in"
-            | "off"
-            | "on"
-            | "out"
-            | "over"
-            | "round"
-            | "through"
-            | "together"
-            | "up"
-    )
-}
-
-fn english_separable_phrasal_forms(verb: &str, particle: &str) -> Vec<String> {
-    let mut forms = Vec::new();
-    for base in english_base_form_candidates(verb) {
-        push_unique_english_form(&mut forms, format!("{base} {particle}"));
-    }
-    forms
-}
-
-fn scan_english_phrase_at_cursor(
-    conn: &Connection,
-    chars: &[char],
-    cursor: usize,
-) -> Result<Option<CursorLookupResult>, String> {
-    const MAX_PHRASE_WORDS: usize = 8;
-
-    let words = collect_latin_word_spans(chars);
-    let Some(hit_index) = words
-        .iter()
-        .position(|word| word.start <= cursor && cursor < word.end)
-    else {
-        return Ok(None);
-    };
-
-    let mut component_start = hit_index;
-    while component_start > 0
-        && hit_index - component_start + 1 < MAX_PHRASE_WORDS
-        && is_english_phrase_gap(
-            chars,
-            words[component_start - 1].end,
-            words[component_start].start,
-        )
-    {
-        component_start -= 1;
-    }
-
-    let mut component_end = hit_index;
-    while component_end + 1 < words.len()
-        && component_end - hit_index + 1 < MAX_PHRASE_WORDS
-        && is_english_phrase_gap(
-            chars,
-            words[component_end].end,
-            words[component_end + 1].start,
-        )
-    {
-        component_end += 1;
-    }
-
-    let max_words = MAX_PHRASE_WORDS.min(component_end - component_start + 1);
-    // Prefer the nearest expression under the tapped word. A longer idiom is still
-    // selected when the user taps a word which only belongs to that idiom.
-    for word_count in 2..=max_words {
-        for left in component_start..=hit_index {
-            let right = left + word_count - 1;
-            if right > component_end || hit_index > right {
-                continue;
-            }
-
-            let source_length = words[right].end - words[left].start;
-            for form in english_phrase_lookup_forms(chars, &words, left, right) {
-                let entries = query_exact_forms(conn, &form, source_length, &[])?;
-                if entries.is_empty() {
-                    continue;
-                }
-                let word = entries
-                    .first()
-                    .map(|entry| entry.term.clone())
-                    .filter(|term| !term.is_empty())
-                    .unwrap_or(form);
-                return Ok(Some(CursorLookupResult {
-                    word,
-                    start: words[left].start,
-                    end: words[right].end,
-                    entries,
-                }));
-            }
-        }
-    }
-
-    // Separable phrasal verbs keep their dictionary headword together but allow an
-    // object between the verb and particle: "take it out", "space the cards out".
-    const MAX_INTERVENING_WORDS: usize = 4;
-    for span_word_count in 3..=MAX_INTERVENING_WORDS + 2 {
-        for left in component_start..=hit_index {
-            let right = left + span_word_count - 1;
-            if right > component_end || hit_index > right {
-                continue;
-            }
-            if !is_english_phrasal_particle(&words[right].text) {
-                continue;
-            }
-
-            let source_length = words[right].end - words[left].start;
-            for form in english_separable_phrasal_forms(&words[left].text, &words[right].text) {
-                let entries = query_exact_forms(conn, &form, source_length, &[])?;
-                if entries.is_empty() {
-                    continue;
-                }
-                let word = entries
-                    .first()
-                    .map(|entry| entry.term.clone())
-                    .filter(|term| !term.is_empty())
-                    .unwrap_or(form);
-                return Ok(Some(CursorLookupResult {
-                    word,
-                    start: words[left].start,
-                    end: words[right].end,
-                    entries,
-                }));
-            }
-        }
-    }
-
-    Ok(None)
-}
-
-#[tauri::command]
-async fn manage_browser(
-    _action: String,
-    _id: Option<String>,
-    _url: Option<String>,
-    _x: Option<i32>,
-    _y: Option<i32>,
-    _width: Option<i32>,
-    _height: Option<i32>,
-) -> Result<(), String> {
-    Ok(())
-}
-
-#[tauri::command]
-async fn get_browser_info() -> Result<Vec<(String, String)>, String> {
-    Ok(Vec::new())
 }
 
 #[tauri::command]
@@ -2178,98 +866,9 @@ async fn close_jl_mode_window() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn get_furigana(
-    text: String,
-    _context_before: Option<String>,
-    _context_after: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<Vec<Value>, String> {
-    if let Ok(tokens) = segment_japanese_text(&text) {
-        return tokens
-            .into_iter()
-            .map(|token| serde_json::to_value(token).map_err(|error| error.to_string()))
-            .collect();
-    }
-
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-    let mut tokens: Vec<Value> = Vec::new();
-    let mut i = 0usize;
-
-    while i < chars.len() {
-        // Preserve English word boundaries so English dictionaries receive a word,
-        // never an entire sentence.
-        if is_latin_word_char(chars[i]) {
-            let start = i;
-            i += 1;
-            while i < chars.len() && (is_latin_word_char(chars[i]) || is_latin_word_joiner(chars[i])) {
-                i += 1;
-            }
-            while i > start && !is_latin_word_char(chars[i - 1]) {
-                i -= 1;
-            }
-            let seg: String = chars[start..i].iter().collect();
-            tokens.push(serde_json::json!({ "text": seg, "reading": Value::Null }));
-            continue;
-        }
-
-        // Group runs of whitespace and punctuation into a plain token.
-        if !is_japanese_word_char(chars[i]) {
-            let start = i;
-            while i < chars.len()
-                && !is_japanese_word_char(chars[i])
-                && !is_latin_word_char(chars[i])
-            {
-                i += 1;
-            }
-            let seg: String = chars[start..i].iter().collect();
-            tokens.push(serde_json::json!({ "text": seg, "reading": Value::Null }));
-            continue;
-        }
-
-        // Greedy longest dictionary match from the current position (Yomitan-style),
-        // using the same term/reading table the lookup popup reads.
-        let rest: String = chars[i..].iter().collect();
-        let entries = lookup_word_in_db(&conn, &rest)?;
-        if let Some(first) = entries.first() {
-            let len = first.source_length.max(1).min(chars.len() - i);
-            let word: String = chars[i..i + len].iter().collect();
-            // Only show furigana for exact (non-deinflected) matches — a deinflected entry's
-            // reading is for the dictionary form, not the conjugated surface on screen.
-            let reading = if !first.reading.is_empty()
-                && first.reading != word
-                && first.deinflection_reasons.is_empty()
-            {
-                Value::String(first.reading.clone())
-            } else {
-                Value::Null
-            };
-            tokens.push(serde_json::json!({ "text": word, "reading": reading }));
-            i += len;
-        } else {
-            let length = fallback_japanese_segment_len(&chars, i)
-                .max(1)
-                .min(chars.len() - i);
-            let seg: String = chars[i..i + length].iter().collect();
-            i += length;
-            tokens.push(serde_json::json!({ "text": seg, "reading": Value::Null }));
-        }
-    }
-
-    Ok(tokens)
-}
-
-#[tauri::command]
-async fn get_flow_tokens(
-    text: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<Value>, String> {
-    let conn = state.db.lock().map_err(|_| "DB lock error".to_string())?;
-    resolve_flow_tokens(&text, &conn)
+async fn get_flow_tokens(text: String, app: tauri::AppHandle) -> Result<Vec<Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || { let db = open_db(&app)?; resolve_flow_tokens(&text, &db) })
+        .await.map_err(|e| e.to_string())?
 }
 
 fn resolve_flow_tokens(text: &str, conn: &Connection) -> Result<Vec<Value>, String> {
@@ -2287,7 +886,10 @@ fn resolve_flow_tokens(text: &str, conn: &Connection) -> Result<Vec<Value>, Stri
             if let Some(object) = value.as_object_mut() {
                 if let Some(entry) = entries.first() {
                     object.insert("lookupTerm".to_string(), Value::String(entry.term.clone()));
-                    object.insert("lookupReading".to_string(), Value::String(entry.reading.clone()));
+                    object.insert(
+                        "lookupReading".to_string(),
+                        Value::String(entry.reading.clone()),
+                    );
                     object.insert("lookupFound".to_string(), Value::Bool(true));
                 } else {
                     object.insert("lookupFound".to_string(), Value::Bool(false));
@@ -2296,11 +898,6 @@ fn resolve_flow_tokens(text: &str, conn: &Connection) -> Result<Vec<Value>, Stri
             Ok(value)
         })
         .collect()
-}
-
-#[tauri::command]
-async fn lookup_cambridge_api(_word: String, _config: Value) -> Result<Vec<DictEntry>, String> {
-    Ok(Vec::new())
 }
 
 #[tauri::command]
@@ -2455,19 +1052,22 @@ async fn stop_capture_agent_server() -> Result<(), String> {
 
 #[tauri::command]
 fn get_flow_timer_state() -> bool {
-    MOBILE_FLOW_TIMER_PAUSED.load(Ordering::Relaxed)
+    flow_timer::snapshot(None, false).paused
 }
 
 #[tauri::command]
 fn set_flow_timer_state(paused: bool) -> bool {
-    MOBILE_FLOW_TIMER_PAUSED.store(paused, Ordering::Relaxed);
-    paused
+    flow_timer::snapshot(Some(paused), false).paused
 }
 
 #[tauri::command]
 fn toggle_flow_timer() -> bool {
-    let previous = MOBILE_FLOW_TIMER_PAUSED.fetch_xor(true, Ordering::Relaxed);
-    !previous
+    flow_timer::snapshot(None, true).paused
+}
+
+#[tauri::command]
+fn get_mobile_flow_timer_snapshot() -> flow_timer::Snapshot {
+    flow_timer::snapshot(None, false)
 }
 
 fn normalize_api_base_url(url: &str) -> String {
@@ -2598,20 +1198,23 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(generate_handler![
-            import_dictionary,
-            import_dictionaries,
-            lookup_text,
-            get_installed_dicts,
-            clear_database,
-            delete_dictionaries,
-            lookup_word,
-            scan_cursor,
+            dictionary_engine::delete_dictionary,
+            dictionary_engine::update_dictionary_from_source,
+            dictionary_engine::check_dictionary_updates,
+            local_audio::inspect_local_audio_database,
+            local_audio::lookup_local_audio,
+            local_audio::lookup_online_audio,
+            dictionary_import::import_dictionary,
+            dictionary_import::import_dictionaries,
+            dictionary_engine::get_installed_dicts,
+            dictionary_engine::clear_database,
+            dictionary_engine::delete_dictionaries,
+            dictionary_engine::lookup_word,
+            dictionary_engine::scan_cursor,
             start_oauth_server,
             get_dictionary_storage_info,
             upload_db_to_drive,
             download_db_from_drive,
-            manage_browser,
-            get_browser_info,
             get_windows_device_name,
             log_frontend_diagnostics,
             clear_discord_presence,
@@ -2619,9 +1222,8 @@ pub fn run() {
             set_jl_mode_line,
             open_jl_mode_window,
             close_jl_mode_window,
-            get_furigana,
+            dictionary_engine::get_furigana,
             get_flow_tokens,
-            lookup_cambridge_api,
             anki_check,
             start_text_sync_server,
             stop_text_sync_server,
@@ -2636,6 +1238,7 @@ pub fn run() {
             load_workspace_state,
             stop_capture_agent_server,
             get_flow_timer_state,
+            get_mobile_flow_timer_snapshot,
             set_flow_timer_state,
             toggle_flow_timer,
             account_login,
@@ -2652,6 +1255,20 @@ mod deinflect_tests {
     use super::*;
     use rusqlite::Connection;
     use std::io::Cursor;
+
+
+    #[test]
+    fn failed_mobile_restore_reopens_previous_database() {
+        let dir = std::env::temp_dir().join(format!("setsuna-restore-test-{}", unix_now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictionary.db");
+        let mut conn = Connection::open(&path).unwrap();
+        core::database::configure_connection(&conn).unwrap();
+        conn.execute_batch("CREATE TABLE preserved(value); INSERT INTO preserved VALUES(42);").unwrap();
+        assert!(replace_mobile_database(&mut conn, &path, &dir.join("missing.db")).unwrap_err().contains("restored"));
+        assert_eq!(conn.query_row("SELECT value FROM preserved", [], |row| row.get::<_, i64>(0)).unwrap(), 42);
+        drop(conn); std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn seeded_conn() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -2674,31 +1291,6 @@ mod deinflect_tests {
         conn
     }
 
-    #[test]
-    fn mobile_yomitan_import_uses_canonical_entries_table() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        init_mobile_db(&mut conn).unwrap();
-        let tx = conn.transaction().unwrap();
-        let count = stream_mobile_term_bank(
-            Cursor::new(r#"[["受け取る","うけとる","v5r",null,null,["to receive"],null,"vt"]]"#.as_bytes()),
-            &tx,
-            "Mobile test",
-        )
-        .unwrap();
-        tx.commit().unwrap();
-
-        assert_eq!(count, 1);
-        assert_eq!(
-            conn.query_row(
-                "SELECT COUNT(*) FROM entries WHERE dict_name = 'Mobile test'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-                .unwrap(),
-            1
-        );
-        assert!(!core::database::table_exists(&conn, "dictionary").unwrap());
-    }
 
     #[test]
     fn mobile_lookup_reads_plain_desktop_definition() {
@@ -2713,7 +1305,7 @@ mod deinflect_tests {
         let entries = lookup_word_in_db(&conn, "desktop").unwrap();
         assert!(entries
             .iter()
-            .any(|entry| entry.definitions == vec!["plain definition".to_string()]));
+            .any(|entry| entry.definition == "plain definition"));
     }
 
     #[test]
@@ -2728,7 +1320,10 @@ mod deinflect_tests {
             !hit.deinflection_reasons.is_empty(),
             "deinflected entry must carry a reason chain"
         );
-        assert_eq!(hit.source_length, 3, "source_length must span the full surface");
+        assert_eq!(
+            hit.source_length, 3,
+            "source_length must span the full surface"
+        );
     }
 
     #[test]
@@ -2745,7 +1340,10 @@ mod deinflect_tests {
     fn plain_noun_is_exact_with_no_reasons() {
         let conn = seeded_conn();
         let entries = lookup_word_in_db(&conn, "杏").unwrap();
-        let hit = entries.iter().find(|e| e.term == "杏").expect("杏 should match exactly");
+        let hit = entries
+            .iter()
+            .find(|e| e.term == "杏")
+            .expect("杏 should match exactly");
         assert!(
             hit.deinflection_reasons.is_empty(),
             "an exact noun match must not carry deinflection reasons"
@@ -2807,36 +1405,23 @@ mod deinflect_tests {
     }
 
     #[test]
-    fn unknown_japanese_does_not_swallow_the_rest_of_the_sentence() {
-        let chars: Vec<char> = "米屋で米をもらい、来た道を引き返す。".chars().collect();
-        let mut segments = Vec::new();
-        let mut index = 0usize;
-        while index < chars.len() {
-            if !is_japanese_word_char(chars[index]) {
-                index += 1;
-                continue;
-            }
-            let length = fallback_japanese_segment_len(&chars, index);
-            segments.push(chars[index..index + length].iter().collect::<String>());
-            index += length;
-        }
-        assert!(segments.len() >= 8, "segments: {segments:?}");
-        assert!(segments.contains(&"米屋".to_string()));
-        assert!(segments.contains(&"来た".to_string()));
-        assert!(segments.contains(&"引き".to_string()));
-        assert!(segments.contains(&"返す".to_string()));
+    fn deleted_dictionaries_do_not_return_after_restart() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        core::database::clear_dictionary_data(&conn).unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     }
 
+
     #[test]
-    fn mobile_scan_cursor_selects_word_under_tap() {
+    fn mobile_scan_cursor_selects_word_from_the_token_start() {
         let mut conn = Connection::open_in_memory().unwrap();
         init_mobile_db(&mut conn).unwrap();
         let sentence = "私は日本人です";
-        let result = scan_cursor_in_db(&conn, sentence, 3)
-            .unwrap()
-            .expect("tap on 本 must resolve a word");
+        let result = scan_cursor_in_db(&conn, sentence, 2).expect("the 日本人 token start must resolve the compound");
         assert_eq!(result.word, "日本人");
-        assert_eq!((result.start, result.end), (2, 5));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (2, 5));
     }
 
     #[test]
@@ -2847,32 +1432,112 @@ mod deinflect_tests {
             .iter()
             .find(|token| token.get("text").and_then(Value::as_str) == Some("会いできます"))
             .expect("the polite verb must remain one clickable surface block");
-        assert_eq!(token.get("lookupTerm").and_then(Value::as_str), Some("会う"));
-        assert_eq!(token.get("lookupReading").and_then(Value::as_str), Some("あう"));
+        assert_eq!(
+            token.get("lookupTerm").and_then(Value::as_str),
+            Some("会う")
+        );
+        assert_eq!(
+            token.get("lookupReading").and_then(Value::as_str),
+            Some("あう")
+        );
     }
 
     #[test]
     fn mobile_scan_cursor_keeps_the_full_segment_instead_of_a_short_prefix() {
         let mut conn = Connection::open_in_memory().unwrap();
         init_mobile_db(&mut conn).unwrap();
-        let result = scan_cursor_in_db(&conn, "米屋で米をもらい、来た道を引き返す。", 0)
-            .unwrap()
-            .expect("米屋 must resolve as the selected analyzer block");
+        let result = scan_cursor_in_db(&conn, "米屋で米をもらい、来た道を引き返す。", 0).expect("米屋 must resolve as the selected analyzer block");
         assert_eq!(result.word, "米屋");
-        assert_eq!((result.start, result.end), (0, 2));
-        assert!(result.entries.iter().all(|entry| entry.source_length == 2));
-        assert!(result.entries.iter().any(|entry| entry.term == "米屋"));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (0, 2));
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "米屋" && entry.source_length == 2));
+        assert!(result
+            .entries
+            .windows(2)
+            .all(|pair| pair[0].source_length >= pair[1].source_length));
+    }
+
+    #[test]
+    fn mobile_lookup_prioritizes_exact_kana_over_frequent_homophones() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        conn.execute_batch("INSERT INTO entries(term,reading,definition,dict_name,tags) VALUES
+            ('日々','ひび','[\"daily\"]','test','n'),('ひび','ひび','[\"crack\"]','test','n');
+            INSERT INTO frequencies(term,reading,dict_name,display_value,value) VALUES
+            ('日々','ひび','freq','1',1),('ひび','ひび','freq','20000',20000);").unwrap();
+        for surface in ["ヒビ", "ひび", "ﾋﾋﾞ"] {
+            let result = lookup_word_in_db(&conn, surface).unwrap();
+            assert_eq!(result[0].term, "ひび", "{surface}");
+            assert!(result.iter().any(|entry| entry.term == "日々"));
+        }
+    }
+
+    #[test]
+    fn mobile_lookup_keeps_every_matching_katakana_prefix() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        for (term, definition) in [
+            ("リバーシ", "Reversi"),
+            ("リバー", "liver; river"),
+            ("リバ", "reversible"),
+        ] {
+            conn.execute(
+                "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES (?1, ?1, ?2, 'prefix-test', 'n')",
+                params![term, definition],
+            )
+            .unwrap();
+        }
+
+        let result = scan_cursor_in_db(&conn, "リバーシを始める", 0).expect("リバーシ must resolve");
+        assert_eq!(result.word, "リバーシ");
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (0, 4));
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "リバーシ" && entry.source_length == 4));
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "リバー" && entry.source_length == 3));
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "リバ" && entry.source_length == 2));
+    }
+
+    #[test]
+    fn mobile_lookup_prefers_the_longest_kana_reading() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES ('制限', 'せいげん', 'restriction', 'prefix-test', 'n')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES ('所為', 'せい', 'cause', 'prefix-test', 'n')",
+            [],
+        )
+        .unwrap();
+
+        let result = scan_cursor_in_db(&conn, "せいげんを超える", 0).expect("せいげん must resolve");
+        assert_eq!(result.word, "せいげん");
+        assert_eq!(result.entries[0].term, "制限");
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.term == "所為" && entry.source_length == 2));
     }
 
     #[test]
     fn mobile_scan_cursor_does_not_prepend_unrelated_katakana() {
         let mut conn = Connection::open_in_memory().unwrap();
         init_mobile_db(&mut conn).unwrap();
-        let result = scan_cursor_in_db(&conn, "ド変態", 1)
-            .unwrap()
-            .expect("tap on 変 must resolve 変態");
+        let result = scan_cursor_in_db(&conn, "ド変態", 1).expect("tap on 変 must resolve 変態");
         assert_eq!(result.word, "変態");
-        assert_eq!((result.start, result.end), (1, 3));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (1, 3));
     }
 
     fn insert_english_test_entry(conn: &Connection, term: &str) {
@@ -2890,11 +1555,9 @@ mod deinflect_tests {
         insert_english_test_entry(&conn, "get out");
         insert_english_test_entry(&conn, "out");
 
-        let result = scan_cursor_in_db(&conn, "Please get out now.", 12)
-            .unwrap()
-            .expect("get out must resolve as a phrase");
+        let result = scan_cursor_in_db(&conn, "Please get out now.", 12).expect("get out must resolve as a phrase");
         assert_eq!(result.word, "get out");
-        assert_eq!((result.start, result.end), (7, 14));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (7, 14));
         assert!(result.entries.iter().all(|entry| entry.term == "get out"));
     }
 
@@ -2903,11 +1566,9 @@ mod deinflect_tests {
         let conn = seeded_conn();
         insert_english_test_entry(&conn, "space out");
 
-        let result = scan_cursor_in_db(&conn, "I spaced out again.", 10)
-            .unwrap()
-            .expect("spaced out must resolve to space out");
+        let result = scan_cursor_in_db(&conn, "I spaced out again.", 10).expect("spaced out must resolve to space out");
         assert_eq!(result.word, "space out");
-        assert_eq!((result.start, result.end), (2, 12));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (2, 12));
     }
 
     #[test]
@@ -2916,11 +1577,9 @@ mod deinflect_tests {
         insert_english_test_entry(&conn, "close up");
         insert_english_test_entry(&conn, "closed");
 
-        let result = scan_cursor_in_db(&conn, "I closed up", 5)
-            .unwrap()
-            .expect("closed up must resolve to close up");
+        let result = scan_cursor_in_db(&conn, "I closed up", 5).expect("closed up must resolve to close up");
         assert_eq!(result.word, "close up");
-        assert_eq!((result.start, result.end), (2, 11));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (2, 11));
         assert!(result.entries.iter().all(|entry| entry.term == "close up"));
     }
 
@@ -2939,11 +1598,9 @@ mod deinflect_tests {
         )
         .unwrap();
 
-        let result = scan_cursor_in_db(&conn, "Anyway, I closed up shop.", 21)
-            .unwrap()
-            .expect("the canonical close up shop article must win");
+        let result = scan_cursor_in_db(&conn, "Anyway, I closed up shop.", 21).expect("the canonical close up shop article must win");
         assert_eq!(result.word, "close up shop");
-        assert_eq!((result.start, result.end), (10, 24));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (10, 24));
         assert!(result
             .entries
             .iter()
@@ -2956,11 +1613,9 @@ mod deinflect_tests {
         insert_english_test_entry(&conn, "close up");
         insert_english_test_entry(&conn, "close up shop");
 
-        let result = scan_cursor_in_db(&conn, "Anyway, I closed up shop.", 13)
-            .unwrap()
-            .expect("closed up must remain available inside the longer idiom");
+        let result = scan_cursor_in_db(&conn, "Anyway, I closed up shop.", 13).expect("closed up must remain available inside the longer idiom");
         assert_eq!(result.word, "close up");
-        assert_eq!((result.start, result.end), (10, 19));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (10, 19));
         assert!(result.entries.iter().all(|entry| entry.term == "close up"));
     }
 
@@ -2971,11 +1626,9 @@ mod deinflect_tests {
 
         let sentence = "She spaced the cards out evenly.";
         let cursor = sentence.find("cards").unwrap() + 2;
-        let result = scan_cursor_in_db(&conn, sentence, cursor)
-            .unwrap()
-            .expect("separable phrasal verb must resolve across its object");
+        let result = scan_cursor_in_db(&conn, sentence, cursor).expect("separable phrasal verb must resolve across its object");
         assert_eq!(result.word, "space out");
-        assert_eq!((result.start, result.end), (4, 24));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (4, 24));
     }
 
     #[test]
@@ -2983,11 +1636,9 @@ mod deinflect_tests {
         let conn = seeded_conn();
         insert_english_test_entry(&conn, "kick the bucket");
 
-        let result = scan_cursor_in_db(&conn, "He kicked the bucket yesterday.", 16)
-            .unwrap()
-            .expect("inflected idiom must resolve");
+        let result = scan_cursor_in_db(&conn, "He kicked the bucket yesterday.", 16).expect("inflected idiom must resolve");
         assert_eq!(result.word, "kick the bucket");
-        assert_eq!((result.start, result.end), (3, 20));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (3, 20));
     }
 
     #[test]
@@ -2995,11 +1646,9 @@ mod deinflect_tests {
         let conn = seeded_conn();
         insert_english_test_entry(&conn, "pull one's leg");
 
-        let result = scan_cursor_in_db(&conn, "Stop pulling my leg.", 17)
-            .unwrap()
-            .expect("possessive idiom must resolve");
+        let result = scan_cursor_in_db(&conn, "Stop pulling my leg.", 17).expect("possessive idiom must resolve");
         assert_eq!(result.word, "pull one's leg");
-        assert_eq!((result.start, result.end), (5, 19));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (5, 19));
     }
 
     #[test]
@@ -3007,10 +1656,17 @@ mod deinflect_tests {
         let conn = seeded_conn();
         insert_english_test_entry(&conn, "out");
 
-        let result = scan_cursor_in_db(&conn, "Stay out.", 6)
-            .unwrap()
-            .expect("single word fallback must still work");
+        let result = scan_cursor_in_db(&conn, "Stay out.", 6).expect("single word fallback must still work");
         assert_eq!(result.word, "out");
-        assert_eq!((result.start, result.end), (5, 8));
+        assert_eq!((result.match_start, (result.match_start + result.match_len)), (5, 8));
     }
+}
+
+fn get_data_path(app: &tauri::AppHandle, filename: &str) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(filename))
+}
+fn open_db(app: &tauri::AppHandle) -> Result<database_access::DatabaseConnection, String> {
+    database_access::DatabaseConnection::open(&get_data_path(app, "dictionary.db")?)
 }

@@ -1,0 +1,4 @@
+.yatsu-workspace { flex: 1; display: flex; min-height: 0; min-width: 0; background: var(--bg-primary, #1a1a1a); }
+.yatsu-workspace-reader { flex: 1; min-height: 0; min-width: 0; }
+.yatsu-workspace-error { margin: auto; padding: 24px; max-width: 600px; color: #ffa8a8; overflow-wrap: anywhere; }
+.yatsu-workspace-error button { padding: 10px 18px; color: inherit; background: #ffffff12; border: 1px solid #ffffff30; border-radius: 8px; cursor: pointer; }

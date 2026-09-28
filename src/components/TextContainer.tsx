@@ -227,18 +227,19 @@ const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none'
     // Word-level: render each analyzer token as a highlighted, tappable chip.
     if (tokens && tokens.length) {
         const showRuby = furiganaMode === 'auto';
-        let searchFrom = 0;
+        let searchFromCodeUnits = 0;
         const nodes: ReactNode[] = tokens.map((tk, index) => {
             const surface = typeof tk?.text === 'string' ? tk.text : String(tk?.text ?? '');
             if (!surface) return null;
             // Native segmentation returns Unicode character offsets. Falling back to
             // indexOf is only needed for older backends and cached legacy results.
             const nativeStart = Number(tk?.start);
-            const found = text.indexOf(surface, searchFrom);
+            const found = text.indexOf(surface, searchFromCodeUnits);
+            const fallbackStartCodeUnits = found >= 0 ? found : searchFromCodeUnits;
             const cursor = Number.isInteger(nativeStart) && nativeStart >= 0
                 ? nativeStart
-                : (found >= 0 ? found : searchFrom);
-            searchFrom = (found >= 0 ? found : searchFrom) + surface.length;
+                : Array.from(text.slice(0, fallbackStartCodeUnits)).length;
+            searchFromCodeUnits = fallbackStartCodeUnits + surface.length;
 
             const tappable = JAPANESE_TOKEN_RE.test(surface) || LATIN_TOKEN_RE.test(surface);
             if (!tappable) {
@@ -330,12 +331,16 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
                 contentEditable={isEditing}
                 suppressContentEditableWarning={true}
                 onBlur={(e) => {
+                    // Focus also leaves descendant lookup buttons. Never replace
+                    // their React DOM with plain text when the line isn't being edited.
+                    if (!isEditing || e.target !== e.currentTarget) return;
                     setIsEditing(false);
                     const newText = e.currentTarget.innerText.trim();
                     if (newText !== line && newText !== "") onEdit(index, newText);
                     else e.currentTarget.innerText = line; 
                 }}
                 onKeyDown={(e) => {
+                    if (!isEditing || e.target !== e.currentTarget) return;
                     if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
                         e.currentTarget.blur();
@@ -353,7 +358,7 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
                     padding: isEditing ? '2px 6px' : '0', borderRadius: '4px'
                 }}
             >
-                {isEditing ? line : suppliedFurigana ? (
+                {isEditing ? line : suppliedFurigana && !onLookupToken ? (
                     <SuppliedFuriganaLine text={line} supplied={suppliedFurigana} searchQuery={searchQuery} />
                 ) : (
                     onLookupToken ? (
@@ -416,9 +421,19 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
   const handleTokenTap = useCallback(async (lineIndex: number, token: string, sentence: string, cursor: number) => {
       const requestId = ++lookupRequestRef.current;
       setActiveToken({ line: lineIndex, start: cursor, length: Array.from(token).length });
-      const match = await onLookupToken?.(token, sentence, cursor);
-      if (requestId !== lookupRequestRef.current || !match || match.length <= 0) return;
-      setActiveToken({ line: lineIndex, start: match.start, length: match.length });
+      try {
+          const match = await onLookupToken?.(token, sentence, cursor);
+          if (requestId !== lookupRequestRef.current) return;
+          if (!match || match.length <= 0) {
+              if (!lookupActiveRef.current) setActiveToken(null);
+              return;
+          }
+          setActiveToken({ line: lineIndex, start: match.start, length: match.length });
+      } catch {
+          if (requestId === lookupRequestRef.current && !lookupActiveRef.current) {
+              setActiveToken(null);
+          }
+      }
   }, [onLookupToken]);
   // On mobile the lookup opens as a bottom sheet; lift the tapped word near the top so it
   // stays visible above the sheet instead of being covered by it.
@@ -446,8 +461,20 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
   const isVertical = textOrientation === 'vertical';
 
   const rowVirtualizer = useVirtualizer({
-    count: lines.length > 0 ? lines.length + 1 : 0,
+    count: lines.length > 0 ? lines.length + (isVertical ? 0 : 1) : 0,
     getScrollElement: () => parentRef.current,
+    horizontal: isVertical,
+    isRtl: isVertical,
+    // ResizeObserver's inlineSize is height for vertical-rl text; the
+    // horizontal virtualizer needs the physical column width instead.
+    measureElement: (element) => isVertical ? (element as HTMLElement).offsetWidth : (element as HTMLElement).offsetHeight,
+    gap: isVertical ? 18 : 0,
+    scrollToFn: (offset, { adjustments = 0, behavior }, instance) => {
+        instance.scrollElement?.scrollTo({
+            [isVertical ? 'left' : 'top']: (offset + adjustments) * (isVertical ? -1 : 1),
+            behavior,
+        });
+    },
     estimateSize: (index) => {
         if (index === lines.length) {
             const bottomSpace = 100 - clampAutoScrollOffset(autoScrollOffset);
@@ -457,6 +484,11 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
         const text = String(lines[index] || "");
         const containerWidth = parentRef.current?.clientWidth || window.innerWidth || 900;
         const fontSize = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--txt-font-size')) || 26;
+        if (isVertical) {
+            const height = parentRef.current?.clientHeight || window.innerHeight;
+            const charsPerColumn = Math.max(1, Math.floor((height - 80) / fontSize));
+            return Math.max(1, Math.ceil(Array.from(text).length / charsPerColumn)) * fontSize * 1.9 + 4;
+        }
         const charsPerLine = Math.max(12, Math.floor((containerWidth - 90) / Math.max(12, fontSize * 0.82)));
         const visualLines = Math.max(1, Math.ceil(text.length / charsPerLine));
         return Math.max(76, visualLines * fontSize * 1.95 + 30);
@@ -467,12 +499,15 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
         const line = String(lines[index] || '');
         return `${index}:${line.length}:${line.slice(0, 48)}`;
     },
-    enabled: !isVertical
   });
 
   useEffect(() => {
-      if (isVertical) return;
-      const timer = window.setTimeout(() => rowVirtualizer.measure(), 120);
+      const timer = window.setTimeout(() => {
+          rowVirtualizer.measure();
+          if (shouldFollowTailRef.current && activeSearchLineIdx < 0 && lines.length > 0) {
+              rowVirtualizer.scrollToIndex(isVertical ? lines.length - 1 : lines.length, { align: 'end' });
+          }
+      }, 120);
       const fonts = (document as any).fonts;
       if (fonts?.ready) {
           fonts.ready.then(() => rowVirtualizer.measure()).catch(() => {});
@@ -481,7 +516,6 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
   }, [isVertical, lines.length, rowVirtualizer]);
 
   useEffect(() => {
-      if (isVertical) return;
       const el = parentRef.current;
       if (!el) return;
       let frame = 0;
@@ -501,12 +535,12 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
       previousContentKeyRef.current = contentKey;
       shouldFollowTailRef.current = true;
       prevLinesLengthRef.current = lines.length;
+      rowVirtualizer.measure();
 
       const frame = window.requestAnimationFrame(() => {
           const el = parentRef.current;
           if (!el) return;
-          if (isVertical) el.scrollLeft = -(el.scrollWidth - el.clientWidth);
-          else el.scrollTop = el.scrollHeight;
+          if (lines.length > 0) rowVirtualizer.scrollToIndex(isVertical ? lines.length - 1 : lines.length, { align: 'end' });
       });
       return () => window.cancelAnimationFrame(frame);
   }, [contentKey, isVertical, lines.length]);
@@ -543,9 +577,7 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
   const scrollToBottom = () => {
       shouldFollowTailRef.current = true;
       if (isVertical) {
-          const el = parentRef.current;
-          if (!el) return;
-          el.scrollLeft = -(el.scrollWidth - el.clientWidth);
+          rowVirtualizer.scrollToIndex(Math.max(0, lines.length - 1), { align: 'end' });
           updateShowScrollBottom(false);
           return;
       }
@@ -600,18 +632,11 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
   useLayoutEffect(() => {
       if (activeSearchLineIdx >= 0 && activeSearchLineIdx < lines.length) {
           shouldFollowTailRef.current = false;
-          if (isVertical) {
-              const timer = window.setTimeout(() => {
-                  const target = parentRef.current?.querySelector(`[data-index="${activeSearchLineIdx}"]`) as HTMLElement | null;
-                  target?.scrollIntoView({ block: 'nearest', inline: 'center' });
-              }, 0);
-              return () => window.clearTimeout(timer);
-          }
           rowVirtualizer.scrollToIndex(activeSearchLineIdx, { align: 'center' });
           const timer = window.setTimeout(() => {
               rowVirtualizer.scrollToIndex(activeSearchLineIdx, { align: 'center' });
               const retryTarget = parentRef.current?.querySelector(`[data-index="${activeSearchLineIdx}"]`) as HTMLElement | null;
-              retryTarget?.scrollIntoView({ block: 'center' });
+              retryTarget?.scrollIntoView({ block: 'center', inline: 'center' });
           }, 80);
           return () => window.clearTimeout(timer);
       }
@@ -623,7 +648,7 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
   useEffect(() => {
       const el = parentRef.current;
       if (!el || lines.length === 0 || readerProgress <= 0) return;
-      setTimeout(() => {
+      const timer = setTimeout(() => {
           if (isVertical) {
               const max = Math.max(0, el.scrollWidth - el.clientWidth);
               el.scrollLeft = -max * readerProgress;
@@ -632,6 +657,7 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
               el.scrollTop = max * readerProgress;
           }
       }, 80);
+      return () => clearTimeout(timer);
   }, [isVertical, lines.length]);
 
   useEffect(() => {
@@ -639,7 +665,7 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
       const el = parentRef.current;
       if (!el) return;
       const frame = requestAnimationFrame(() => {
-          el.scrollLeft = -(el.scrollWidth - el.clientWidth);
+          rowVirtualizer.scrollToIndex(lines.length - 1, { align: 'end' });
           updateShowScrollBottom(false);
       });
       return () => cancelAnimationFrame(frame);
@@ -647,13 +673,21 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
 
   if (isVertical) {
       const verticalFuriganaMode = 'none';
+      const columns = rowVirtualizer.getVirtualItems();
+      const first = columns[0];
+      const last = columns[columns.length - 1];
+      const before = first?.start || 0;
+      const after = last ? Math.max(0, rowVirtualizer.getTotalSize() - last.end) : 0;
 
       return (
         <div ref={parentRef} onScroll={handleScroll} className={`text-container ${isFlashing ? 'flash' : ''}`} style={{ padding: panelPosition === 'top-right' ? '28px 28px 28px 190px' : '28px', overflowX: 'auto', overflowY: 'hidden', flex: 1, position: 'relative', direction: 'rtl' }}>
-            <div style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', height: '100%', display: 'flex', flexDirection: 'column', flexWrap: 'wrap', alignContent: 'flex-start', gap: '18px', direction: 'ltr' }}>
-                {lines.map((line: string, index: number) => {
+            <div style={{ height: '100%', display: 'flex', direction: 'rtl', width: `${rowVirtualizer.getTotalSize()}px` }}>
+                {before > 0 && <div aria-hidden="true" style={{ flex: `0 0 ${before}px` }} />}
+                {columns.map((column) => {
+                    const index = column.index;
+                    const line = lines[index];
                     return (
-                    <div className="text-line" data-index={index} data-raw-text={line} key={`${index}-${line.slice(0, 12)}`} style={{ minHeight: '40px', maxHeight: '100%', padding: '8px 2px', borderRadius: '6px', color: 'var(--text-main)', fontSize: 'var(--txt-font-size, 26px)', fontFamily: `var(--txt-font-family, 'Noto Serif JP'), ${jpSerifFallback}`, lineHeight: 1.9, letterSpacing: '0', fontSynthesis: 'none', fontVariantNumeric: 'tabular-nums', textRendering: 'optimizeLegibility', background: index === activeSearchLineIdx ? 'rgba(79, 166, 255, 0.15)' : 'transparent' }}>
+                    <div ref={rowVirtualizer.measureElement} className="text-line" data-index={index} data-raw-text={line} key={column.key} style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', direction: 'ltr', flex: '0 0 auto', height: '100%', boxSizing: 'border-box', marginLeft: index < lines.length - 1 ? '18px' : 0, padding: '8px 2px', borderRadius: '6px', color: 'var(--text-main)', fontSize: 'var(--txt-font-size, 26px)', fontFamily: `var(--txt-font-family, 'Noto Serif JP'), ${jpSerifFallback}`, lineHeight: 1.9, letterSpacing: '0', fontSynthesis: 'none', fontVariantNumeric: 'tabular-nums', textRendering: 'optimizeLegibility', background: index === activeSearchLineIdx ? 'rgba(79, 166, 255, 0.15)' : 'transparent' }}>
                         <FuriganaLine
                             text={line}
                             mode={verticalFuriganaMode}
@@ -664,6 +698,7 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
                     </div>
                     );
                 })}
+                {after > 0 && <div aria-hidden="true" style={{ flex: `0 0 ${Math.max(0, after - 18)}px` }} />}
             </div>
             {showScrollBottom && (
                 <button onClick={scrollToBottom} style={{ position: 'fixed', bottom: buttonBottomOffset, right: '30px', width: '44px', height: '44px', borderRadius: '50%', background: 'var(--accent-blue)', color: '#fff', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', cursor: 'pointer', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }} title={language === 'en' ? 'Scroll to end' : 'К концу текста'}>

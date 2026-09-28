@@ -1,11 +1,16 @@
 type MobileFileBridge = {
     selectDictionaries: () => string;
     captureScreen?: () => string;
+    cleanupDictionaries?: (paths: string) => string;
 };
 
 declare global {
     interface Window { SetsunaMobileFiles?: MobileFileBridge }
 }
+
+export const cleanupMobileDictionaries = (paths: string[]) => {
+    window.SetsunaMobileFiles?.cleanupDictionaries?.(JSON.stringify(paths));
+};
 
 export const openMobileDictionaryPicker = () => {
     const bridge = typeof window === 'undefined' ? null : window.SetsunaMobileFiles;

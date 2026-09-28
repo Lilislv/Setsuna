@@ -66,7 +66,8 @@ export const normalizeIncomingHookText = (value: string, removeWhitespace: boole
 
 export const trimTabForRuntime = (tab: Tab): Tab => {
     const sourceLines = Array.isArray(tab.lines) ? tab.lines : [];
-    const runtimeLines = sourceLines.map(trimRuntimeLine);
+    const runtimeLines = sourceLines.every((line) => typeof line === 'string')
+        ? sourceLines : sourceLines.map(trimRuntimeLine);
     const sourceFurigana = Array.isArray(tab.lineFurigana) ? tab.lineFurigana : [];
     const runtimeFurigana = sourceFurigana.length === sourceLines.length
         ? sourceFurigana

@@ -16,14 +16,27 @@ class MobileFileBridge(private val activity: Activity) {
     fun selectDictionaries(): String = wrap {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/zip"
+            type = "*/*"
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/json", "text/json"))
         }
         activity.runOnUiThread {
             activity.startActivityForResult(intent, MainActivity.REQUEST_DICTIONARIES)
         }
         JSONObject().put("opened", true)
+    }
+
+    @JavascriptInterface
+    fun cleanupDictionaries(pathsJson: String): String = wrap {
+        val directory = java.io.File(activity.cacheDir, "dictionary-imports").canonicalFile
+        val paths = org.json.JSONArray(pathsJson)
+        for (index in 0 until paths.length()) {
+            val file = java.io.File(paths.getString(index)).canonicalFile
+            if (file.toPath().startsWith(directory.toPath()) && file != directory && file.isFile) {
+                file.delete()
+                file.parentFile?.takeIf { it != directory }?.delete() // only removes empty import folders
+            }
+        }
+        JSONObject().put("cleaned", true)
     }
 
     @JavascriptInterface

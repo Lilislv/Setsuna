@@ -1,0 +1,4 @@
+.yatsu-lookup-root { border-color: #64748b80; border-radius: 5px; }
+.yatsu-lookup-root .dict-popup { animation: none !important; transform: none !important; padding-top: 36px; }
+.yatsu-lookup-root .dict-mobile-scrim, .yatsu-lookup-root .dict-mobile-sheet::before { display: none; }
+.yatsu-lookup-root .jl-popup-close { width: 24px; height: 24px; top: 5px; right: 5px; border: 0; background: transparent; }

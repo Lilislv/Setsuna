@@ -8,6 +8,7 @@ import SetupWizard from "./SetupWizard";
 
 import SettingsLookup from "./Settings/SettingsLookup";
 import SettingsAnki from "./Settings/SettingsAnki";
+import SettingsFeedback from './Settings/SettingsFeedback';
 import SettingsCloud from "./Settings/SettingsCloud";
 import SettingsDiscord from "./Settings/SettingsDiscord";
 import { IconArchive, IconBookTab, IconClose, IconCloud, IconEye, IconImport, IconMessage, IconRefresh, IconSearch, IconTextTab } from "./Icons";
@@ -26,7 +27,6 @@ export interface AppSettings {
   lookupHotkey: string;
   lookupScale: number; lookupFontSize: number; lookupTagFontSize: number; lookupWidth: number; lookupShowTags: boolean; lookupShowAudio: boolean;
   globalLookupEnabled?: boolean; globalLookupRestoreClipboard?: boolean; globalLookupShortcut?: string;
-  cambridgeApiEnabled?: boolean; cambridgeApiKey?: string; cambridgeApiDictionary?: string; cambridgeApiBaseUrl?: string; cambridgeApiOnlyWhenNoLocal?: boolean;
   hookProcesses: { name: string; active: boolean; icon?: string; path?: string; pid?: number }[];
 
   ankiDeck: string; ankiModel: string;
@@ -37,7 +37,8 @@ export interface AppSettings {
   ankiShowButtonNormal: boolean; ankiShowButtonScreenshot: boolean;
 
   dictionaries: { name: string; active: boolean; color?: string; allowDeinflect?: boolean }[];
-  autoPlayAudio: boolean; helperUrl: string; syncPin: string; gdriveRefreshToken?: string;
+  autoPlayAudio: boolean; syncPin: string; gdriveRefreshToken?: string;
+  dictionaryAudioSource?: 'online' | 'local' | 'local-first' | 'online-first'; localAudioDatabasePath?: string; localAudioPreferredSource?: string;
   remoteCaptureAgentUrl?: string; remoteCaptureAgentToken?: string; localCaptureAgentToken?: string;
   textSyncServerEnabled?: boolean; textSyncServerPort?: number; textSyncServerToken?: string; textSyncRemoteEnabled?: boolean; textSyncRemoteUrl?: string; textSyncRemoteToken?: string;
   textSyncDeviceId?: string; textSyncCloudEnabled?: boolean; textSyncCloudUrl?: string;
@@ -47,8 +48,10 @@ export interface AppSettings {
   fontSize: number; fontFamily: string; furiganaMode: 'none' | 'auto'; appLanguage: 'ru' | 'en'; autoScrollOffset: number; theme: 'dark' | 'light' | 'amoled'; textOrientation: 'horizontal' | 'vertical';
   jlModeFontSize?: number; jlModeFontFamily?: string; jlModeOpacity?: number; jlModeTextColor?: string; jlModeBackgroundColor?: string; jlModeBorderColor?: string; jlModeAlwaysOnTop?: boolean; jlModeShowControls?: boolean; jlModePadding?: number; jlModeLookupOnClick?: boolean;
   jlModeLookupTrigger?: 'hover' | 'click' | 'both'; jlModeHoverDelay?: number; jlModeBacklogCapacity?: number; jlModeHideLookupOnNewText?: boolean; jlModeAutoLookupFirstWord?: boolean;
-  mobileOverlayEnabled?: boolean; mobileOverlayFontSize?: number; mobileOverlayOpacity?: number; mobileOverlayTextColor?: string; mobileOverlayBackgroundColor?: string;
-  mobileOverlayWidth?: number; mobileOverlayHeight?: number;
+  mobileOverlayEnabled?: boolean; mobileOverlayFontSize?: number; mobileOverlayFontFamily?: 'serif' | 'sans' | 'monospace'; mobileOverlayLineHeight?: number;
+  mobileOverlayOpacity?: number; mobileOverlayTextColor?: string; mobileOverlayBackgroundColor?: string; mobileOverlayBorderColor?: string;
+  mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
+  mobileOverlayLocked?: boolean; mobileOverlayToolbarExpanded?: boolean;
   epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubPagePadding?: number; epubShowImages?: boolean; epubImageMaxWidth?: number;
   playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerMiningPreferVideo: boolean; playerMiningUseClipForAnki: boolean;
   playerKeyPlayPause: string; playerKeyBack: string; playerKeyForward: string; playerKeyMine: string; playerKeyOffsetMinus: string; playerKeyOffsetPlus: string;
@@ -56,8 +59,8 @@ export interface AppSettings {
   discordTextActivityType: 'playing' | 'watching' | 'listening' | 'competing'; discordTextStatus: 'playing' | 'reading' | 'watching' | 'mining' | 'custom'; discordCustomTextStatus: string;
   discordLargeImage: string; discordSmallImage: string; discordButtonLabel: string; discordButtonUrl: string; discordSecondButtonLabel: string; discordSecondButtonUrl: string;
   updateAutoCheck: boolean;
-  topbarShowClipboard?: boolean; topbarShowWebSockets?: boolean; topbarShowSync?: boolean; topbarShowCapture?: boolean; topbarShowJl?: boolean; topbarShowSearch?: boolean; topbarShowImport?: boolean; topbarShowExport?: boolean; topbarShowBrowser?: boolean;
-  replacements: TextReplacement[]; removeWhitespace: boolean; requireJapanese: boolean; ignoreDuplicates: boolean; enableTextCleaner: boolean; searchEngine: string;
+  topbarShowClipboard?: boolean; topbarShowWebSockets?: boolean; topbarShowSync?: boolean; topbarShowCapture?: boolean; topbarShowJl?: boolean; topbarShowSearch?: boolean; topbarShowImport?: boolean; topbarShowExport?: boolean;
+  replacements: TextReplacement[]; removeWhitespace: boolean; requireJapanese: boolean; ignoreDuplicates: boolean; enableTextCleaner: boolean;
 }
 
 interface SettingsModalProps { 
@@ -68,7 +71,7 @@ interface SettingsModalProps {
     initialSection?: string | null;
 }
 
-type SettingsTab = 'text' | 'sync' | 'archive' | 'jl' | 'epub' | 'lookup' | 'anki' | 'cloud' | 'player' | 'discord' | 'updates';
+type SettingsTab = 'text' | 'sync' | 'archive' | 'jl' | 'epub' | 'lookup' | 'anki' | 'cloud' | 'player' | 'discord' | 'updates' | 'feedback';
 
 interface SettingsNavButtonProps {
   active: boolean;
@@ -748,6 +751,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
       player: { title: isEnglish ? 'Player' : 'Плеер', description: isEnglish ? 'Video and subtitle settings' : 'Видео и настройки субтитров' },
       discord: { title: 'Discord', description: isEnglish ? 'Rich Presence and activity preview' : 'Rich Presence и предпросмотр активности' },
       updates: { title: isEnglish ? 'Updates' : 'Обновления', description: isEnglish ? 'Version and automatic update settings' : 'Версия и параметры автоматического обновления' },
+      feedback: { title: isEnglish ? 'Feedback' : 'Обратная связь', description: isEnglish ? 'Bug reports and feature requests' : 'Ошибки и пожелания по новым функциям' },
   };
   const currentSection = sectionMeta[activeTab];
 
@@ -835,6 +839,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                   <SettingsNavButton active={activeTab === 'anki'} icon={<IconBookTab />} label="Anki" onClick={() => handleNav('anki', 'anki-cards')} />
                   {activeTab === 'anki' && <div className="settings-subnav">
                       <SettingsSubNavButton active={activeSubTab === 'anki-cards'} label={t('settings.nav.cards')} onClick={() => handleNav('anki', 'anki-cards')} />
+                      <SettingsSubNavButton active={activeSubTab === 'anki-audio'} label={isEnglish ? 'Audio' : 'Озвучка'} onClick={() => handleNav('anki', 'anki-audio')} />
                       <SettingsSubNavButton active={activeSubTab === 'anki-hooks'} label={t('settings.nav.screenshots')} onClick={() => handleNav('anki', 'anki-hooks')} />
                   </div>}
               </div>
@@ -844,6 +849,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                   <SettingsNavButton active={activeTab === 'cloud'} icon={<IconCloud />} label="Google Drive" onClick={() => handleNav('cloud', 'cloud-main')} />
                   <SettingsNavButton active={activeTab === 'discord'} icon={<IconMessage />} label="Discord" onClick={() => handleNav('discord', 'discord-main')} />
                   <SettingsNavButton active={activeTab === 'updates'} icon={<IconRefresh />} label={isEnglish ? 'Updates' : 'Обновления'} onClick={() => handleNav('updates', 'updates-main')} />
+                  <SettingsNavButton active={activeTab === 'feedback'} icon={<IconMessage />} label={isEnglish ? 'Feedback' : 'Обратная связь'} onClick={() => handleNav('feedback', 'feedback-main')} />
               </div>
             </nav>
 
@@ -905,7 +911,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                       topbarShowSearch: false,
                                       topbarShowImport: false,
                                       topbarShowExport: false,
-                                      topbarShowBrowser: false,
                                   })}>{settings.appLanguage === 'en' ? 'Minimal' : 'Минимум'}</button>
                                   <button className="btn-primary" style={{ padding: '6px 10px' }} onClick={() => updateMultipleSettings({
                                       topbarShowClipboard: true,
@@ -915,7 +920,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                       topbarShowSearch: true,
                                       topbarShowImport: true,
                                       topbarShowExport: true,
-                                      topbarShowBrowser: true,
                                   })}>{settings.appLanguage === 'en' ? 'Show all' : 'Показать всё'}</button>
                               </div>
                           </div>
@@ -928,7 +932,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                   ['topbarShowSearch', settings.appLanguage === 'en' ? 'Search' : 'Поиск'],
                                   ['topbarShowImport', settings.appLanguage === 'en' ? 'Import' : 'Импорт'],
                                   ['topbarShowExport', settings.appLanguage === 'en' ? 'Export' : 'Экспорт'],
-                                  ['topbarShowBrowser', settings.appLanguage === 'en' ? 'Browser' : 'Браузер'],
                               ] as const).map(([key, label]) => (
                                   <label key={key} className="checkbox-label">
                                       <input type="checkbox" checked={(settings[key] as boolean | undefined) ?? true} onChange={(e) => updateSetting(key, e.target.checked as any)} />
@@ -1653,6 +1656,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                 </div>
               )}
 
+              {activeTab === 'feedback' && <SettingsFeedback english={isEnglish} />}
               {activeTab === 'updates' && (
                 <div className="tab-content-anim">
                     <div id="updates-main" className={`modern-card ${highlightedSection === 'updates-main' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>

@@ -1,6 +1,7 @@
 name: Release
 
 env:
+  VITE_PRIVATE_READER: "0"
   # OAuth client IDs are public identifiers. Keeping it here makes both
   # Windows and Linux release builds independent from a developer .env.local.
   VITE_GOOGLE_CLIENT_ID: 785539988278-kssnl36lnqbtm6ojkhooghp2b6rjeeup.apps.googleusercontent.com
@@ -56,7 +57,10 @@ jobs:
           if ($release.buildNumber -notmatch '^\d+$' -or [int64]$release.buildNumber -lt 1) {
             throw "src/release-info.json buildNumber must be a positive integer"
           }
-          $expectedUpdaterVersion = "0.0.$($release.buildNumber)"
+          $expectedUpdaterVersion = $release.displayVersion
+          node scripts/verify-release.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Release metadata validation failed" }
+          if ($env:GITHUB_REF_NAME -ne "v$expectedUpdaterVersion") { throw "Tag must match version v$expectedUpdaterVersion" }
           if ($tauriVersion -ne $expectedUpdaterVersion) {
             throw "Tauri updater version must be $expectedUpdaterVersion for build $($release.buildNumber), got $tauriVersion"
           }
@@ -64,14 +68,22 @@ jobs:
           $response = Invoke-WebRequest -Uri $latestUrl -SkipHttpErrorCheck
           if ($response.StatusCode -eq 200) {
             $latest = $response.Content | ConvertFrom-Json
-            if ($latest.version -match '^0\.0\.(\d+)$' -and [int64]$release.buildNumber -le [int64]$Matches[1]) {
-              throw "buildNumber $($release.buildNumber) must be greater than published build $($Matches[1])"
+            if ([version]$expectedUpdaterVersion -le [version]$latest.version) {
+              throw "Version $expectedUpdaterVersion must be greater than published version $($latest.version)"
             }
           } elseif ($response.StatusCode -ne 404) {
             throw "Unable to verify latest published build: HTTP $($response.StatusCode)"
           }
           "display_version=$($release.displayVersion)" >> $env:GITHUB_OUTPUT
           "build_number=$($release.buildNumber)" >> $env:GITHUB_OUTPUT
+
+      - name: Verify public frontend
+        env:
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+        run: |
+          node --test tests/feedback-audio.test.mjs tests/hover-scan.test.mjs tests/runtime-memory.test.mjs tests/gdrive.test.mjs
+          npm run build
+          node scripts/verify-public-build.mjs
 
       - name: Build signed Tauri release
         uses: tauri-apps/tauri-action@v0

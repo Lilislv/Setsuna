@@ -3,6 +3,8 @@ type TextOverlayBridge = {
     requestPermission: () => string;
     show: (text: string, optionsJson: string) => string;
     hide: () => string;
+    enable?: () => string;
+    timerSnapshot?: () => string;
 };
 
 declare global {
@@ -13,6 +15,12 @@ declare global {
 
 const bridge = () => typeof window === 'undefined' ? null : window.SetsunaTextOverlay || null;
 
+export const getMobileFlowTimer = (): { paused: boolean; elapsedSeconds: number } | null => {
+    const nativeBridge = bridge();
+    if (!nativeBridge?.timerSnapshot) return null;
+    return JSON.parse(nativeBridge.timerSnapshot());
+};
+
 const parse = <T>(raw: string): T => {
     const value = JSON.parse(raw || '{}');
     if (!value.ok) throw new Error(value.error || 'Setsuna overlay error');
@@ -21,7 +29,12 @@ const parse = <T>(raw: string): T => {
 
 export const getMobileOverlayStatus = () => {
     const nativeBridge = bridge();
-    return nativeBridge ? parse<{ granted: boolean }>(nativeBridge.status()) : { granted: false };
+    return nativeBridge ? parse<{ granted: boolean; dismissed?: boolean }>(nativeBridge.status()) : { granted: false };
+};
+
+export const enableMobileOverlay = () => {
+    const nativeBridge = bridge();
+    if (nativeBridge?.enable) parse(nativeBridge.enable());
 };
 
 export const requestMobileOverlayPermission = () => {
@@ -33,7 +46,7 @@ export const requestMobileOverlayPermission = () => {
 export const showMobileOverlay = (text: string, options: Record<string, unknown>) => {
     const nativeBridge = bridge();
     if (!nativeBridge) throw new Error('The overlay is available only in the Android Setsuna app.');
-    return parse<{ shown: boolean }>(nativeBridge.show(text, JSON.stringify(options)));
+    return parse<{ shown: boolean; dismissed?: boolean }>(nativeBridge.show(text, JSON.stringify(options)));
 };
 
 export const hideMobileOverlay = () => {

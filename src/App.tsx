@@ -1,11 +1,16 @@
 ﻿import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { readText } from '@tauri-apps/plugin-clipboard-manager';
+import { isMobilePlatform } from './utils/platform';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
+import { getMobileFlowTimer } from './utils/mobileOverlay';
+import { cleanupMobileDictionaries } from './utils/mobileFiles';
 import { emit, emitTo, listen, UnlistenFn } from '@tauri-apps/api/event';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import TextContainer from "./components/TextContainer";
+import { SearchBar, TopBar, MobileLayout } from './components/AppLayout';
+import YatsuWorkspace, { hideYatsuWorkspace } from "./components/YatsuWorkspace";
 import StatsPanel from "./components/StatsPanel";
 import SettingsModal, { AppSettings, WsConfig } from "./components/SettingsModal";
 import { removeGarbageTags } from "./utils/textCleaner";
@@ -13,18 +18,20 @@ import { DictEntry, LookupData } from "./components/Lookuper";
 import LookupSurface from "./features/lookup/LookupSurface";
 import "./App.css";
 
-import { calculateStats, getSmartTitle } from "./utils/helpers";
+import { calculateStats } from "./utils/helpers";
 import { IconBookTab, IconPin, IconPlayerTab, IconSearch } from "./components/Icons";
-import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, Tab, BrowserTab, themes, PlayerMiningClip, ReadingSpeedSample } from "./utils/constants";
+import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, Tab, themes, PlayerMiningClip, ReadingSpeedSample } from "./utils/constants";
 import { getTranslator } from "./utils/i18n";
 import { ConfirmDialogModal, ImportProgressModal, ExportModal, NoticeModal } from "./components/AppModals";
-import { SearchBar, TopBar, BrowserSidebar, MobileLayout } from "./components/AppLayout";
 import SetupWizard from "./components/SetupWizard";
 import StartupSplash from "./components/StartupSplash";
 import HomeScreen from "./components/HomeScreen";
+import { YATSU_READER_AVAILABLE } from './utils/featureFlags';
 import PlayerSkeleton from "./components/PlayerSkeleton";
 import WorkspaceShell from "./components/WorkspaceShell";
 import releaseInfo from "./release-info.json";
+import { contentFingerprint, createLatestTaskQueue } from './utils/runtimeMemory';
+import { selectActiveLookupResult } from './utils/lookupResults';
 import {
     discordActivityTypeForMode,
     applyTabOrder,
@@ -63,9 +70,9 @@ type UpdateDialogState =
     | { kind: 'none'; message: string }
     | { kind: 'error'; message: string };
 
-const stripLegacyOverlaySettings = <T extends Record<string, any>>(settings: T): T => {
+const stripRemovedSettings = <T extends Record<string, any>>(settings: T): T => {
     for (const key of Object.keys(settings)) {
-        if (key.startsWith('jl') && key.includes('Overlay')) {
+        if ((key.startsWith('jl') && key.includes('Overlay')) || key.startsWith('cambridgeApi') || ['helperUrl', 'searchEngine', 'topbarShowBrowser'].includes(key)) {
             delete settings[key];
         }
     }
@@ -83,15 +90,15 @@ const readStoredSettings = (): AppSettings => {
         const saved = localStorage.getItem('txthk-settings');
         const storedLanguage = readStoredAppLanguage();
         const languageOverride = storedLanguage ? { appLanguage: storedLanguage } : {};
-        if (!saved) return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS, ...languageOverride });
+        if (!saved) return stripRemovedSettings({ ...DEFAULT_SETTINGS, ...languageOverride });
 
         const value = JSON.parse(saved);
         const overrides = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-        return stripLegacyOverlaySettings({ ...DEFAULT_SETTINGS, ...overrides, ...languageOverride });
+        return stripRemovedSettings({ ...DEFAULT_SETTINGS, ...overrides, ...languageOverride });
     } catch (error) {
         console.warn('Failed to read saved settings; defaults will be used', error);
         const storedLanguage = readStoredAppLanguage();
-        return stripLegacyOverlaySettings({
+        return stripRemovedSettings({
             ...DEFAULT_SETTINGS,
             ...(storedLanguage ? { appLanguage: storedLanguage } : {}),
         });
@@ -111,11 +118,6 @@ const countExportedTextLines = (value: unknown): number => {
     if (!value || typeof value !== 'object') return 0;
     const lineData = (value as Record<string, unknown>)["bannou-texthooker-lineData"];
     return Array.isArray(lineData) ? lineData.length : 0;
-};
-
-const updaterBuildNumber = (version: string): string => {
-    const match = /^0\.0\.(\d+)$/.exec(version);
-    return match?.[1] || version;
 };
 
 const normalizeStoredTabs = (value: unknown, defaultName: string): Tab[] => {
@@ -232,20 +234,7 @@ export default function App() {
     ]);
 
     const t = getTranslator(settings.appLanguage || 'ru');
-    const [isMobileLayout, setIsMobileLayout] = useState(() => window.innerWidth <= 760);
-
-    useEffect(() => {
-        const updateMobileLayout = () => {
-            setIsMobileLayout(window.innerWidth <= 760 || window.matchMedia('(pointer: coarse)').matches && window.innerWidth <= 900);
-        };
-        updateMobileLayout();
-        window.addEventListener('resize', updateMobileLayout);
-        window.addEventListener('orientationchange', updateMobileLayout);
-        return () => {
-            window.removeEventListener('resize', updateMobileLayout);
-            window.removeEventListener('orientationchange', updateMobileLayout);
-        };
-    }, []);
+    const isMobileLayout = isMobilePlatform();
 
     useEffect(() => {
         const root = document.documentElement;
@@ -369,69 +358,44 @@ export default function App() {
         return () => document.removeEventListener('selectionchange', handleSelection);
     }, []);
 
-    useEffect(() => {
-        let unlistenSel: UnlistenFn;
-        let unlistenClear: UnlistenFn;
-
-        listen('browser_selection', (e: any) => {
-            const { text, x, y } = e.payload;
-            const container = document.getElementById('native-browser-container');
-            const rect = container?.getBoundingClientRect();
-
-            const cleanText = normalizeLookupText(text);
-            if (rect && cleanText) {
-                setFloatingBtn({ x: rect.left + x, y: rect.top + y, text: cleanText });
-            }
-        }).then((f) => (unlistenSel = f));
-
-        listen('browser_selection_clear', () => setFloatingBtn(null)).then((f) => (unlistenClear = f));
-
-        return () => {
-            if (unlistenSel) unlistenSel();
-            if (unlistenClear) unlistenClear();
-        };
-    }, []);
-
-    const tabsPersistKey = useMemo(() => {
-        return JSON.stringify(tabs.map((tab) => trimTabForRuntime(tab)));
-    }, [tabs]);
+    const runtimeTabs = useMemo(() => tabs.map(trimTabForRuntime), [tabs]);
+    const tabsPersistKey = useMemo(() => contentFingerprint(runtimeTabs), [runtimeTabs]);
 
     const tabOrderPersistKey = useMemo(() => JSON.stringify(tabs.map((tab) => tab.id)), [tabs]);
     const workspacePersistenceRef = useRef({
-        tabs: tabsPersistKey,
+        tabs: runtimeTabs,
         order: tabOrderPersistKey,
         activeTabId,
     });
     const workspaceHydratedRef = useRef(false);
-    const workspaceFileWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+    const workspaceFileWriteQueueRef = useRef(createLatestTaskQueue<string>(
+        (content) => invoke<void>('save_workspace_state', { content }),
+        (error) => console.warn('Failed to save file-backed workspace', error),
+    ));
     workspacePersistenceRef.current = {
-        tabs: tabsPersistKey,
+        tabs: runtimeTabs,
         order: tabOrderPersistKey,
         activeTabId,
     };
 
     const queueWorkspaceFileSave = useCallback((content: string) => {
-        workspaceFileWriteChainRef.current = workspaceFileWriteChainRef.current
-            .catch(() => {})
-            .then(() => invoke<void>('save_workspace_state', { content }))
-            .catch((error) => {
-                console.warn('Failed to save file-backed workspace', error);
-            });
+        void workspaceFileWriteQueueRef.current.push(content);
     }, []);
 
     const persistWorkspaceNow = useCallback(() => {
         if (!workspaceHydratedRef.current) return;
         const snapshot = workspacePersistenceRef.current;
+        const serializedTabs = JSON.stringify(snapshot.tabs);
         const updatedAt = Date.now();
         try {
-            localStorage.setItem('txthk-tabs', snapshot.tabs);
+            localStorage.setItem('txthk-tabs', serializedTabs);
             localStorage.setItem(TAB_ORDER_STORAGE_KEY, snapshot.order);
             localStorage.setItem('txthk-active-tab', snapshot.activeTabId.toString());
             localStorage.setItem(WORKSPACE_UPDATED_AT_STORAGE_KEY, updatedAt.toString());
         } catch (error) {
             console.warn('Failed to persist workspace', error);
         }
-        queueWorkspaceFileSave(`{"version":1,"updatedAt":${updatedAt},"activeTabId":${snapshot.activeTabId},"tabs":${snapshot.tabs}}`);
+        queueWorkspaceFileSave(`{"version":1,"updatedAt":${updatedAt},"activeTabId":${snapshot.activeTabId},"tabs":${serializedTabs}}`);
     }, [queueWorkspaceFileSave]);
 
     useEffect(() => {
@@ -525,7 +489,16 @@ export default function App() {
     }, [tabs, activeTabId]);
 
     const [isPaused, setIsPaused] = useState(true);
+    useEffect(() => {
+        const dismissed = () => {
+            setSettings((previous) => ({ ...previous, mobileOverlayEnabled: false }));
+            setIsPaused(true);
+        };
+        window.addEventListener('setsuna-flow-dismissed', dismissed);
+        return () => window.removeEventListener('setsuna-flow-dismissed', dismissed);
+    }, []);
     const isPausedRef = useRef(isPaused);
+    const [timerDisplayOffset, setTimerDisplayOffset] = useState(0);
     const lastReadingActivityRef = useRef(Date.now());
     const recentIncomingTextRef = useRef<Map<string, number>>(new Map());
 
@@ -570,9 +543,9 @@ export default function App() {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
     const [lookupStack, setLookupStack] = useState<LookupData[]>([]);
+    const sentenceLookupRequestRef = useRef(0);
     const [mobileLookupNotice, setMobileLookupNotice] = useState('');
     const [mobileSettingsRequest, setMobileSettingsRequest] = useState({ id: 0, section: 'reading' });
-    const cambridgeLookupCacheRef = useRef<Map<string, { expiresAt: number; entries: DictEntry[] }>>(new Map());
     const [playerMiningClip, setPlayerMiningClip] = useState<PlayerMiningClip | null>(null);
     const [jsonImportProgress, setJsonImportProgress] = useState<{ current: number; total: number } | null>(null);
     const [dictImportProgress, setDictImportProgress] = useState<{
@@ -584,20 +557,11 @@ export default function App() {
         status?: string;
     } | null>(null);
 
-    const [isHelperSpaceReserved, setIsHelperSpaceReserved] = useState(false);
-
     useEffect(() => {
         if (!mobileLookupNotice) return;
         const timer = window.setTimeout(() => setMobileLookupNotice(''), 4200);
         return () => window.clearTimeout(timer);
     }, [mobileLookupNotice]);
-    const [reservedWidth, setReservedWidth] = useState(() => {
-        const saved = localStorage.getItem("txthk-browser-width");
-        const parsed = saved ? parseInt(saved, 10) : 450;
-        return Number.isFinite(parsed) ? parsed : 450;
-    });
-    const [showBrowserUI, setShowBrowserUI] = useState(true);
-    const isResizingRef = useRef(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isAppLoaded, setIsAppLoaded] = useState(false);
     const [splashMinimumElapsed, setSplashMinimumElapsed] = useState(false);
@@ -623,18 +587,13 @@ export default function App() {
     }, [splashPhase]);
 
     const activeTab = tabs.find((t) => t.id === activeTabId);
+    const activeTabForDisplay = activeTab && timerDisplayOffset > 0
+        ? { ...activeTab, stats: { ...activeTab.stats, time: activeTab.stats.time + timerDisplayOffset } }
+        : activeTab;
     const textHookerTabs = useMemo(
         () => tabs.filter((tab) => !tab.mode || tab.mode === "text"),
         [tabs]
     );
-    const isBrowserBlockedByOverlay = isSettingsOpen
-        || isExportModalOpen
-        || isCaptureSourcePickerOpen
-        || Boolean(confirmDialog)
-        || Boolean(notice)
-        || Boolean(updateDialog)
-        || Boolean(jsonImportProgress)
-        || Boolean(dictImportProgress);
     const filteredCaptureSources = captureSources.filter((source) => {
         const query = captureSourceSearch.trim().toLowerCase();
         if (!query) return true;
@@ -1109,79 +1068,14 @@ export default function App() {
             setSearchTrigger((prev) => prev + 1);
         }
     };
-
-    const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(() => {
-        const savedTabs = localStorage.getItem('txthk-browser-tabs');
-        if (savedTabs) {
-            try {
-                const parsed = JSON.parse(savedTabs);
-                if (parsed.length > 0) return parsed;
-            } catch {}
-        }
-
-        return [{
-            id: `tab_${Date.now()}`,
-            url: settings.searchEngine || "https://duckduckgo.com/?q=",
-            title: t('browser.defaultTitle'),
-        }];
-    });
-
-    const [activeBrowserIdx, setActiveBrowserIdx] = useState(() => {
-        const saved = localStorage.getItem('txthk-active-browser-idx');
-        return saved ? parseInt(saved) : 0;
-    });
-
-    const [urlInput, setUrlInput] = useState(browserTabs[activeBrowserIdx]?.url || "");
-    const [isUrlFocused, setIsUrlFocused] = useState(false);
-
-    const activeBrowserIdxRef = useRef(activeBrowserIdx);
-    const isUrlFocusedRef = useRef(isUrlFocused);
-    const browserSyncFrameRef = useRef<number | null>(null);
-    const lastBrowserCommandRef = useRef("");
     const diagnosticsTabsRef = useRef(tabs);
     const diagnosticsSettingsRef = useRef(settings);
-    const diagnosticsBrowserTabsRef = useRef(browserTabs);
     const diagnosticsLookupStackRef = useRef(lookupStack);
     const diagnosticsActiveTabIdRef = useRef(activeTabId);
-    const diagnosticsActiveBrowserIdxRef = useRef(activeBrowserIdx);
-    type BrowserAction = "show" | "navigate" | "resize" | "hide" | "hide_all" | "close";
-
-    useEffect(() => {
-        activeBrowserIdxRef.current = activeBrowserIdx;
-    }, [activeBrowserIdx]);
-
-    useEffect(() => {
-        if (browserTabs.length === 0) return;
-        if (activeBrowserIdx >= 0 && activeBrowserIdx < browserTabs.length) return;
-
-        const safeIdx = Math.max(0, Math.min(activeBrowserIdx, browserTabs.length - 1));
-        setActiveBrowserIdx(safeIdx);
-        setUrlInput(browserTabs[safeIdx]?.url || "");
-    }, [activeBrowserIdx, browserTabs]);
-
-    useEffect(() => {
-        isUrlFocusedRef.current = isUrlFocused;
-    }, [isUrlFocused]);
 
     useEffect(() => {
         try {
-            localStorage.setItem('txthk-browser-tabs', JSON.stringify(browserTabs));
-        } catch (error) {
-            console.warn('Failed to persist browser tabs', error);
-        }
-    }, [browserTabs]);
-
-    useEffect(() => {
-        try {
-            localStorage.setItem('txthk-active-browser-idx', activeBrowserIdx.toString());
-        } catch (error) {
-            console.warn('Failed to persist active browser tab', error);
-        }
-    }, [activeBrowserIdx]);
-
-    useEffect(() => {
-        try {
-            localStorage.setItem('txthk-settings', JSON.stringify(stripLegacyOverlaySettings({ ...settings })));
+            localStorage.setItem('txthk-settings', JSON.stringify(stripRemovedSettings({ ...settings })));
             localStorage.setItem(APP_LANGUAGE_STORAGE_KEY, settings.appLanguage || 'ru');
         } catch (error) {
             console.warn('Failed to persist settings', error);
@@ -1197,20 +1091,12 @@ export default function App() {
     }, [settings]);
 
     useEffect(() => {
-        diagnosticsBrowserTabsRef.current = browserTabs;
-    }, [browserTabs]);
-
-    useEffect(() => {
         diagnosticsLookupStackRef.current = lookupStack;
     }, [lookupStack]);
 
     useEffect(() => {
         diagnosticsActiveTabIdRef.current = activeTabId;
     }, [activeTabId]);
-
-    useEffect(() => {
-        diagnosticsActiveBrowserIdxRef.current = activeBrowserIdx;
-    }, [activeBrowserIdx]);
 
     useEffect(() => {
         const storageSize = (key: string) => {
@@ -1224,7 +1110,6 @@ export default function App() {
         const collect = () => {
             const currentTabs = diagnosticsTabsRef.current || [];
             const currentSettings = diagnosticsSettingsRef.current;
-            const currentBrowserTabs = diagnosticsBrowserTabsRef.current || [];
             const currentLookupStack = diagnosticsLookupStackRef.current || [];
             const currentActiveTab =
                 currentTabs.find((tab) => tab.id === diagnosticsActiveTabIdRef.current) || null;
@@ -1248,9 +1133,6 @@ export default function App() {
                     0
                 ),
                 lookupStack: currentLookupStack.length,
-                browserTabs: currentBrowserTabs.length,
-                activeBrowserIdx: diagnosticsActiveBrowserIdxRef.current,
-                helperSpaceReserved: isHelperSpaceReserved,
                 textOrientation: currentSettings.textOrientation,
                 furiganaMode: currentSettings.furiganaMode,
                 useClipboard: currentSettings.useClipboard,
@@ -1259,7 +1141,6 @@ export default function App() {
                 localStorage: {
                     tabs: storageSize("txthk-tabs"),
                     settings: storageSize("txthk-settings"),
-                    browserTabs: storageSize("txthk-browser-tabs"),
                     furigana: storageSize("furigana"),
                 },
                 jsHeap: perfMemory
@@ -1277,120 +1158,7 @@ export default function App() {
         const timer = window.setInterval(collect, 10000);
         window.setTimeout(collect, 1500);
         return () => window.clearInterval(timer);
-    }, [isAppLoaded, isHelperSpaceReserved]);
-
-    useEffect(() => {
-        localStorage.setItem("txthk-browser-width", reservedWidth.toString());
-    }, [reservedWidth]);
-
-    useEffect(() => {
-        let unlisten: UnlistenFn;
-
-        listen("browser_meta", (event: any) => {
-            const { id, url, title, favicon } = event.payload;
-
-            setBrowserTabs((prev) => {
-                let changed = false;
-
-                const next = prev.map((tab) => {
-                    if (tab.id !== id) return tab;
-
-                    const cleanOldUrl = (tab.url || "").replace(/\/$/, "");
-                    const cleanNewUrl = (url || "").replace(/\/$/, "");
-                    const smartTitle = getSmartTitle(url || tab.url, title || tab.title);
-
-                    const nextTab = {
-                        ...tab,
-                        url: url || tab.url,
-                        title: smartTitle,
-                        favicon: favicon || tab.favicon || "",
-                    };
-
-                    if (
-                        cleanOldUrl !== cleanNewUrl ||
-                        tab.title !== nextTab.title ||
-                        (tab.favicon || "") !== (nextTab.favicon || "")
-                    ) {
-                        changed = true;
-                        return nextTab;
-                    }
-
-                    return tab;
-                });
-
-                if (changed) {
-                    const active = next[activeBrowserIdxRef.current];
-                    if (active && !isUrlFocusedRef.current) {
-                        setUrlInput(active.url);
-                    }
-                    return next;
-                }
-
-                return prev;
-            });
-        }).then((f) => {
-            unlisten = f;
-        });
-
-        const interval = setInterval(async () => {
-            if (!isHelperSpaceReserved) return;
-
-            try {
-                const infos = await invoke<[string, string][]>("get_browser_info");
-
-                if (!infos || !Array.isArray(infos)) return;
-
-                setBrowserTabs((prev) => {
-                    let changed = false;
-
-                    const next = prev.map((tab) => {
-                        const found = infos.find(([id]) => id === tab.id);
-                        if (!found) return tab;
-
-                        const [, realUrl] = found;
-                        if (!realUrl) return tab;
-
-                        const cleanOldUrl = (tab.url || "").replace(/\/$/, "");
-                        const cleanNewUrl = (realUrl || "").replace(/\/$/, "");
-
-                        if (cleanOldUrl !== cleanNewUrl) {
-                            changed = true;
-
-                            const fallbackTitle =
-                                tab.title.startsWith("🔍 ") || tab.title === t('browser.newTab')
-                                    ? ""
-                                    : tab.title;
-
-                            return {
-                                ...tab,
-                                url: realUrl,
-                                title: getSmartTitle(realUrl, fallbackTitle),
-                            };
-                        }
-
-                        return tab;
-                    });
-
-                    if (changed) {
-                        const active = next[activeBrowserIdxRef.current];
-                        if (active && !isUrlFocusedRef.current) {
-                            setUrlInput(active.url);
-                        }
-                        return next;
-                    }
-
-                    return prev;
-                });
-            } catch (e) {
-                // fallback sync, errors ignored
-            }
-        }, 1200);
-
-        return () => {
-            if (unlisten) unlisten();
-            clearInterval(interval);
-        };
-    }, [isHelperSpaceReserved, t]);
+    }, [isAppLoaded]);
 
     useEffect(() => {
         syncDictionaries();
@@ -1475,7 +1243,7 @@ export default function App() {
             try {
                 const paths = JSON.parse(raw);
                 if (Array.isArray(paths) && paths.length > 0 && paths.every((path) => typeof path === 'string')) {
-                    void runDictImport(paths);
+                    void runDictImport(paths).finally(() => cleanupMobileDictionaries(paths));
                 }
             } catch {
                 // Ignore malformed data from a third-party Android intent.
@@ -1485,10 +1253,15 @@ export default function App() {
             setDictImportProgress(null);
             alert(String((event as CustomEvent<unknown>).detail || t('app.importError', { error: 'unknown error' })));
         };
+        const updateCopyProgress = (event: Event) => {
+            try { setDictImportProgress(JSON.parse(String((event as CustomEvent).detail))); } catch {}
+        };
+        window.addEventListener('setsuna-mobile-dictionaries-copy-progress', updateCopyProgress);
         window.addEventListener('setsuna-mobile-dictionaries-copying', showMobileDictionaryCopyProgress);
         window.addEventListener('setsuna-mobile-dictionaries', importMobileDictionaries);
         window.addEventListener('setsuna-mobile-dictionaries-copy-failed', failMobileDictionaryCopy);
         return () => {
+            window.removeEventListener('setsuna-mobile-dictionaries-copy-progress', updateCopyProgress);
             window.removeEventListener('setsuna-mobile-dictionaries-copying', showMobileDictionaryCopyProgress);
             window.removeEventListener('setsuna-mobile-dictionaries', importMobileDictionaries);
             window.removeEventListener('setsuna-mobile-dictionaries-copy-failed', failMobileDictionaryCopy);
@@ -1499,7 +1272,7 @@ export default function App() {
         void filePath;
         void targetTabId;
         alert(settings.appLanguage === "en"
-            ? "EPUB reader is temporarily disabled while the core browser and lookup are being stabilized."
+            ? "EPUB reader is temporarily disabled while reading support is being developed."
             : "EPUB-читалка временно отключена, пока стабилизируем браузер и lookup.");
     }, [settings.appLanguage, switchTab]);
 
@@ -1821,10 +1594,39 @@ export default function App() {
     }, [tabs, settings.syncPin, isAppLoaded]);
 
     useEffect(() => {
-        let interval: any;
+        const nativeTimer = getMobileFlowTimer();
+        if (isPaused && !nativeTimer) {
+            setTimerDisplayOffset(0);
+            return;
+        }
 
-        if (!isPaused) {
-            interval = setInterval(() => {
+        let pendingSeconds = 0;
+        let lastNativeSeconds = nativeTimer?.elapsedSeconds ?? 0;
+        const commitElapsed = (seconds: number) => {
+            if (seconds <= 0) return;
+            setTabs((prev) =>
+                prev.map((t) => {
+                    if (t.id !== activeTabId) return t;
+                    const nextStats = { ...t.stats, time: t.stats.time + seconds };
+                    const crossedSampleBoundary = Math.floor(nextStats.time / 15) > Math.floor(t.stats.time / 15);
+                    const speedSamples = crossedSampleBoundary
+                        ? [
+                              ...((t.speedSamples || []).slice(-239)),
+                              {
+                                  at: Date.now(),
+                                  chars: nextStats.chars,
+                                  words: nextStats.words,
+                                  sentences: nextStats.sentences,
+                                  time: nextStats.time,
+                              } satisfies ReadingSpeedSample,
+                          ]
+                        : t.speedSamples;
+                    return { ...t, stats: nextStats, speedSamples };
+                })
+            );
+        };
+
+        const interval = window.setInterval(() => {
                 if (settings.autoPauseOnIdle) {
                     const idleMs = Math.max(1, settings.autoPauseIdleMinutes || 5) * 60_000;
                     if (Date.now() - lastReadingActivityRef.current >= idleMs) {
@@ -1833,30 +1635,32 @@ export default function App() {
                     }
                 }
 
-                setTabs((prev) =>
-                    prev.map((t) => {
-                        if (t.id !== activeTabId) return t;
-                        const nextStats = { ...t.stats, time: t.stats.time + 1 };
-                        const shouldSample = nextStats.time > 0 && nextStats.time % 15 === 0;
-                        const speedSamples = shouldSample
-                            ? [
-                                  ...((t.speedSamples || []).slice(-239)),
-                                  {
-                                      at: Date.now(),
-                                      chars: nextStats.chars,
-                                      words: nextStats.words,
-                                      sentences: nextStats.sentences,
-                                      time: nextStats.time,
-                                  } satisfies ReadingSpeedSample,
-                              ]
-                            : t.speedSamples;
-                        return { ...t, stats: nextStats, speedSamples };
-                    })
-                );
+                const currentNativeTimer = getMobileFlowTimer();
+                if (currentNativeTimer) {
+                    pendingSeconds += Math.max(0, currentNativeTimer.elapsedSeconds - lastNativeSeconds);
+                    lastNativeSeconds = currentNativeTimer.elapsedSeconds;
+                } else {
+                    pendingSeconds += 1;
+                }
+                setTimerDisplayOffset(pendingSeconds);
+                // Tabs can contain tens of thousands of lines. Committing once per
+                // second forced a full clone, stringify and render of the workspace,
+                // eventually exhausting the WebView heap. Keep the live counter light
+                // and only fold it into the persisted tab periodically.
+                if (pendingSeconds >= 60) {
+                    commitElapsed(pendingSeconds);
+                    pendingSeconds = 0;
+                    setTimerDisplayOffset(0);
+                }
             }, 1000);
-        }
 
-        return () => clearInterval(interval);
+        return () => {
+            window.clearInterval(interval);
+            const finalNativeTimer = getMobileFlowTimer();
+            if (finalNativeTimer) pendingSeconds += Math.max(0, finalNativeTimer.elapsedSeconds - lastNativeSeconds);
+            commitElapsed(pendingSeconds);
+            setTimerDisplayOffset(0);
+        };
     }, [isPaused, activeTabId, setTabs, settings.autoPauseOnIdle, settings.autoPauseIdleMinutes]);
 
     const triggerFlash = useCallback(() => {
@@ -2135,7 +1939,11 @@ export default function App() {
         setMobileSettingsRequest((current) => ({ id: current.id + 1, section }));
     };
 
-    const openEpubWorkspace = () => setActiveWorkspace("epub");
+    const openEpubWorkspace = () => { setLookupStack([]); setActiveWorkspace("epub"); };
+    useEffect(() => {
+        // Also hide retained native views after a main-page recovery/reload.
+        if (YATSU_READER_AVAILABLE && resolvedWorkspace !== "epub") void hideYatsuWorkspace();
+    }, [resolvedWorkspace]);
     const openPlayerWorkspace = () => setActiveWorkspace("player");
 
     const closeTabById = (id: number) => {
@@ -2179,341 +1987,6 @@ export default function App() {
             const currentIndex = Math.max(0, order.indexOf(tab.status || "planned"));
             return { ...tab, status: order[(currentIndex + 1) % order.length] };
         }));
-    };
-
-    const getActiveBrowserTabSafe = () => {
-        if (!browserTabs || browserTabs.length === 0) return null;
-        const safeIdx = Math.max(0, Math.min(activeBrowserIdxRef.current, browserTabs.length - 1));
-        return browserTabs[safeIdx] || null;
-    };
-
-    const getBrowserContainerRect = () => {
-        const container = document.getElementById("native-browser-container");
-        if (!container) return null;
-
-        const rect = container.getBoundingClientRect();
-        if (rect.width < 10 || rect.height < 10) return null;
-        const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
-        const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
-        const left = Math.max(0, Math.min(rect.left, viewportWidth));
-        const top = Math.max(0, Math.min(rect.top, viewportHeight));
-        const right = Math.max(left, Math.min(rect.right, viewportWidth));
-        const bottom = Math.max(top, Math.min(rect.bottom, viewportHeight));
-
-        return {
-            xOffset: Math.round(left),
-            yOffset: Math.round(top),
-            width: Math.round(right - left),
-            height: Math.round(bottom - top),
-        };
-    };
-
-    const manageBrowserTab = useCallback(
-        async (action: BrowserAction, tabId: string, url: string = "") => {
-            if (isMobileLayout) return;
-            if (!tabId && action !== "hide_all") return;
-            if (isBrowserBlockedByOverlay && action !== "hide_all" && action !== "hide" && action !== "close") {
-                return;
-            }
-
-            const rect = getBrowserContainerRect();
-
-            const payload = {
-                action,
-                id: tabId,
-                url,
-                xOffset: rect?.xOffset ?? Math.max(0, window.innerWidth - reservedWidth),
-                yOffset: rect?.yOffset ?? 52,
-                width: rect?.width ?? reservedWidth,
-                height: rect?.height ?? Math.max(200, window.innerHeight - 52),
-            };
-
-            const commandKey = JSON.stringify(payload);
-            if ((action === "resize" || action === "show") && commandKey === lastBrowserCommandRef.current) {
-                return;
-            }
-            lastBrowserCommandRef.current = commandKey;
-
-            try {
-                await invoke("manage_browser", payload);
-            } catch (e) {
-                console.error("Browser control error:", e);
-                alert(getTranslator(settings.appLanguage || 'ru')('app.browserError', { error: String(e) }));
-            }
-        },
-        [isMobileLayout, isBrowserBlockedByOverlay, reservedWidth, settings.appLanguage]
-    );
-
-    const hideAllBrowserWindows = useCallback(() => {
-        manageBrowserTab("hide_all", "");
-    }, [manageBrowserTab]);
-
-    useEffect(() => {
-        if (isBrowserBlockedByOverlay) {
-            hideAllBrowserWindows();
-            return;
-        }
-
-        if (!isHelperSpaceReserved) return;
-        const activeBrowserTab = getActiveBrowserTabSafe();
-        if (!activeBrowserTab) return;
-        window.setTimeout(() => manageBrowserTab("show", activeBrowserTab.id, activeBrowserTab.url), 80);
-        window.setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 220);
-    }, [isBrowserBlockedByOverlay, isHelperSpaceReserved, hideAllBrowserWindows, manageBrowserTab]);
-
-    const syncBrowserBoundsLocal = useCallback(() => {
-        if (!isHelperSpaceReserved) return;
-
-        const activeBrowserTab = getActiveBrowserTabSafe();
-        if (!activeBrowserTab) return;
-
-        manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url);
-    }, [isHelperSpaceReserved, manageBrowserTab]);
-
-    const scheduleBrowserBoundsSync = useCallback((delay = 0) => {
-        if (browserSyncFrameRef.current !== null) {
-            cancelAnimationFrame(browserSyncFrameRef.current);
-        }
-
-        const run = () => {
-            browserSyncFrameRef.current = requestAnimationFrame(() => {
-                browserSyncFrameRef.current = null;
-                syncBrowserBoundsLocal();
-            });
-        };
-
-        if (delay > 0) {
-            window.setTimeout(run, delay);
-        } else {
-            run();
-        }
-    }, [syncBrowserBoundsLocal]);
-
-    useEffect(() => {
-        return () => {
-            if (browserSyncFrameRef.current !== null) {
-                cancelAnimationFrame(browserSyncFrameRef.current);
-            }
-        };
-    }, []);
-
-    useEffect(() => {
-        const handleMouseMove = (e: MouseEvent) => {
-            if (!isResizingRef.current) return;
-
-            const newWidth = window.innerWidth - e.clientX;
-            if (newWidth > 260 && newWidth < window.innerWidth - 250) {
-                setReservedWidth(newWidth);
-            }
-        };
-
-        const handleMouseUp = () => {
-            if (!isResizingRef.current) return;
-
-            isResizingRef.current = false;
-            document.body.style.cursor = "default";
-            document.body.style.userSelect = "auto";
-
-            scheduleBrowserBoundsSync();
-            scheduleBrowserBoundsSync(180);
-        };
-
-        document.addEventListener("mousemove", handleMouseMove);
-        document.addEventListener("mouseup", handleMouseUp);
-
-        return () => {
-            document.removeEventListener("mousemove", handleMouseMove);
-            document.removeEventListener("mouseup", handleMouseUp);
-        };
-    }, [scheduleBrowserBoundsSync]);
-
-    useEffect(() => {
-        const onResize = () => scheduleBrowserBoundsSync();
-
-        window.addEventListener("resize", onResize);
-        return () => window.removeEventListener("resize", onResize);
-    }, [scheduleBrowserBoundsSync]);
-
-    useEffect(() => {
-        if (!isHelperSpaceReserved) return;
-
-        const activeBrowserTab = getActiveBrowserTabSafe();
-        if (!activeBrowserTab) return;
-
-        const timers = [
-            window.setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 40),
-            window.setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 180),
-            window.setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 420),
-        ];
-
-        return () => timers.forEach(window.clearTimeout);
-    }, [isHelperSpaceReserved, reservedWidth, showBrowserUI, activeBrowserIdx, browserTabs, manageBrowserTab]);
-
-    useEffect(() => {
-        if (isHelperSpaceReserved) return;
-        hideAllBrowserWindows();
-    }, [isHelperSpaceReserved, hideAllBrowserWindows]);
-
-    useEffect(() => {
-        const handleVisibilityChange = () => {
-            if (document.visibilityState === "hidden") {
-                hideAllBrowserWindows();
-                return;
-            }
-
-            if (!isHelperSpaceReserved) {
-                hideAllBrowserWindows();
-                return;
-            }
-
-            const activeBrowserTab = getActiveBrowserTabSafe();
-            if (!activeBrowserTab) return;
-
-            setTimeout(() => manageBrowserTab("show", activeBrowserTab.id, activeBrowserTab.url), 60);
-            setTimeout(() => manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url), 360);
-        };
-
-        document.addEventListener("visibilitychange", handleVisibilityChange);
-        window.addEventListener("focus", handleVisibilityChange);
-
-        return () => {
-            document.removeEventListener("visibilitychange", handleVisibilityChange);
-            window.removeEventListener("focus", handleVisibilityChange);
-        };
-    }, [isHelperSpaceReserved, hideAllBrowserWindows, manageBrowserTab]);
-
-    const handleAiHelperClick = () => {
-        const activeBrowserTab = getActiveBrowserTabSafe();
-        if (!activeBrowserTab) return;
-
-        if (isHelperSpaceReserved) {
-            setIsHelperSpaceReserved(false);
-            hideAllBrowserWindows();
-            return;
-        }
-
-        setIsHelperSpaceReserved(true);
-
-        setTimeout(() => {
-            manageBrowserTab("show", activeBrowserTab.id, activeBrowserTab.url);
-        }, 80);
-        setTimeout(() => {
-            manageBrowserTab("resize", activeBrowserTab.id, activeBrowserTab.url);
-        }, 380);
-    };
-
-    const submitUrlLocal = () => {
-        let finalUrl = urlInput.trim();
-        if (!finalUrl) return;
-
-        if (!/^https?:\/\//i.test(finalUrl)) {
-            if (finalUrl.includes(".") && !finalUrl.includes(" ")) {
-                finalUrl = "https://" + finalUrl;
-            } else {
-                const engine = settings.searchEngine || "https://duckduckgo.com/?q=";
-                finalUrl = `${engine}${encodeURIComponent(finalUrl)}`;
-            }
-        }
-
-        setUrlInput(finalUrl);
-
-        const newTabs = [...browserTabs];
-        const safeIdx = Math.max(0, Math.min(activeBrowserIdx, newTabs.length - 1));
-
-        newTabs[safeIdx] = {
-            ...newTabs[safeIdx],
-            url: finalUrl,
-            title: getSmartTitle(finalUrl, t('browser.siteTitle')),
-        };
-
-        setBrowserTabs(newTabs);
-
-        if (isHelperSpaceReserved) {
-            manageBrowserTab("navigate", newTabs[safeIdx].id, finalUrl);
-        }
-    };
-
-    const addBrowserTab = () => {
-        const engine = settings.searchEngine || "https://duckduckgo.com/?q=";
-        const newTab = {
-			id: `tab_${Date.now()}`,
-			url: engine,
-			title: t('browser.newTab'),
-			favicon: "",
-		};
-
-        const newTabs = [...browserTabs, newTab];
-        const newIdx = newTabs.length - 1;
-
-        setBrowserTabs(newTabs);
-        setActiveBrowserIdx(newIdx);
-        setUrlInput(engine);
-
-        if (isHelperSpaceReserved) {
-            setTimeout(() => {
-                manageBrowserTab("show", newTab.id, newTab.url);
-            }, 40);
-            setTimeout(() => {
-                manageBrowserTab("resize", newTab.id, newTab.url);
-            }, 360);
-        }
-    };
-
-    const closeBrowserTab = (e: React.MouseEvent, idx: number) => {
-        e.stopPropagation();
-
-        if (browserTabs.length === 1) return;
-
-        const tabToClose = browserTabs[idx];
-        const wasActive = activeBrowserIdx === idx;
-
-        manageBrowserTab("close", tabToClose.id, tabToClose.url);
-
-        const newTabs = browserTabs.filter((_, i) => i !== idx);
-        setBrowserTabs(newTabs);
-
-        let nextIdx = activeBrowserIdx;
-
-        if (wasActive) {
-            nextIdx = Math.max(0, idx - 1);
-        } else if (activeBrowserIdx > idx) {
-            nextIdx = activeBrowserIdx - 1;
-        }
-
-        const safeNextIdx = Math.max(0, Math.min(nextIdx, newTabs.length - 1));
-        setActiveBrowserIdx(safeNextIdx);
-        setUrlInput(newTabs[safeNextIdx].url);
-
-        if (isHelperSpaceReserved && wasActive) {
-            setTimeout(() => {
-                manageBrowserTab("show", newTabs[safeNextIdx].id, newTabs[safeNextIdx].url);
-            }, 40);
-            setTimeout(() => {
-                manageBrowserTab("resize", newTabs[safeNextIdx].id, newTabs[safeNextIdx].url);
-            }, 360);
-        }
-    };
-
-    const selectBrowserTab = (idx: number) => {
-        const oldTab = browserTabs[activeBrowserIdx];
-        const newTab = browserTabs[idx];
-        if (!newTab) return;
-
-        setActiveBrowserIdx(idx);
-        setUrlInput(newTab.url);
-
-        if (isHelperSpaceReserved) {
-            if (oldTab && oldTab.id !== newTab.id) {
-                manageBrowserTab("hide", oldTab.id, oldTab.url);
-            }
-
-            setTimeout(() => {
-                manageBrowserTab("show", newTab.id, newTab.url);
-            }, 20);
-            setTimeout(() => {
-                manageBrowserTab("resize", newTab.id, newTab.url);
-            }, 360);
-        }
     };
 
     const openExportModal = () => {
@@ -2962,12 +2435,11 @@ export default function App() {
         const remoteActive = remoteTabs.some((tab: Tab) => tab.id === payload.activeTabId)
             ? payload.activeTabId
             : remoteTabs[0].id;
-        const remoteTabsKey = JSON.stringify(remoteTabs);
-        const remoteStateKey = JSON.stringify({
+        const remoteStateKey = contentFingerprint({
             version: 1,
             activeTabId: remoteActive,
             isPaused: Boolean(payload.isPaused),
-            tabsKey: remoteTabsKey,
+            tabs: remoteTabs,
         });
 
         textSyncLastAppliedRemoteStateRef.current = remoteStateKey;
@@ -2980,9 +2452,7 @@ export default function App() {
         return true;
     }, []);
 
-    const textSyncRuntimeTabs = useMemo(() => {
-        return tabs.map((tab) => trimTabForRuntime(tab));
-    }, [tabs]);
+    const textSyncRuntimeTabs = runtimeTabs;
 
     const textSyncStatePayload = useMemo(() => {
         return {
@@ -2993,12 +2463,18 @@ export default function App() {
         };
     }, [activeTabId, isPaused, textSyncRuntimeTabs]);
 
-    const textSyncStateKey = useMemo(() => JSON.stringify({
-        version: 1,
-        activeTabId,
-        isPaused,
-        tabsKey: tabsPersistKey,
-    }), [activeTabId, isPaused, tabsPersistKey]);
+    const textSyncStateKey = useMemo(() => contentFingerprint(textSyncStatePayload), [textSyncStatePayload]);
+
+    const localSyncQueue = useRef(createLatestTaskQueue<Record<string, unknown>>(
+        (args) => invoke('publish_text_sync_event', args),
+        (error) => { console.warn('Text sync state publish failed', error); textSyncLastPublishedStateRef.current = ''; },
+    ));
+    const remoteSyncQueue = useRef(createLatestTaskQueue<Record<string, unknown>>(
+        (args) => invoke('push_remote_text_sync_event', args),
+    ));
+    const cloudSyncQueue = useRef(createLatestTaskQueue<Record<string, unknown>>(
+        (args) => invoke('push_text_sync_cloud_state', args),
+    ));
 
     useEffect(() => {
         if (!settings.textSyncServerEnabled) return;
@@ -3008,12 +2484,9 @@ export default function App() {
         const timer = window.setTimeout(() => {
             if (textSyncStateKey === textSyncLastAppliedRemoteStateRef.current) return;
             textSyncLastPublishedStateRef.current = textSyncStateKey;
-            invoke("publish_text_sync_event", {
+            void localSyncQueue.current.push({
                 kind: "state",
                 payload: textSyncStatePayload,
-            }).catch((error) => {
-                console.warn("Text sync state publish failed", error);
-                textSyncLastPublishedStateRef.current = "";
             });
         }, 120);
 
@@ -3028,13 +2501,11 @@ export default function App() {
 
         const timer = window.setTimeout(() => {
             if (textSyncStateKey === textSyncLastAppliedRemoteStateRef.current) return;
-            invoke("push_remote_text_sync_event", {
+            void remoteSyncQueue.current.push({
                 url,
                 token,
                 kind: "state",
                 payload: textSyncStatePayload,
-            }).catch((error) => {
-                console.warn("Text sync remote state push failed", error);
             });
         }, 180);
 
@@ -3055,9 +2526,7 @@ export default function App() {
 
         const timer = window.setTimeout(() => {
             if (textSyncStateKey === textSyncLastAppliedRemoteStateRef.current) return;
-            invoke("push_text_sync_cloud_state", { url, deviceId, stateKey: textSyncStateKey, payload: textSyncStatePayload }).catch((error) => {
-                console.warn("Text sync cloud push failed", error);
-            });
+            void cloudSyncQueue.current.push({ url, deviceId, stateKey: textSyncStateKey, payload: textSyncStatePayload });
         }, 350);
 
         return () => window.clearTimeout(timer);
@@ -3199,51 +2668,12 @@ export default function App() {
         setLookupStack((prev) => prev.slice(0, index + 1));
     }, []);
 
-    const lookupCambridgeForManualSearch = useCallback(async (word: string): Promise<DictEntry[]> => {
-        if (!settings.cambridgeApiEnabled || !settings.cambridgeApiKey?.trim()) return [];
-        if (!/^[A-Za-z][A-Za-z'’-]*(?: [A-Za-z][A-Za-z'’-]*)?$/.test(word.trim())) return [];
-
-        const normalizedWord = word.trim().replace(/’/g, "'").toLowerCase();
-        const dictionaryCode = settings.cambridgeApiDictionary || "english-russian";
-        const baseUrl = settings.cambridgeApiBaseUrl || "https://dictionary.cambridge.org/api/v1";
-        const cacheKey = `${baseUrl}|${dictionaryCode}|${normalizedWord}`;
-        const cached = cambridgeLookupCacheRef.current.get(cacheKey);
-        if (cached && cached.expiresAt > Date.now()) return cached.entries;
-
-        try {
-            const entries = await invoke<DictEntry[]>("lookup_cambridge_api", {
-                word: normalizedWord,
-                config: {
-                    enabled: true,
-                    apiKey: settings.cambridgeApiKey,
-                    dictionaryCode,
-                    baseUrl,
-                },
-            });
-            const safeEntries = entries || [];
-            cambridgeLookupCacheRef.current.set(cacheKey, {
-                expiresAt: Date.now() + 12 * 60 * 60 * 1000,
-                entries: safeEntries,
-            });
-            return safeEntries;
-        } catch {
-            cambridgeLookupCacheRef.current.set(cacheKey, {
-                expiresAt: Date.now() + 5 * 60 * 1000,
-                entries: [],
-            });
-            return [];
-        }
-    }, [settings.cambridgeApiEnabled, settings.cambridgeApiKey, settings.cambridgeApiDictionary, settings.cambridgeApiBaseUrl]);
-
     const runLookupAt = useCallback((text: string, x: number, y: number, lookupMeta?: Partial<LookupData>) => {
         const lookupText = normalizeLookupText(text);
         if (!lookupText) return;
         invoke('lookup_word', { word: lookupText }).then(async (entries: any) => {
             const localEntries = entries || [];
-            const apiEntries = (settings.cambridgeApiOnlyWhenNoLocal ?? true) && localEntries.length > 0
-                ? []
-                : await lookupCambridgeForManualSearch(lookupText);
-            const allEntries = [...localEntries, ...apiEntries];
+            const allEntries = localEntries;
             if (allEntries.length > 0) {
                 setLookupStack([{
                     rect: new DOMRect(x, y, 0, 0),
@@ -3253,34 +2683,17 @@ export default function App() {
                     ...lookupMeta,
                 }]);
             }
-        }).catch(async () => {
-            const apiEntries = await lookupCambridgeForManualSearch(lookupText);
-            if (apiEntries.length > 0) {
-                setLookupStack([{
-                    rect: new DOMRect(x, y, 0, 0),
-                    entries: apiEntries,
-                    word: lookupText,
-                    sentence: lookupText,
-                    ...lookupMeta,
-                }]);
-            }
-        });
-    }, [lookupCambridgeForManualSearch, settings.cambridgeApiOnlyWhenNoLocal]);
+        }).catch(() => {});
+    }, []);
 
     const runSentenceTokenLookup = useCallback(async (word: string, sentence: string, cursor?: number) => {
         const requestedWord = normalizeLookupText(word);
         if (!requestedWord) return null;
-        // A second tap replaces the current mobile sheet. Closing it before the
-        // async query also prevents the old sheet from retaining the touch layer.
-        setLookupStack([]);
+        const requestId = ++sentenceLookupRequestRef.current;
+        // Keep the current sheet interactive until the replacement is ready. The
+        // old close-first path left the token layer in a dead state on slower phones.
         setMobileLookupNotice('');
         const rect = new DOMRect(window.innerWidth / 2, Math.max(110, window.innerHeight * 0.3), 0, 0);
-        const requestedLength = Array.from(requestedWord).length;
-        const isJapaneseToken = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff66-\uff9f]/.test(requestedWord);
-        const keepFullJapaneseMatch = (entries: DictEntry[]) => isJapaneseToken
-            ? entries.filter((entry) => Number(entry.source_length || 0) >= requestedLength)
-            : entries;
-
         try {
             let resolvedWord = requestedWord;
             let localEntries: DictEntry[] = [];
@@ -3289,20 +2702,12 @@ export default function App() {
                 length: Array.from(requestedWord).length,
             };
 
-            // The tokenizer already selected a concrete Japanese block. Looking up that
-            // block first prevents a valid segment such as 米屋 from collapsing to 米.
-            if (isJapaneseToken) {
+            // Sentence scanning is authoritative. Like Yomitan, it starts at the
+            // selected word boundary and tests progressively shorter source strings,
+            // so a tokenizer hint such as 可愛 can still resolve 可愛がりたい -> 可愛がる.
+            if (Number.isFinite(cursor) && sentence) {
                 try {
-                    const entries = await invoke<DictEntry[]>('lookup_word', { word: requestedWord });
-                    localEntries = keepFullJapaneseMatch(Array.isArray(entries) ? entries : []);
-                } catch {
-                    localEntries = [];
-                }
-            }
-
-            if (localEntries.length === 0 && Number.isFinite(cursor) && sentence) {
-                try {
-                    const result = await invoke<{
+                    const rawResult = await invoke<{
                         entries: DictEntry[];
                         start?: number;
                         end?: number;
@@ -3310,12 +2715,11 @@ export default function App() {
                         match_len?: number;
                         word: string;
                     } | null>('scan_cursor', { sentence, cursor });
+                    const result = selectActiveLookupResult(rawResult, sentence, settings);
                     if (result) {
+                        if (requestId !== sentenceLookupRequestRef.current) return null;
                         resolvedWord = normalizeLookupText(result.word) || requestedWord;
-                        localEntries = keepFullJapaneseMatch(Array.isArray(result.entries) ? result.entries : []);
-                        if (isJapaneseToken && localEntries.length === 0) {
-                            resolvedWord = requestedWord;
-                        }
+                        localEntries = Array.isArray(result.entries) ? result.entries : [];
                         const start = Number.isFinite(result.match_start)
                             ? Number(result.match_start)
                             : Number(result.start);
@@ -3327,25 +2731,25 @@ export default function App() {
                         }
                     }
                 } catch {
-                    // Direct lookup below remains useful for punctuation and incomplete text.
+                    // Direct lookup below remains useful for incomplete pasted text.
                 }
             }
 
             if (localEntries.length === 0) {
                 try {
                     const entries = await invoke<DictEntry[]>('lookup_word', { word: requestedWord });
-                    localEntries = keepFullJapaneseMatch(Array.isArray(entries) ? entries : []);
+                    if (requestId !== sentenceLookupRequestRef.current) return null;
+                    localEntries = Array.isArray(entries) ? entries : [];
                     resolvedWord = requestedWord;
                 } catch {
                     localEntries = [];
                 }
             }
 
-            const apiEntries = (settings.cambridgeApiOnlyWhenNoLocal ?? true) && localEntries.length > 0
-                ? []
-                : await lookupCambridgeForManualSearch(resolvedWord);
-            const entries = [...localEntries, ...apiEntries];
+            const entries = localEntries;
+            if (requestId !== sentenceLookupRequestRef.current) return null;
             if (entries.length === 0) {
+                setLookupStack([]);
                 setMobileLookupNotice(settings.appLanguage === 'en'
                     ? `No dictionary entry for “${resolvedWord}”. Tap another block or import a larger dictionary.`
                     : `Для «${resolvedWord}» нет статьи. Нажми на соседний блок или импортируй более полный словарь.`);
@@ -3361,13 +2765,14 @@ export default function App() {
             }]);
             return match;
         } catch (error) {
+            if (requestId !== sentenceLookupRequestRef.current) return null;
             console.warn('Sentence token lookup failed', error);
             setMobileLookupNotice(settings.appLanguage === 'en'
                 ? 'Lookup failed. Check the dictionary database and try again.'
                 : 'Лукап не сработал. Проверь базу словарей и попробуй ещё раз.');
             return null;
         }
-    }, [lookupCambridgeForManualSearch, settings.appLanguage, settings.cambridgeApiOnlyWhenNoLocal]);
+    }, [settings]);
 
     useEffect(() => {
         const receiveOverlayLookup = (event: Event) => {
@@ -3406,7 +2811,7 @@ export default function App() {
                 onSettingsPatch={(patch) => setSettings((prev) => {
                     const next = { ...prev, ...patch };
                     try {
-                        localStorage.setItem('txthk-settings', JSON.stringify(stripLegacyOverlaySettings({ ...next })));
+                        localStorage.setItem('txthk-settings', JSON.stringify(stripRemovedSettings({ ...next })));
                         if (patch.appLanguage === 'ru' || patch.appLanguage === 'en') {
                             localStorage.setItem(APP_LANGUAGE_STORAGE_KEY, patch.appLanguage);
                         }
@@ -3449,8 +2854,6 @@ export default function App() {
 
             <SearchBar
                 isOpen={isSearchOpen}
-                isHelperSpaceReserved={isHelperSpaceReserved}
-                reservedWidth={reservedWidth}
                 searchQuery={searchQuery}
                 setSearchQuery={setSearchQuery}
                 onClose={() => {
@@ -3536,7 +2939,7 @@ export default function App() {
                             <>
                                 <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.5, marginBottom: 14 }}>
                                     {settings.appLanguage === 'en' ? 'A new Setsuna build is ready.' : 'Новая сборка Setsuna готова к установке.'}
-                                    {updateDialog.update.version ? ` ${settings.appLanguage === 'en' ? 'Internal build' : 'Внутренняя сборка'} #${updaterBuildNumber(updateDialog.update.version)}.` : ''}
+                                    {updateDialog.update.version ? ` ${settings.appLanguage === 'en' ? 'Version' : 'Версия'} ${updateDialog.update.version}.` : ''}
                                 </div>
                                 {updateDialog.update.body && !updateDialog.busy && (
                                     <div style={{ maxHeight: 120, overflowY: 'auto', whiteSpace: 'pre-wrap', color: 'var(--text-muted)', background: 'var(--bg-side)', border: '1px solid var(--border-main)', borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
@@ -3565,8 +2968,8 @@ export default function App() {
                                 {!updateDialog.busy && (
                                     <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 12 }}>
                                         {settings.appLanguage === 'en'
-                                            ? `Installed: ${releaseInfo.displayVersion} (build ${releaseInfo.buildNumber})`
-                                            : `Установлено: ${releaseInfo.displayVersion} (сборка ${releaseInfo.buildNumber})`}
+                                            ? `Installed: ${releaseInfo.displayVersion}`
+                                            : `Установлено: ${releaseInfo.displayVersion}`}
                                     </div>
                                 )}
                             </>
@@ -3807,7 +3210,7 @@ export default function App() {
                     minWidth: 0,
                     position: 'relative',
                     transform: 'translateZ(0)',
-                    transition: isResizingRef.current ? 'none' : 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                 }}
             >
                 {resolvedWorkspace === "hub" ? (
@@ -3820,7 +3223,9 @@ export default function App() {
                         onAnki={() => isMobileLayout ? openMobileSettingsPanel('anki') : openSettingsPanel('anki-cards')}
                         onSettings={() => isMobileLayout ? openMobileSettingsPanel('reading') : openSettingsPanel()}
                     />
-                ) : resolvedWorkspace === "epub" ? (
+                ) : resolvedWorkspace === "epub" ? (YATSU_READER_AVAILABLE ? (
+                    <YatsuWorkspace language={settings.appLanguage} onHome={() => setActiveWorkspace("hub")} />
+                ) : (
                     <WorkspaceShell
                         title={settings.appLanguage === "en" ? "EPUB Reader" : "EPUB-ридер"}
                         icon={<IconBookTab />}
@@ -3835,7 +3240,7 @@ export default function App() {
                             <span>{settings.appLanguage === "en" ? "The reader workspace is ready for the next implementation step." : "Рабочее пространство ридера готово к следующему этапу реализации."}</span>
                         </div>
                     </WorkspaceShell>
-                ) : resolvedWorkspace === "player" ? (
+                )) : resolvedWorkspace === "player" ? (
                     <WorkspaceShell
                         title={settings.appLanguage === "en" ? "Anime Player" : "Аниме-плеер"}
                         icon={<IconPlayerTab />}
@@ -3853,7 +3258,7 @@ export default function App() {
                 ) : isMobileLayout ? (
                     <MobileLayout
                         tabs={textHookerTabs}
-                        activeTab={activeTab}
+                        activeTab={activeTabForDisplay}
                         activeTabId={activeTabId}
                         switchTab={switchTab}
                         addNewTab={addNewTab}
@@ -3873,6 +3278,8 @@ export default function App() {
                         updateSettings={setSettings}
                         setTabs={setTabs}
                         syncDictionaries={syncDictionaries}
+                        runDictImport={runDictImport}
+                        setConfirmDialog={setConfirmDialog}
                         openImport={handleOpenImport}
                         clearAll={clearAll}
                         openSettings={() => openSettingsPanel()}
@@ -3889,6 +3296,7 @@ export default function App() {
                 ) : (
                 <>
                 <TopBar
+                    openEpubWorkspace={openEpubWorkspace}
                     tabs={textHookerTabs}
                     activeTabId={activeTabId}
                     switchTab={switchTab}
@@ -3928,8 +3336,6 @@ export default function App() {
                     }}
                     openImport={handleOpenImport}
                     openExport={openExportModal}
-                    toggleBrowser={handleAiHelperClick}
-                    isBrowserOpen={isHelperSpaceReserved}
                     activeTab={activeTab}
                     openCaptureSourcePicker={openCaptureSourcePicker}
                     openJlModeWindow={openJlModeWindow}
@@ -3959,7 +3365,7 @@ export default function App() {
                 <StatsPanel
                     isPaused={isPaused}
                     onTogglePause={() => setIsPaused(!isPaused)}
-                    stats={activeTab?.stats || defaultStats}
+                    stats={activeTabForDisplay?.stats || defaultStats}
                     speedSamples={activeTab?.speedSamples || []}
                     position={settings.panelPosition}
                     speedMetric={settings.speedMetric}
@@ -4017,30 +3423,6 @@ export default function App() {
                 )}
             </div>
 
-            <BrowserSidebar
-                isOpen={resolvedWorkspace === "texthooker" && !isMobileLayout && isHelperSpaceReserved}
-                reservedWidth={reservedWidth}
-                isResizing={isResizingRef.current}
-                onMouseDownResize={(e: any) => {
-                    e.preventDefault();
-                    isResizingRef.current = true;
-                    document.body.style.cursor = 'col-resize';
-                    document.body.style.userSelect = 'none';
-                }}
-                showBrowserUI={showBrowserUI}
-                setShowBrowserUI={setShowBrowserUI}
-                syncBrowserBounds={syncBrowserBoundsLocal}
-                browserTabs={browserTabs}
-                activeBrowserIdx={activeBrowserIdx}
-                selectBrowserTab={selectBrowserTab}
-                closeBrowserTab={closeBrowserTab}
-                addBrowserTab={addBrowserTab}
-                urlInput={urlInput}
-                setUrlInput={setUrlInput}
-                submitUrl={submitUrlLocal}
-                setIsUrlFocused={setIsUrlFocused}
-                language={settings.appLanguage}
-            />
         </div>
     );
 }

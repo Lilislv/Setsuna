@@ -56,13 +56,6 @@ export interface Tab {
     readerProgress?: number;
     epub?: EpubBookData;
 }
-export interface BrowserTab {
-    id: string;
-    url: string;
-    title: string;
-    favicon?: string;
-}
-
 export interface PlayerMiningClip {
     path?: string;
     filename?: string;
@@ -93,11 +86,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     globalLookupEnabled: false,
     globalLookupRestoreClipboard: true,
     globalLookupShortcut: 'Alt+Q',
-    cambridgeApiEnabled: false,
-    cambridgeApiKey: '',
-    cambridgeApiDictionary: 'english-russian',
-    cambridgeApiBaseUrl: 'https://dictionary.cambridge.org/api/v1',
-    cambridgeApiOnlyWhenNoLocal: true,
     hookProcesses: [], 
     ankiDeck: '', ankiModel: '',
     ankiDeckMode: 'shared',
@@ -105,7 +93,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     ankiFieldWord: '', ankiFieldReading: '', ankiFieldMeaning: '', ankiFieldSentence: '', ankiFieldSentenceFurigana: '', ankiFieldDict: '',
     ankiFieldAudio: '', ankiFieldPitch: '', ankiFieldFreq: '', ankiFieldScreenshot: '',
     ankiShowButtonNormal: true, ankiShowButtonScreenshot: true,
-    dictionaries: [], autoPlayAudio: true, helperUrl: "https://chatgpt.com/", syncPin: '',
+    dictionaries: [], autoPlayAudio: true, syncPin: '',
     remoteCaptureAgentUrl: '', remoteCaptureAgentToken: '', localCaptureAgentToken: '',
     textSyncServerEnabled: false,
     textSyncServerPort: 48732,
@@ -141,11 +129,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
     jlModeHideLookupOnNewText: true,
     mobileOverlayEnabled: false,
     mobileOverlayFontSize: 22,
+    mobileOverlayFontFamily: 'serif',
+    mobileOverlayLineHeight: 1.2,
     mobileOverlayOpacity: 88,
     mobileOverlayTextColor: '#ffffff',
     mobileOverlayBackgroundColor: '#15181d',
-    mobileOverlayWidth: 340,
+    mobileOverlayBorderColor: '#56606d',
+    mobileOverlayWidth: 320,
     mobileOverlayHeight: 160,
+    mobileOverlayPadding: 12,
+    mobileOverlayLookupHeight: 220,
+    mobileOverlayLocked: false,
+    mobileOverlayToolbarExpanded: false,
     jlModeAutoLookupFirstWord: false,
     epubFontSize: 26,
     epubFontFamily: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif",
@@ -199,14 +194,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
     topbarShowSearch: true,
     topbarShowImport: true,
     topbarShowExport: true,
-    topbarShowBrowser: true,
     updateAutoCheck: true,
     appLanguage: 'ru',
     autoScrollOffset: 80,
     theme: 'dark',
     replacements: [], removeWhitespace: false, requireJapanese: false, ignoreDuplicates: true,
     enableTextCleaner: true,
-    searchEngine: 'https://duckduckgo.com/?q=',
     websocketAutoConnect: false,
     primaryWebSocketId: 'default',
     websockets: [{ id: 'default', name: 'TextHooker', url: 'ws://localhost:9002', active: true }]

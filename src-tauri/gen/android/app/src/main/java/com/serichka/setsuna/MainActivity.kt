@@ -18,6 +18,11 @@ class MainActivity : TauriActivity() {
   private var setsunaWebView: WebView? = null
   private var pendingSharedText: String? = null
   private var pendingOverlayLookup: String? = null
+  private val overlayReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+      if (intent?.action == TextOverlayService.ACTION_DISMISSED) dispatchWebEvent("setsuna-flow-dismissed", "")
+    }
+  }
   private val captureReceiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
       val text = intent?.getStringExtra(TextCaptureService.EXTRA_TEXT)?.trim().orEmpty()
@@ -31,6 +36,7 @@ class MainActivity : TauriActivity() {
     super.onCreate(savedInstanceState)
     ContextCompat.registerReceiver(this, captureReceiver, IntentFilter(TextCaptureService.ACTION_TEXT), ContextCompat.RECEIVER_NOT_EXPORTED)
     receiveIncomingText(intent)
+    ContextCompat.registerReceiver(this, overlayReceiver, IntentFilter(TextOverlayService.ACTION_DISMISSED), ContextCompat.RECEIVER_NOT_EXPORTED)
   }
 
     override fun onWebViewCreate(webView: WebView) {
@@ -57,6 +63,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    runCatching { unregisterReceiver(overlayReceiver) }
     runCatching { unregisterReceiver(captureReceiver) }
     setsunaWebView = null
     super.onDestroy()
@@ -73,26 +80,63 @@ class MainActivity : TauriActivity() {
     if (uris.isEmpty()) return
     dispatchWebEvent("setsuna-mobile-dictionaries-copying", uris.size.toString())
     Thread {
-      val paths = uris.mapIndexedNotNull { index, uri -> copyDictionaryUri(uri, index) }
-      if (paths.isNotEmpty()) {
+      val paths = mutableListOf<String>()
+      val directory = File(cacheDir, "dictionary-imports/" + java.util.UUID.randomUUID().toString()).apply { mkdirs() }
+      try {
+        uris.forEachIndexed { index, uri -> paths.add(copyDictionaryUri(uri, index, uris.size, directory)) }
         dispatchWebEvent("setsuna-mobile-dictionaries", org.json.JSONArray(paths).toString())
-      } else {
-        dispatchWebEvent("setsuna-mobile-dictionaries-copy-failed", "Could not read the selected dictionary files.")
+      } catch (error: Exception) {
+        paths.forEach { File(it).delete() }
+        dispatchWebEvent("setsuna-mobile-dictionaries-copy-failed", error.message ?: "Could not read the selected dictionary files.")
       }
     }.start()
   }
 
-  private fun copyDictionaryUri(uri: android.net.Uri, index: Int): String? = runCatching {
-    val displayName = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-      if (cursor.moveToFirst()) cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)) else null
+  private fun copyDictionaryUri(uri: android.net.Uri, index: Int, count: Int, directory: File): String {
+    var size = 0L
+    val displayName = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+      if (!cursor.moveToFirst()) null else {
+        val sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE)
+        if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) size = cursor.getLong(sizeColumn)
+        cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+      }
     } ?: "dictionary-${System.currentTimeMillis()}.zip"
-    val safeName = displayName.replace(Regex("[^A-Za-z0-9._-]"), "_")
-    val directory = File(cacheDir, "dictionary-imports").apply { mkdirs() }
-    val target = File(directory, "${System.currentTimeMillis()}-$index-$safeName")
-    contentResolver.openInputStream(uri)?.use { input -> FileOutputStream(target).use(input::copyTo) }
-        ?: return null
-    target.absolutePath
-  }.getOrNull()
+    require(listOf(".zip", ".json", ".jsonl", ".gz", ".xz", ".txz", ".ifo", ".idx", ".dict", ".dz", ".csv", ".tsv", ".txt", ".dsl", ".db", ".sqlite", ".sqlite3").any { displayName.endsWith(it, true) }) { "Неподдерживаемый формат: $displayName" }
+    val safeName = File(displayName).name
+    require(safeName != "." && safeName != "..") { "Invalid filename" }
+    require(size <= 0 || directory.usableSpace > size + 32L * 1024 * 1024) { "Недостаточно места для копирования $displayName" }
+    val target = File(directory, safeName)
+    require(!target.exists()) { "Duplicate filename: $safeName" }
+    try {
+      val input = contentResolver.openInputStream(uri) ?: error("Не удалось открыть $displayName")
+      input.use { source -> FileOutputStream(target).use { output ->
+        val buffer = ByteArray(128 * 1024)
+        var copied = 0L
+        var lastUpdate = 0L
+        while (true) {
+          val bytes = source.read(buffer)
+          if (bytes < 0) break
+          output.write(buffer, 0, bytes)
+          copied += bytes
+          val now = android.os.SystemClock.elapsedRealtime()
+          if (now - lastUpdate >= 200) {
+            dispatchWebEvent("setsuna-mobile-dictionaries-copy-progress", org.json.JSONObject()
+              .put("dict_name", displayName).put("total_dicts", count)
+              .put("current_file", index).put("total_files", count).put("words_added", 0)
+              .put("percent", if (size > 0) (index + copied.toDouble() / size) * 100 / count else index * 100.0 / count)
+              .put("status", "Копирование: ${copied / 1024 / 1024} МБ" + if (size > 0) " / ${size / 1024 / 1024} МБ" else "")
+              .toString())
+            lastUpdate = now
+          }
+        }
+        require(size <= 0 || copied == size) { "Файл скопирован не полностью: $displayName" }
+      } }
+      return target.absolutePath
+    } catch (error: Exception) {
+      target.delete()
+      throw error
+    }
+  }
 
   private fun receiveIncomingText(intent: Intent?) {
     if (intent == null) return

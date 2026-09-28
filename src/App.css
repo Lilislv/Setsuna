@@ -1310,7 +1310,7 @@ body {
 
 @media (max-width: 760px) {
     body { overscroll-behavior: none; }
-    .dict-popup {
+    .dict-popup.dict-mobile-sheet {
         max-width: calc(100vw - 20px);
         max-height: 58vh;
         overflow: auto;
@@ -1565,6 +1565,29 @@ body {
     border-radius: 0;
     padding: 0;
     margin-bottom: 18px;
+}
+
+.mobile-feedback-section .modern-card {
+    padding: 16px;
+    min-width: 0;
+}
+
+.mobile-feedback-section input:not([type="checkbox"]),
+.mobile-feedback-section textarea,
+.mobile-feedback-section select {
+    min-height: 44px;
+    padding: 10px;
+    font: inherit;
+    font-size: 16px;
+    color: var(--text-main);
+    background: var(--bg-main);
+    border: 1px solid var(--border-main);
+    border-radius: 6px;
+}
+
+.mobile-feedback-section .btn-primary {
+    min-height: 44px;
+    white-space: normal;
 }
 
 .mobile-settings-section > .mobile-section-title {
@@ -1953,3 +1976,10 @@ body {
     opacity: 0.55;
     cursor: default;
 }
+.mobile-dock-btn.timer { flex: 0 0 auto; min-width: 86px; min-height: 48px; padding: 8px 12px; background: #22537e; color: #fff; border: 1px solid #70bfff; font-weight: 700; }
+.mobile-dock-btn.timer.running { background: #285d40; border-color: #79cb98; }
+.mobile-dock-btn.timer .timer-icon { font-size: 20px; }
+.mobile-settings-sheet #lookup-dicts .dictionary-item-header { flex-wrap: wrap; }
+.mobile-settings-sheet #lookup-dicts .dictionary-item-name { order: -1; flex: 1 0 100% !important; white-space: normal !important; overflow-wrap: anywhere; }
+.mobile-settings-sheet #lookup-dicts button { min-height: 36px; }
+.mobile-settings-sheet #lookup-dicts input[type=checkbox] { width: 24px; height: 24px; }

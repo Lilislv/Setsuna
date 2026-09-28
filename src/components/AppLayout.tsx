@@ -1,9 +1,9 @@
-﻿import {
+import SettingsLookup from "./Settings/SettingsLookup";
+import {
     IconSearch,
     IconWifi,
     IconImport,
     IconExport,
-    IconBrowser,
     IconClear,
     IconSettings,
     IconPin,
@@ -15,7 +15,7 @@
     IconChevronDown,
     IconClose,
 } from './Icons';
-import { defaultStats, EMPTY_LINES, Tab, BrowserTab } from '../utils/constants';
+import { defaultStats, EMPTY_LINES, Tab } from '../utils/constants';
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { getTranslator } from '../utils/i18n';
 import TextContainer from './TextContainer';
@@ -43,10 +43,11 @@ import {
     type DriveQuotaInfo,
     type GooglePkceSession,
 } from '../utils/gdrive';
-import { GOOGLE_DRIVE_AVAILABLE } from '../utils/featureFlags';
+import { GOOGLE_DRIVE_AVAILABLE, YATSU_READER_AVAILABLE } from '../utils/featureFlags';
 import { tokenizeLookupText, normalizeWebSocketUrl } from '../utils/appRuntime';
 import {
     getMobileOverlayStatus,
+    enableMobileOverlay,
     hideMobileOverlay,
     requestMobileOverlayPermission,
     showMobileOverlay,
@@ -58,6 +59,7 @@ import {
     stopMobileTextCapture,
 } from '../utils/mobileTextCapture';
 import { openMobileDictionaryPicker } from '../utils/mobileFiles';
+import SettingsFeedback from './Settings/SettingsFeedback';
 import {
     clearAnkiMetaCache,
     getAnkiDroidStatus,
@@ -71,8 +73,6 @@ const TAB_WINDOW_START_STORAGE_KEY = 'txthk-tab-window-start';
 
 export const SearchBar = ({
     isOpen,
-    isHelperSpaceReserved,
-    reservedWidth,
     searchQuery,
     setSearchQuery,
     onClose,
@@ -93,7 +93,7 @@ export const SearchBar = ({
             style={{
                 position: 'absolute',
                 top: '65px',
-                right: isHelperSpaceReserved ? `${reservedWidth + 20}px` : '20px',
+                right: '20px',
                 background: 'var(--bg-panel)',
                 border: '1px solid var(--border-main)',
                 padding: '10px 16px',
@@ -216,7 +216,7 @@ type MobileLookupToken = {
     end?: number;
     lookup?: boolean;
 };
-type MobileSettingsSection = 'reading' | 'flow' | 'source' | 'anki' | 'drive' | 'data';
+type MobileSettingsSection = 'reading' | 'flow' | 'source' | 'anki' | 'drive' | 'data' | 'feedback';
 type MobileDriveTransfer = {
     operation: 'backup-upload' | 'backup-download' | 'upload' | 'download';
     label: string;
@@ -342,6 +342,8 @@ export const MobileLayout = ({
     updateSettings,
     setTabs,
     syncDictionaries,
+    runDictImport,
+    setConfirmDialog,
     openImport,
     clearAll,
     wsStatuses,
@@ -386,12 +388,20 @@ export const MobileLayout = ({
     const isEn = settings?.appLanguage === 'en';
     const overlayText = activeTab?.lines?.[activeTab.lines.length - 1] || '';
     const overlayOptions = {
+        dictionaries: settings.dictionaries || [],
         fontSize: settings.mobileOverlayFontSize ?? 22,
+        fontFamily: settings.mobileOverlayFontFamily || 'serif',
+        lineHeight: settings.mobileOverlayLineHeight ?? 1.2,
         opacity: settings.mobileOverlayOpacity ?? 88,
         textColor: settings.mobileOverlayTextColor || '#ffffff',
         backgroundColor: settings.mobileOverlayBackgroundColor || '#15181d',
-        width: settings.mobileOverlayWidth ?? 340,
+        borderColor: settings.mobileOverlayBorderColor || '#56606d',
+        width: settings.mobileOverlayWidth ?? 320,
         height: settings.mobileOverlayHeight ?? 160,
+        padding: settings.mobileOverlayPadding ?? 12,
+        lookupHeight: settings.mobileOverlayLookupHeight ?? 220,
+        locked: settings.mobileOverlayLocked === true,
+        toolbarExpanded: settings.mobileOverlayToolbarExpanded === true,
         language: settings.appLanguage || 'ru',
         ankiDeck: activeTab?.ankiDeck || settings.ankiDeck || '',
         ankiModel: settings.ankiModel || '',
@@ -427,13 +437,16 @@ export const MobileLayout = ({
 
     useEffect(() => {
         let unlisten: (() => void) | undefined;
-        listen<{ operation: 'upload' | 'download'; transferred: number; total: number; percent: number }>(
+        listen<{ operation: 'upload' | 'download'; transferred: number; total: number; percent: number; phase?: string }>(
             'drive_dictionary_progress',
             (event) => {
                 const payload = event.payload;
                 setDriveTransfer((current) => ({
                     operation: payload.operation,
-                    label: payload.operation === 'upload'
+                    label: payload.phase === 'connecting' ? (isEn ? 'Connecting to Google Drive…' : 'Подключение к Google Drive…')
+                        : payload.phase === 'retrying' ? (isEn ? 'Reconnecting to Google Drive…' : 'Повторное подключение к Google Drive…')
+                        : payload.phase === 'validating' ? (isEn ? 'Checking and installing the database…' : 'Проверка и установка базы…')
+                        : payload.operation === 'upload'
                         ? (isEn ? 'Uploading dictionaries' : 'Загрузка словарей в Drive')
                         : (isEn ? 'Downloading dictionaries' : 'Скачивание словарей из Drive'),
                     transferred: Number(payload.transferred || 0),
@@ -531,6 +544,10 @@ export const MobileLayout = ({
             try { hideMobileOverlay(); } catch {}
             return;
         }
+        if (getMobileOverlayStatus().dismissed) {
+            updateSetting('mobileOverlayEnabled', false);
+            return;
+        }
         if (!overlayText) return;
         let cancelled = false;
         void (async () => {
@@ -560,7 +577,11 @@ export const MobileLayout = ({
             }
             if (cancelled) return;
             try {
-                showMobileOverlay(overlayText, { ...overlayOptions, tokens: tokenData });
+                const result = showMobileOverlay(overlayText, { ...overlayOptions, tokens: tokenData });
+                if (result.dismissed) {
+                    updateSetting('mobileOverlayEnabled', false);
+                    return;
+                }
                 setOverlayStatus(isEn ? 'Showing the latest line over other apps.' : 'Последняя строка показывается поверх других приложений.');
             } catch (error: any) {
                 setOverlayStatus(error?.message || String(error));
@@ -570,12 +591,20 @@ export const MobileLayout = ({
     }, [
         overlayText,
         settings.mobileOverlayEnabled,
+        settings.dictionaries,
         settings.mobileOverlayFontSize,
+        settings.mobileOverlayFontFamily,
+        settings.mobileOverlayLineHeight,
         settings.mobileOverlayOpacity,
         settings.mobileOverlayTextColor,
         settings.mobileOverlayBackgroundColor,
+        settings.mobileOverlayBorderColor,
         settings.mobileOverlayWidth,
         settings.mobileOverlayHeight,
+        settings.mobileOverlayPadding,
+        settings.mobileOverlayLookupHeight,
+        settings.mobileOverlayLocked,
+        settings.mobileOverlayToolbarExpanded,
         activeTab?.ankiDeck,
         settings.ankiDeck,
         settings.ankiModel,
@@ -657,6 +686,7 @@ export const MobileLayout = ({
             return;
         }
         const granted = refreshOverlayStatus();
+        enableMobileOverlay();
         updateSetting('mobileOverlayEnabled', true);
         if (!granted) {
             try {
@@ -1237,8 +1267,9 @@ export const MobileLayout = ({
             </main>
 
             <footer className="mobile-dock">
-                <button type="button" className="mobile-dock-btn" onClick={() => setIsPaused(!isPaused)}>
-                    {isPaused ? (isEn ? 'Resume' : 'Пуск') : (isEn ? 'Pause' : 'Пауза')}
+                <button type="button" className={`mobile-dock-btn timer ${isPaused ? '' : 'running'}`} aria-label={isPaused ? (isEn ? 'Start timer' : 'Запустить таймер') : (isEn ? 'Pause timer' : 'Пауза таймера')} onClick={() => setIsPaused(!isPaused)}>
+                    <span className="timer-icon" aria-hidden="true">{isPaused ? '▶' : 'Ⅱ'}</span>
+                    {isPaused ? (isEn ? 'Start' : 'Пуск') : (isEn ? 'Pause' : 'Пауза')}
                 </button>
                 <button
                     type="button"
@@ -1334,6 +1365,7 @@ export const MobileLayout = ({
                                 ['anki', 'Anki'],
                                 ['drive', 'Drive'],
                                 ['data', isEn ? 'Data' : 'Данные'],
+                                ['feedback', isEn ? 'Feedback' : 'Обратная связь'],
                             ] as [MobileSettingsSection, string][]).map(([id, label]) => (
                                 <button
                                     key={id}
@@ -1381,8 +1413,8 @@ export const MobileLayout = ({
                             <div className="mobile-section-title">Setsuna Flow</div>
                             <div className="mobile-settings-note">
                                 {isEn
-                                    ? 'A fixed-size window with the latest hooked line. Drag the title bar, resize from the lower-right corner, and tap a word to look it up.'
-                                    : 'Окно фиксированного размера с последней строкой. Тяни за верхнюю панель, меняй размер за правый нижний угол и нажимай на слова для лукапа.'}
+                                    ? 'The latest hooked line over any app. Expand the toolbar for controls, tap a word to look it up, or lock the window in place.'
+                                    : 'Последняя пойманная строка поверх любого приложения. Разверни панель для управления, нажми слово для лукапа или закрепи окно на месте.'}
                             </div>
                             <div className="mobile-overlay-card">
                                 <div>
@@ -1412,8 +1444,8 @@ export const MobileLayout = ({
                                 </button>
                             </div>
                             <label className="mobile-setting-row mobile-setting-range">
-                                <span>{isEn ? 'Window width' : 'Ширина окна'} <b>{settings.mobileOverlayWidth ?? 340}</b></span>
-                                <input type="range" min="220" max="480" step="10" value={settings.mobileOverlayWidth ?? 340} onChange={(event) => updateSetting('mobileOverlayWidth', Number(event.target.value))} />
+                                <span>{isEn ? 'Window width' : 'Ширина окна'} <b>{settings.mobileOverlayWidth ?? 320}</b></span>
+                                <input type="range" min="220" max="480" step="10" value={settings.mobileOverlayWidth ?? 320} onChange={(event) => updateSetting('mobileOverlayWidth', Number(event.target.value))} />
                             </label>
                             <label className="mobile-setting-row mobile-setting-range">
                                 <span>{isEn ? 'Window height' : 'Высота окна'} <b>{settings.mobileOverlayHeight ?? 160}</b></span>
@@ -1423,14 +1455,43 @@ export const MobileLayout = ({
                                 <span>{isEn ? 'Text size' : 'Размер текста'} <b>{settings.mobileOverlayFontSize ?? 22}</b></span>
                                 <input type="range" min="12" max="48" value={settings.mobileOverlayFontSize ?? 22} onChange={(event) => updateSetting('mobileOverlayFontSize', Number(event.target.value))} />
                             </label>
+                            <label className="mobile-setting-row">
+                                <span>{isEn ? 'Font' : 'Шрифт'}</span>
+                                <select value={settings.mobileOverlayFontFamily || 'serif'} onChange={(event) => updateSetting('mobileOverlayFontFamily', event.target.value)}>
+                                    <option value="serif">{isEn ? 'Serif' : 'С засечками'}</option>
+                                    <option value="sans">{isEn ? 'Sans serif' : 'Без засечек'}</option>
+                                    <option value="monospace">{isEn ? 'Monospace' : 'Моноширинный'}</option>
+                                </select>
+                            </label>
+                            <label className="mobile-setting-row mobile-setting-range">
+                                <span>{isEn ? 'Line spacing' : 'Межстрочный интервал'} <b>{(settings.mobileOverlayLineHeight ?? 1.2).toFixed(2)}</b></span>
+                                <input type="range" min="1" max="1.8" step="0.05" value={settings.mobileOverlayLineHeight ?? 1.2} onChange={(event) => updateSetting('mobileOverlayLineHeight', Number(event.target.value))} />
+                            </label>
+                            <label className="mobile-setting-row mobile-setting-range">
+                                <span>{isEn ? 'Inner padding' : 'Отступ текста'} <b>{settings.mobileOverlayPadding ?? 12}</b></span>
+                                <input type="range" min="6" max="28" step="1" value={settings.mobileOverlayPadding ?? 12} onChange={(event) => updateSetting('mobileOverlayPadding', Number(event.target.value))} />
+                            </label>
                             <label className="mobile-setting-row mobile-setting-range">
                                 <span>{isEn ? 'Background opacity' : 'Прозрачность фона'} <b>{settings.mobileOverlayOpacity ?? 88}%</b></span>
                                 <input type="range" min="20" max="100" value={settings.mobileOverlayOpacity ?? 88} onChange={(event) => updateSetting('mobileOverlayOpacity', Number(event.target.value))} />
                             </label>
                             <div className="mobile-color-row">
-                                <label><span>{isEn ? 'Text' : 'Текст'}</span><input type="color" value={settings.mobileOverlayTextColor || '#ffffff'} onChange={(event) => updateSetting('mobileOverlayTextColor', event.target.value)} /></label>
+                                <label><span>{isEn ? 'Font color' : 'Цвет шрифта'}</span><input type="color" value={settings.mobileOverlayTextColor || '#ffffff'} onChange={(event) => updateSetting('mobileOverlayTextColor', event.target.value)} /></label>
                                 <label><span>{isEn ? 'Background' : 'Фон'}</span><input type="color" value={settings.mobileOverlayBackgroundColor || '#15181d'} onChange={(event) => updateSetting('mobileOverlayBackgroundColor', event.target.value)} /></label>
+                                <label><span>{isEn ? 'Border' : 'Рамка'}</span><input type="color" value={settings.mobileOverlayBorderColor || '#56606d'} onChange={(event) => updateSetting('mobileOverlayBorderColor', event.target.value)} /></label>
                             </div>
+                            <label className="mobile-setting-row mobile-setting-range">
+                                <span>{isEn ? 'Lookup height' : 'Высота лукапа'} <b>{settings.mobileOverlayLookupHeight ?? 220}</b></span>
+                                <input type="range" min="150" max="280" step="10" value={settings.mobileOverlayLookupHeight ?? 220} onChange={(event) => updateSetting('mobileOverlayLookupHeight', Number(event.target.value))} />
+                            </label>
+                            <label className="mobile-setting-row">
+                                <span>{isEn ? 'Lock position and size' : 'Зафиксировать положение и размер'}</span>
+                                <input type="checkbox" checked={settings.mobileOverlayLocked === true} onChange={(event) => updateSetting('mobileOverlayLocked', event.target.checked)} />
+                            </label>
+                            <label className="mobile-setting-row">
+                                <span>{isEn ? 'Toolbar expanded by default' : 'Панель развёрнута по умолчанию'}</span>
+                                <input type="checkbox" checked={settings.mobileOverlayToolbarExpanded === true} onChange={(event) => updateSetting('mobileOverlayToolbarExpanded', event.target.checked)} />
+                            </label>
                             {overlayStatus && <div className="mobile-drive-status">{overlayStatus}</div>}
                         </div>}
 
@@ -1742,12 +1803,17 @@ export const MobileLayout = ({
                             {driveStatus && <div className="mobile-drive-status">{driveStatus}</div>}
                         </div>}
 
+                        {mobileSettingsSection === 'feedback' && <div className="mobile-settings-section mobile-feedback-section">
+                            <SettingsFeedback english={isEn} />
+                        </div>}
+
                         {mobileSettingsSection === 'data' && <div className="mobile-settings-section">
                             <div className="mobile-section-title">{isEn ? 'Data' : 'Данные'}</div>
+                            <SettingsLookup dictionariesOnly settings={settings} updateSetting={updateSetting} highlightedSection={null} isOpen={true} syncDictionaries={syncDictionaries} runDictImport={runDictImport} setConfirmDialog={setConfirmDialog} />
                             <div className="mobile-settings-note mobile-starter-dicts-note">
                                 {isEn
-                                    ? 'Four tiny starter dictionaries are built in for immediate Japanese, grammar, and English lookup tests. Imported Yomitan dictionaries are added alongside them.'
-                                    : 'Для проверки уже встроены четыре маленьких словаря: JP-RU, JP-EN, грамматика и EN-RU. Импортированные Yomitan-словари добавляются рядом с ними.'}
+                                    ? 'Import dictionaries or dictionary.db from PC. Enable and order dictionaries below.'
+                                    : 'Импортируй словари или dictionary.db с ПК. Ниже можно включать словари, менять порядок и устанавливать обновления.'}
                             </div>
                             <div className="mobile-settings-actions">
                                 <button className="mobile-action" onClick={openMobileDictionaryImport}><IconImport /> {isEn ? 'Import dictionary' : 'Импорт словаря'}</button>
@@ -1762,6 +1828,7 @@ export const MobileLayout = ({
 };
 
 export const TopBar = ({
+    openEpubWorkspace,
     tabs,
     activeTabId,
     switchTab,
@@ -1787,8 +1854,6 @@ export const TopBar = ({
     openSearch,
     openImport,
     openExport,
-    toggleBrowser,
-    isBrowserOpen,
     activeTab,
     openCaptureSourcePicker,
     openJlModeWindow,
@@ -2406,6 +2471,15 @@ export const TopBar = ({
                     <IconPin /> <span>Flow</span>
                 </button>
 
+                {YATSU_READER_AVAILABLE && <button
+                    onClick={openEpubWorkspace}
+                    className="header-btn topbar-optional"
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#a8caff' }}
+                    title={settings?.appLanguage === 'en' ? 'Yatsu Reader · EPUB + Setsuna dictionaries (preview)' : 'Yatsu Reader · EPUB и словари Setsuna (первая версия)'}
+                >
+                    <IconBookTab /> <span>Yatsu</span>
+                </button>}
+
                 {(settings.topbarShowSearch ?? true) && <button
                     onClick={openSearch}
                     className="header-btn topbar-optional"
@@ -2430,13 +2504,7 @@ export const TopBar = ({
                     <IconImport /> <span>{t('topbar.export')}</span>
                 </button>}
 
-                {(settings.topbarShowBrowser ?? true) && <button
-                    onClick={toggleBrowser}
-                    className="header-btn topbar-optional"
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                    <IconBrowser /> <span>{isBrowserOpen ? t('topbar.hideBrowser') : t('topbar.browser')}</span>
-                </button>}
+
 
                 <button
                     onClick={clearAll}
@@ -2460,292 +2528,5 @@ export const TopBar = ({
                 </button>
             </div>
         </div>
-    );
-};
-
-export const BrowserSidebar = ({
-    isOpen,
-    reservedWidth,
-    isResizing,
-    onMouseDownResize,
-    showBrowserUI,
-    setShowBrowserUI,
-    syncBrowserBounds,
-    browserTabs,
-    activeBrowserIdx,
-    selectBrowserTab,
-    closeBrowserTab,
-    addBrowserTab,
-    urlInput,
-    setUrlInput,
-    submitUrl,
-    setIsUrlFocused,
-    language = 'ru',
-}: any) => {
-    const t = getTranslator(language);
-
-    return (
-        <>
-            <div
-                onMouseDown={onMouseDownResize}
-                style={{
-                    width: isOpen ? '5px' : '0px',
-                    backgroundColor: 'var(--bg-topbar)',
-                    cursor: 'col-resize',
-                    zIndex: 101,
-                    borderLeft: isOpen ? '1px solid var(--border-subtle)' : 'none',
-                    overflow: 'hidden',
-                }}
-            />
-
-            <div
-                style={{
-                    width: isOpen ? `${reservedWidth}px` : '0px',
-                    flexShrink: 0,
-                    backgroundColor: 'var(--bg-side)',
-                    transition: isResizing ? 'none' : 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    overflow: 'hidden',
-                }}
-            >
-                <div
-                    style={{
-                        backgroundColor: 'var(--bg-panel)',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        borderBottom: '1px solid var(--border-main)',
-                        minWidth: `${reservedWidth}px`,
-                    }}
-                >
-                    <div
-                        style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            padding: '6px 12px',
-                        }}
-                    >
-                        <span
-                            style={{
-                                fontWeight: 'bold',
-                                color: 'var(--accent-blue)',
-                                fontSize: '11px',
-                                letterSpacing: '1px',
-                            }}
-                        >
-                            {t('browser.title')}
-                        </span>
-
-                        <button
-                            onClick={() => {
-                                setShowBrowserUI(!showBrowserUI);
-                                setTimeout(syncBrowserBounds, 50);
-                            }}
-                            style={{
-                                background: 'transparent',
-                                border: 'none',
-                                color: 'var(--text-muted)',
-                                fontSize: '11px',
-                                cursor: 'pointer',
-                            }}
-                        >
-                            {showBrowserUI ? t('browser.hideUi') : t('browser.showUi')}
-                        </button>
-                    </div>
-
-                    {showBrowserUI && (
-                        <div
-                            style={{
-                                padding: '0 12px 10px 12px',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '8px',
-                            }}
-                        >
-                            <div
-                                style={{
-                                    display: 'flex',
-                                    overflowX: 'auto',
-                                    gap: '4px',
-                                    paddingBottom: '2px',
-                                }}
-                            >
-                                {browserTabs.map((bt: BrowserTab, i: number) => (
-                                    <div
-                                        key={bt.id || i}
-                                        onClick={() => selectBrowserTab(i)}
-                                        style={{
-                                            padding: '4px 10px',
-                                            background:
-                                                activeBrowserIdx === i
-                                                    ? 'var(--bg-main)'
-                                                    : 'var(--bg-side)',
-                                            border: `1px solid ${
-                                                activeBrowserIdx === i
-                                                    ? 'var(--accent-blue)'
-                                                    : 'var(--border-main)'
-                                            }`,
-                                            color:
-                                                activeBrowserIdx === i
-                                                    ? 'var(--text-main)'
-                                                    : 'var(--text-muted)',
-                                            borderRadius: '4px',
-                                            cursor: 'pointer',
-                                            fontSize: '11px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '6px',
-                                            whiteSpace: 'nowrap',
-                                            minWidth: '0',
-                                            maxWidth: '180px',
-                                            flexShrink: 0,
-                                        }}
-                                    >
-                                        <div
-                                            style={{
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: '6px',
-                                                minWidth: 0,
-                                                flex: 1,
-                                            }}
-                                        >
-                                            {bt.favicon ? (
-                                                <img
-                                                    src={bt.favicon}
-                                                    alt=""
-                                                    style={{
-                                                        width: '14px',
-                                                        height: '14px',
-                                                        flexShrink: 0,
-                                                        borderRadius: '2px',
-                                                    }}
-                                                    onError={(e) => {
-                                                        (e.currentTarget as HTMLImageElement).style.display = 'none';
-                                                    }}
-                                                />
-                                            ) : (
-                                                <div
-                                                    style={{
-                                                        width: '14px',
-                                                        height: '14px',
-                                                        flexShrink: 0,
-                                                        borderRadius: '2px',
-                                                        background: 'var(--border-main)',
-                                                        opacity: 0.5,
-                                                    }}
-                                                />
-                                            )}
-
-                                            <span
-                                                title={bt.title}
-                                                style={{
-                                                    maxWidth: '132px',
-                                                    overflow: 'hidden',
-                                                    textOverflow: 'ellipsis',
-                                                    whiteSpace: 'nowrap',
-                                                    display: 'inline-block',
-                                                    verticalAlign: 'bottom',
-                                                }}
-                                            >
-                                                {bt.title}
-                                            </span>
-                                        </div>
-
-                                        <span
-                                            onClick={(e) => closeBrowserTab(e, i)}
-                                            style={{
-                                                fontSize: '12px',
-                                                opacity: 0.6,
-                                                flexShrink: 0,
-                                                lineHeight: 1,
-                                            }}
-                                        >
-                                            x
-                                        </span>
-                                    </div>
-                                ))}
-
-                                <button
-                                    onClick={addBrowserTab}
-                                    style={{
-                                        background: 'var(--bg-main)',
-                                        border: '1px solid var(--border-main)',
-                                        color: 'var(--text-main)',
-                                        borderRadius: '4px',
-                                        padding: '2px 8px',
-                                        cursor: 'pointer',
-                                        flexShrink: 0,
-                                    }}
-                                >
-                                    +
-                                </button>
-                            </div>
-
-                            <div style={{ display: 'flex', gap: '6px' }}>
-                                <input
-                                    type="text"
-                                    placeholder={t('browser.addressPlaceholder')}
-                                    value={urlInput}
-                                    onChange={(e) => setUrlInput(e.target.value)}
-                                    onKeyDown={(e) => e.key === 'Enter' && submitUrl()}
-                                    onFocus={() => setIsUrlFocused(true)}
-                                    onBlur={() => setIsUrlFocused(false)}
-                                    style={{
-                                        flex: 1,
-                                        padding: '6px 10px',
-                                        background: 'var(--bg-main)',
-                                        color: 'var(--text-main)',
-                                        border: '1px solid var(--border-main)',
-                                        borderRadius: '4px',
-                                        fontSize: '12px',
-                                    }}
-                                />
-
-                                <button
-                                    onClick={() => syncBrowserBounds()}
-                                    title={t('browser.syncBounds')}
-                                    style={{
-                                        background: 'var(--bg-main)',
-                                        border: '1px solid var(--border-main)',
-                                        color: 'var(--text-muted)',
-                                        borderRadius: '4px',
-                                        padding: '0 10px',
-                                        cursor: 'pointer',
-                                    }}
-                                >
-                                    <IconPin />
-                                </button>
-                            </div>
-                        </div>
-                    )}
-                </div>
-
-                <div
-                    id="native-browser-container"
-                    style={{
-                        flex: 1,
-                        position: 'relative',
-                        minWidth: `${reservedWidth}px`,
-                        minHeight: 0,
-                        overflow: 'hidden',
-                    }}
-                >
-                    <div
-                        style={{
-                            position: 'absolute',
-                            top: '50%',
-                            left: '50%',
-                            transform: 'translate(-50%, -50%)',
-                            color: 'var(--border-main)',
-                            textAlign: 'center',
-                        }}
-                    >
-                        <IconBrowser />
-                    </div>
-                </div>
-            </div>
-        </>
     );
 };

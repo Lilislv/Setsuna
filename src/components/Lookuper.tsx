@@ -1,3 +1,4 @@
+import { createHoverScanQueue, findHoverTextPoint, sameHoverTextPoint, scanTextNodes, selectScanRange } from '../utils/hoverScan';
 ﻿import React, { useEffect, useState } from "react";
 import { invoke } from '@tauri-apps/api/core';
 import { useMemo, useRef } from "react";
@@ -6,6 +7,9 @@ import { checkWordsStatusMulti, addNote, browseAnkiCards } from "../utils/anki";
 import { captureMobileScreen, hasMobileScreenCapture } from "../utils/mobileFiles";
 import { getTranslator } from "../utils/i18n";
 import { CaptureSourceBinding, PlayerMiningClip } from "../utils/constants";
+import { selectActiveLookupResult } from '../utils/lookupResults';
+import { isMobilePlatform } from '../utils/platform';
+import { audioPreviewUrl, resolveDictionaryAudio } from '../utils/dictionaryAudio';
 
 
 export interface DeinflectReason { rule: any; desc: any; in_suffix?: string; out_suffix?: string; }
@@ -46,12 +50,47 @@ export interface LookuperProps {
     onClose?: () => void;
 }
 
-type LookupScanTarget = {
-    container: Element;
-    scope: string;
-    word: string;
-    start: number;
-    len: number;
+const normalizeCodeUnitOffset = (text: string, offset: number) => {
+    let bounded = Math.max(0, Math.min(offset, text.length));
+    if (
+        bounded > 0
+        && bounded < text.length
+        && text.charCodeAt(bounded) >= 0xdc00
+        && text.charCodeAt(bounded) <= 0xdfff
+        && text.charCodeAt(bounded - 1) >= 0xd800
+        && text.charCodeAt(bounded - 1) <= 0xdbff
+    ) {
+        bounded -= 1;
+    }
+    return bounded;
+};
+
+// DOM Range offsets are UTF-16 code units, while Rust string offsets are
+// Unicode scalar indexes. Keep that conversion at the WebView boundary.
+const codeUnitToCodePointOffset = (text: string, offset: number) => {
+    const end = normalizeCodeUnitOffset(text, offset);
+    let codeUnits = 0;
+    let codePoints = 0;
+    while (codeUnits < end) {
+        const value = text.codePointAt(codeUnits);
+        if (value === undefined) break;
+        codeUnits += value > 0xffff ? 2 : 1;
+        codePoints += 1;
+    }
+    return codePoints;
+};
+
+const codePointToCodeUnitOffset = (text: string, offset: number) => {
+    const end = Math.max(0, offset);
+    let codeUnits = 0;
+    let codePoints = 0;
+    while (codeUnits < text.length && codePoints < end) {
+        const value = text.codePointAt(codeUnits);
+        if (value === undefined) break;
+        codeUnits += value > 0xffff ? 2 : 1;
+        codePoints += 1;
+    }
+    return codeUnits;
 };
 
 export const IconAudio = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>;
@@ -374,9 +413,9 @@ export const getDictOrder = (dictName: string, settings: any) => {
     return idx === -1 ? 999 : idx;
 };
 
-const isCambridgeCandidate = (word: string) => /^[A-Za-z][A-Za-z'’-]*(?: [A-Za-z][A-Za-z'’-]*)?$/.test(word.trim());
+const isEnglishCandidate = (word: string) => /^[A-Za-z][A-Za-z'’-]*(?: [A-Za-z][A-Za-z'’-]*)?$/.test(word.trim());
 
-const normalizeCambridgeWord = (word: string) => word.trim().replace(/’/g, "'").toLowerCase();
+const normalizeEnglishWord = (word: string) => word.trim().replace(/’/g, "'").toLowerCase();
 
 const extractEnglishWordAtCursor = (sentence: string, cursor: number) => {
     const isChar = (ch: string) => /[A-Za-z'’-]/.test(ch);
@@ -395,19 +434,20 @@ const extractEnglishWordAtCursor = (sentence: string, cursor: number) => {
     while (end > start && /['’ー-]/.test(sentence.charAt(end - 1))) end -= 1;
 
     const word = sentence.slice(start, end);
-    if (!isCambridgeCandidate(word)) return null;
+    if (!isEnglishCandidate(word)) return null;
     return { word, start, len: end - start };
 };
 
 export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLookup: boolean = false) => {
     const groupedMap = new Map<string, any>();
     
-    (entries || []).forEach(ent => {
+    (entries || []).forEach((ent, resultIndex) => {
         const key = `${ent.term || ""}|${ent.reading || ""}`;
         if (!groupedMap.has(key)) {
             groupedMap.set(key, { 
                 term: ent.term || "", reading: ent.reading || "", reasons: ent.deinflection_reasons || [], 
-                dictionaries: {}, frequencies: [], pitches: [], pronunciations: [], source_length: ent.source_length || 0
+                dictionaries: {}, frequencies: [], pitches: [], pronunciations: [], source_length: ent.source_length || 0,
+                resultIndex,
             });
         }
         const existing = groupedMap.get(key);
@@ -443,8 +483,8 @@ export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLoo
         if (!isKanjiLookup && isKanjidic) return;
         if (isKanjiLookup && !isKanjidic) return;
 
-        // Desktop backend returns `definition` (a single JSON/text string); the mobile
-        // backend returns `definitions` (an array of plain-text strings). Support both,
+        // Both platforms return `definition` (JSON/text). Keep support for cached
+        // entries from older Android builds with plain-text `definitions`,
         // otherwise every mobile entry is dropped and the popup renders empty.
         const defList: any[] = Array.isArray(ent.definitions)
             ? ent.definitions
@@ -501,17 +541,10 @@ export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLoo
         return { ...group, cleanDictionaries, totalDefs, bestFreq, uniquePitches: group.pitches };
     }).filter(g => Object.keys(g.cleanDictionaries).length > 0 || g.frequencies.length > 0 || g.uniquePitches.length > 0 || g.pronunciations.length > 0);
 
-    groupedEntries.sort((a, b) => {
-        if (a.source_length !== b.source_length) return b.source_length - a.source_length;
-        const aFirstDict = Object.keys(a.cleanDictionaries)[0] || "";
-        const bFirstDict = Object.keys(b.cleanDictionaries)[0] || "";
-        const orderDiff = getDictOrder(aFirstDict, settings) - getDictOrder(bFirstDict, settings);
-        if (orderDiff !== 0) return orderDiff;
-        if (a.bestFreq !== null && b.bestFreq !== null) return a.bestFreq - b.bestFreq;
-        if (a.bestFreq !== null) return -1;
-        if (b.bestFreq !== null) return 1;
-        return b.totalDefs - a.totalDefs;
-    });
+    // Rust has the full source/deinflection/frequency context. Preserve that
+    // ordering here; re-sorting by the first enabled dictionary used to turn a
+    // correct Yomitan-style result into an unrelated headword in the popup.
+    groupedEntries.sort((a, b) => a.resultIndex - b.resultIndex);
 
     return groupedEntries;
 };
@@ -724,6 +757,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
         
         if (!res.error) {
             onStatusChange(group.term, group.reading, 'red');
+            if (res.warning) alert(res.warning);
         } else {
             alert(t('anki.addError', { error: res.error }));
         }
@@ -996,6 +1030,22 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
     );
 };
 
+// Keep rich dictionary HTML bounded even when a common reading has thousands of hits.
+function LookupPage({ entries, english, children }: { entries: any[]; english: boolean; children: (entry: any, index: number) => React.ReactNode }) {
+    const [page, setPage] = useState(0);
+    useEffect(() => setPage(0), [entries]);
+    const lastPage = Math.max(0, Math.ceil(entries.length / 20) - 1);
+    const current = Math.min(page, lastPage);
+    return <>
+        {entries.slice(current * 20, (current + 1) * 20).map((entry, index) => children(entry, current * 20 + index))}
+        {lastPage > 0 && <nav aria-label={english ? 'Dictionary results' : 'Результаты поиска'} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', gap: '12px' }}>
+            <button disabled={current === 0} onClick={(event) => { event.stopPropagation(); setPage(current - 1); event.currentTarget.closest('.dict-popup')?.scrollTo({ top: 0 }); }}>{english ? 'Previous' : 'Назад'}</button>
+            <span>{current + 1} / {lastPage + 1}</span>
+            <button disabled={current === lastPage} onClick={(event) => { event.stopPropagation(); setPage(current + 1); event.currentTarget.closest('.dict-popup')?.scrollTo({ top: 0 }); }}>{english ? 'Next' : 'Далее'}</button>
+        </nav>}
+    </>;
+}
+
 export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt, onSlice, settings: baseSettings, captureSource, playerClip, screenshotSource = { kind: 'internal' }, ankiDeck, onClose }: LookuperProps) {
   const settings = useMemo(
       () => baseSettings ? { ...baseSettings, ankiDeck: ankiDeck || baseSettings.ankiDeck } : baseSettings,
@@ -1004,70 +1054,14 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
   const [activeGrammarDesc, setActiveGrammarDesc] = useState<string | null>(null);
   const [playingAudio, setPlayingAudio] = useState<string | null>(null);
   const [audioFailed, setAudioFailed] = useState<Record<string, boolean>>({});
+  const audioSerial = useRef(0);
+  const audioCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => {
+      setAudioFailed({});
+      return () => { audioSerial.current++; audioCleanup.current?.(); };
+  }, [settings?.dictionaryAudioSource, settings?.localAudioDatabasePath, settings?.localAudioPreferredSource]);
   const [ankiStatuses, setAnkiStatuses] = useState<Record<string, 'green' | 'red' | 'blue' | 'loading'>>({});
   const previousPopupKeysRef = useRef<string[]>([]);
-  const cambridgeCacheRef = useRef<Map<string, { expiresAt: number; entries: DictEntry[] }>>(new Map());
-  const cambridgePendingRef = useRef<Map<string, Promise<DictEntry[]>>>(new Map());
-  const lastShownScanTargetRef = useRef<LookupScanTarget | null>(null);
-  const lastEnglishRequestTargetRef = useRef<LookupScanTarget | null>(null);
-
-  const fetchCambridgeEntries = async (word: string): Promise<DictEntry[]> => {
-      if (!settings?.cambridgeApiEnabled || !settings.cambridgeApiKey?.trim()) return [];
-      if (!isCambridgeCandidate(word)) return [];
-
-      const dictionaryCode = settings.cambridgeApiDictionary || "english-russian";
-      const baseUrl = settings.cambridgeApiBaseUrl || "https://dictionary.cambridge.org/api/v1";
-      const normalizedWord = normalizeCambridgeWord(word);
-      const cacheKey = `${baseUrl}|${dictionaryCode}|${normalizedWord}`;
-      const now = Date.now();
-      const cached = cambridgeCacheRef.current.get(cacheKey);
-      if (cached && cached.expiresAt > now) return cached.entries;
-
-      const pending = cambridgePendingRef.current.get(cacheKey);
-      if (pending) return pending;
-
-      const request = invoke<DictEntry[]>("lookup_cambridge_api", {
-          word: normalizedWord,
-          config: {
-              enabled: true,
-              apiKey: settings.cambridgeApiKey,
-              dictionaryCode,
-              baseUrl,
-          },
-      }).then((entries) => {
-          const safeEntries = entries || [];
-          cambridgeCacheRef.current.set(cacheKey, {
-              expiresAt: Date.now() + 12 * 60 * 60 * 1000,
-              entries: safeEntries,
-          });
-          if (cambridgeCacheRef.current.size > 250) {
-              const firstKey = cambridgeCacheRef.current.keys().next().value;
-              if (firstKey) cambridgeCacheRef.current.delete(firstKey);
-          }
-          return safeEntries;
-      }).catch(() => {
-          cambridgeCacheRef.current.set(cacheKey, {
-              expiresAt: Date.now() + 5 * 60 * 1000,
-              entries: [],
-          });
-          return [];
-      }).finally(() => {
-          cambridgePendingRef.current.delete(cacheKey);
-      });
-
-      cambridgePendingRef.current.set(cacheKey, request);
-      return request;
-  };
-
-  const mergeCambridgeEntries = async (word: string, localEntries: DictEntry[]) => {
-      if ((settings?.cambridgeApiOnlyWhenNoLocal ?? true) && localEntries.length > 0) {
-          return localEntries;
-      }
-      const apiEntries = await fetchCambridgeEntries(word);
-      if (apiEntries.length === 0) return localEntries;
-      return [...localEntries, ...apiEntries];
-  };
-
   useEffect(() => {
     setActiveGrammarDesc(null);
 
@@ -1162,434 +1156,144 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
       setAnkiStatuses(prev => ({ ...prev, [key]: status })); 
   };
 
-  const playAudio = (term: string, reading: string, e?: React.MouseEvent) => {
+  const playAudio = async (term: string, reading: string, e?: React.MouseEvent) => {
       if (e) e.stopPropagation();
       const audioKey = `${term}-${reading}`;
-      if (audioFailed[audioKey]) return; 
+      setAudioFailed(previous => { const next = { ...previous }; delete next[audioKey]; return next; });
       
+      const serial = ++audioSerial.current;
+      audioCleanup.current?.();
       setPlayingAudio(audioKey);
-      const url = `https://assets.languagepod101.com/dictionary/japanese/audiomp3.php?kanji=${encodeURIComponent(term)}&kana=${encodeURIComponent(reading || term)}`;
-      
-      const audio = new Audio(url);
-      audio.addEventListener('loadedmetadata', () => {
-          if (audio.duration > 3.5) { setAudioFailed(prev => ({ ...prev, [audioKey]: true })); setPlayingAudio(null); } 
-          else { audio.play().catch(() => { setAudioFailed(prev => ({ ...prev, [audioKey]: true })); setPlayingAudio(null); }); }
-      });
-      audio.addEventListener('error', () => { setAudioFailed(prev => ({ ...prev, [audioKey]: true })); setPlayingAudio(null); });
-      audio.addEventListener('ended', () => setPlayingAudio(null));
+      const failed = () => {
+          if (serial !== audioSerial.current) return;
+          setAudioFailed(previous => ({ ...Object.fromEntries(Object.entries(previous).slice(-100)), [audioKey]: true }));
+          setPlayingAudio(null); audioCleanup.current?.();
+      };
+      try {
+          const result = await resolveDictionaryAudio(settings || {}, term, reading);
+          if (serial !== audioSerial.current) return;
+          if (result.kind === 'none') { failed(); return; }
+          const source = audioPreviewUrl(result);
+          const audio = new Audio();
+          audioCleanup.current = () => {
+              audio.onloadedmetadata = null; audio.onerror = null; audio.onended = null;
+              audio.pause(); audio.removeAttribute('src'); audio.load(); source.dispose();
+          };
+          audio.onloadedmetadata = () => {
+              if (result.kind === 'online' && audio.duration > 3.5) failed();
+              else void audio.play().catch(failed);
+          };
+          audio.onerror = failed;
+          audio.onended = () => { if (serial === audioSerial.current) setPlayingAudio(null); source.dispose(); };
+          audio.src = source.url;
+      } catch { failed(); }
   };
 
   useEffect(() => {
+      if (stack.length === 0) { audioSerial.current++; audioCleanup.current?.(); setPlayingAudio(null); }
       if (settings?.autoPlayAudio && stack.length > 0) {
           const latestData = stack[stack.length - 1];
           const firstValidEntry = latestData.entries.find(e => isDictActive(e.dict_name, settings) && !e.dict_name.toUpperCase().includes("KANJI"));
           if (firstValidEntry) playAudio(firstValidEntry.term, firstValidEntry.reading);
       }
-  }, [stack.length, settings?.autoPlayAudio]);
+  }, [stack, settings?.autoPlayAudio, settings?.dictionaryAudioSource, settings?.localAudioDatabasePath, settings?.localAudioPreferredSource]);
 
+  const scanPointer = useRef<{ x: number; y: number } | null>(null);
+  const scanLive = useRef({ settings, stack, onReplace, onReplaceAt });
+  scanLive.current = { settings, stack, onReplace, onReplaceAt };
   useEffect(() => {
-      const LOOKUP_CONTEXT_RADIUS = 600;
-      let debounceTimer: any = null;
-      let lastScanAt = 0;
-      let scanSerial = 0;
-      let scanInFlight = false;
-      let hotkeyHeld = false;
-      let queuedScan: { x: number; y: number } | null = null;
-      const lastMouse = { x: 0, y: 0 };
-
-      const isSameScanTarget = (left: LookupScanTarget | null, right: LookupScanTarget) => Boolean(
-          left
-          && left.container === right.container
-          && left.scope === right.scope
-          && left.word === right.word
-          && left.start === right.start
-          && left.len === right.len
-      );
-
-      const hotkey = String(settings?.lookupHotkey || "Shift");
-      const hotkeyParts = hotkey.split("+").map((part) => part.trim()).filter(Boolean);
-      const isModifier = (part: string) => /^(ctrl|control|alt|shift)$/i.test(part);
-      const triggerKey = hotkeyParts.find((part) => !isModifier(part)) || "";
-      const expectsCtrl = hotkeyParts.some((part) => /^(ctrl|control)$/i.test(part));
-      const expectsAlt = hotkeyParts.some((part) => /^alt$/i.test(part));
-      const expectsShift = hotkeyParts.some((part) => /^shift$/i.test(part));
-      const modifierStateMatches = (event: KeyboardEvent | MouseEvent) =>
-          event.ctrlKey === expectsCtrl && event.altKey === expectsAlt && event.shiftKey === expectsShift;
-      const normalizedCode = (code: string) => code.toLowerCase().replace(/^key/, "").replace(/^digit/, "");
-      const keyboardHotkeyMatches = (event: KeyboardEvent) => {
-          if (hotkey === "__disabled__" || !modifierStateMatches(event)) return false;
-          if (!triggerKey) return expectsCtrl || expectsAlt || expectsShift;
-          return normalizedCode(event.code) === normalizedCode(triggerKey);
-      };
-
-      const scheduleScan = (x: number, y: number, immediate = false) => {
-          lastMouse.x = x;
-          lastMouse.y = y;
-          const now = Date.now();
-          if (scanInFlight) {
-              queuedScan = { x, y };
-              return;
+      const queue = createHoverScanQueue(sameHoverTextPoint, async (point, isCurrent) => {
+          if (!point.node.isConnected) return;
+          const nodes = scanTextNodes(point.container);
+          let fullSentence = ''; let absoluteCursor = -1;
+          for (const node of nodes) {
+              if (node === point.node) absoluteCursor = fullSentence.length + point.offset;
+              fullSentence += node.data;
           }
-          clearTimeout(debounceTimer);
-          const throttleDelay = immediate ? 0 : Math.max(0, 16 - (now - lastScanAt));
-          debounceTimer = setTimeout(() => scan(x, y), throttleDelay);
-      };
-
-      const finishScan = () => {
-          scanInFlight = false;
-          const next = queuedScan;
-          queuedScan = null;
-          if (next && hotkeyHeld) {
-              scheduleScan(next.x, next.y, true);
-          }
-      };
-
-      const handleMouseMove = (e: MouseEvent) => {
-          lastMouse.x = e.clientX;
-          lastMouse.y = e.clientY;
-          hotkeyHeld = triggerKey ? hotkeyHeld && modifierStateMatches(e) : modifierStateMatches(e);
-          if (!hotkeyHeld) return;
-          scheduleScan(e.clientX, e.clientY);
-      };
-
-      const handleKeyDown = (e: KeyboardEvent) => {
-          if (e.repeat) return;
-          const target = e.target as HTMLElement | null;
-          if (target && (
-              target.tagName === "INPUT"
-              || target.tagName === "TEXTAREA"
-              || target.isContentEditable
-              || target.closest('[data-shortcut-recorder="true"]')
-          )) return;
-          hotkeyHeld = keyboardHotkeyMatches(e);
-          if (!hotkeyHeld) return;
-          e.preventDefault();
-          e.stopPropagation();
-          scheduleScan(lastMouse.x, lastMouse.y, true);
-      };
-
-      const handleKeyUp = () => {
-          hotkeyHeld = false;
-          queuedScan = null;
-          lastShownScanTargetRef.current = null;
-          lastEnglishRequestTargetRef.current = null;
-      };
-
-      const scan = async (x: number, y: number) => {
-          if (scanInFlight) return;
-          scanInFlight = true;
-          lastScanAt = Date.now();
-          const mySerial = ++scanSerial;
-          let range = null;
-          let exactOffset = -1;
-          let textNode: Node | null = null;
-
-          if (document.caretRangeFromPoint) {
-              range = document.caretRangeFromPoint(x, y);
-          } else if ((document as any).caretPositionFromPoint) {
-              const pos = (document as any).caretPositionFromPoint(x, y);
-              if (pos && pos.offsetNode) {
-                  range = document.createRange();
-                  range.setStart(pos.offsetNode, pos.offset);
-                  range.collapse(true);
-              }
-          }
-
-          const pointElement = document.elementFromPoint(x, y);
-          let container: Element | null = null;
-
-          if (range?.startContainer?.nodeType === Node.TEXT_NODE) {
-              textNode = range.startContainer;
-              exactOffset = range.startOffset;
-              
-              if (exactOffset > 0 && exactOffset <= (textNode.nodeValue?.length || 0)) {
-                  const testRange = document.createRange();
-                  testRange.setStart(textNode, exactOffset - 1);
-                  testRange.setEnd(textNode, exactOffset);
-                  const rect = testRange.getBoundingClientRect();
-                  if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-                      exactOffset = exactOffset - 1;
-                  }
-              }
-              container = textNode.parentElement?.closest('.text-line, .dict-meaning, .dict-header') || null;
-          }
-
-          if (!container && pointElement) {
-              container = pointElement.closest('.text-line, .dict-meaning, .dict-header');
-          }
-
-          if (!container) { finishScan(); return; }
-
-          if (textNode?.parentElement?.tagName === 'RT' || textNode?.parentElement?.tagName === 'RP') { finishScan(); return; }
-
-          let isInsidePopup = false;
-          let popupIndex = -1;
-
-          let node = (textNode || container) as Node | null;
-          while (node) {
-              if (node.nodeType === 1) {
-                  const el = node as Element;
-                  if (el.classList?.contains('dict-popup')) {
-                      isInsidePopup = true;
-                      popupIndex = parseInt(el.getAttribute('data-popup-index') || '-1');
-                      break;
-                  }
-              }
-              node = node.parentNode;
-          }
-
-          const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
-              acceptNode: (n) => {
-                  const p = n.parentElement;
-                  if (p?.tagName === 'RT' || p?.tagName === 'RP') return NodeFilter.FILTER_REJECT;
-                  return NodeFilter.FILTER_ACCEPT;
-              }
-          });
-
-          let sentence = "";
-          let cursorIndex = -1;
-          const textNodes: Node[] = [];
-
-          let currentNode = walker.nextNode();
-          while (currentNode) {
-              textNodes.push(currentNode);
-              if (currentNode === textNode) {
-                  cursorIndex = sentence.length + exactOffset;
-              }
-              sentence += currentNode.nodeValue || "";
-              currentNode = walker.nextNode();
-          }
-
-          const findNearestTextChar = (exhaustive: boolean) => {
-              let currentLen = 0;
-              let bestDistance = Number.POSITIVE_INFINITY;
-              let bestInside = false;
-              let bestIndex = -1;
-              let bestNode: Node | null = null;
-              let bestOffset = -1;
-
-              const rectDistance = (rect: DOMRect) => {
-                  if (rect.width <= 0 || rect.height <= 0) return { inside: false, distance: Number.POSITIVE_INFINITY };
-                  const inside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-                  const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
-                  const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
-                  return { inside, distance: inside ? 0 : Math.hypot(dx, dy) };
-              };
-
-              for (const node of textNodes) {
-                  const value = node.nodeValue || "";
-                  let startOffset = 0;
-                  let endOffset = value.length;
-
-                  if (!exhaustive) {
-                      if (node !== textNode || exactOffset < 0) {
-                          currentLen += value.length;
-                          continue;
-                      }
-                      startOffset = Math.max(0, exactOffset - 4);
-                      endOffset = Math.min(value.length, exactOffset + 4);
-                  }
-
-                  for (let i = startOffset; i < endOffset; i++) {
-                      const charRange = document.createRange();
-                      charRange.setStart(node, i);
-                      charRange.setEnd(node, i + 1);
-                      const rects = Array.from(charRange.getClientRects());
-                      for (const rect of rects) {
-                          const { inside, distance } = rectDistance(rect);
-                          const isBetter = (inside && !bestInside) || (inside === bestInside && distance < bestDistance);
-                          if (isBetter) {
-                              bestInside = inside;
-                              bestDistance = distance;
-                              bestIndex = currentLen + i;
-                              bestNode = node;
-                              bestOffset = i;
-                          }
-                      }
-                      if (bestInside) break;
-                  }
-                  currentLen += value.length;
-                  if (bestInside) break;
-              }
-
-              if (bestIndex < 0 || (!bestInside && bestDistance > 24)) return null;
-              return { index: bestIndex, node: bestNode, offset: bestOffset };
+          if (absoluteCursor < 0) return;
+          const cursorCodePoint = codeUnitToCodePointOffset(fullSentence, absoluteCursor);
+          const baseCodePoint = Math.max(0, cursorCodePoint - 600);
+          const base = codePointToCodeUnitOffset(fullSentence, baseCodePoint);
+          const end = codePointToCodeUnitOffset(fullSentence, cursorCodePoint + 600);
+          const sentence = fullSentence.slice(base, end);
+          const cursor = cursorCodePoint - baseCodePoint;
+          const popup = point.node.parentElement?.closest('.dict-popup');
+          const popupIndex = popup ? Number(popup.getAttribute('data-popup-index')) : -1;
+          const publish = (entries: DictEntry[], word: string, start: number, length: number, unit: 'codePoint' | 'codeUnit' = 'codePoint') => {
+              if (!isCurrent() || !point.node.isConnected || point.node.data !== point.text) return;
+              const startUnit = unit === 'codePoint' ? codePointToCodeUnitOffset(sentence, start) : start;
+              const endUnit = unit === 'codePoint' ? codePointToCodeUnitOffset(sentence, start + length) : start + length;
+              selectScanRange(nodes, base + startUnit, entries.length ? endUnit - startUnit : 0);
+              const current = scanLive.current;
+              const parent = popup ? current.stack[popupIndex] : undefined;
+              const data: LookupData = { rect: point.rect, entries, word, sentence, source: parent?.source,
+                  screenPoint: parent?.screenPoint, externalScreenshot: parent?.externalScreenshot };
+              if (popup) current.onReplaceAt?.(popupIndex, data);
+              else current.onReplace?.(data);
           };
-
-          const nearbyChar = findNearestTextChar(false);
-          if (nearbyChar) {
-              cursorIndex = nearbyChar.index;
-              textNode = nearbyChar.node;
-              exactOffset = nearbyChar.offset;
-          }
-
-          if (cursorIndex === -1) {
-              const fallbackChar = findNearestTextChar(true);
-              if (fallbackChar) {
-                  cursorIndex = fallbackChar.index;
-                  textNode = fallbackChar.node;
-                  exactOffset = fallbackChar.offset;
-              }
-          }
-
-          if (cursorIndex === -1 || !sentence) { finishScan(); return; }
-
-          const fullSentence = sentence;
-          const sentenceBaseOffset = Math.max(0, cursorIndex - LOOKUP_CONTEXT_RADIUS);
-          const sentenceEnd = Math.min(fullSentence.length, cursorIndex + LOOKUP_CONTEXT_RADIUS);
-          sentence = fullSentence.slice(sentenceBaseOffset, sentenceEnd);
-          cursorIndex -= sentenceBaseOffset;
-
-          const showLookup = (res: any, word: string, matchStart: number, matchLen: number) => {
-              const originalMatchStart = sentenceBaseOffset + matchStart;
-              const shownTarget: LookupScanTarget = {
-                  container,
-                  scope: isInsidePopup ? `popup:${popupIndex}` : "main",
-                  word,
-                  start: originalMatchStart,
-                  len: matchLen,
-              };
-              if (isSameScanTarget(lastShownScanTargetRef.current, shownTarget)) return;
-              lastShownScanTargetRef.current = shownTarget;
-
-              const rects = range?.getClientRects() || [];
-              let finalRect = rects.length > 0 ? rects[0] : new DOMRect(x, y, 0, 0);
-              if (textNode && exactOffset >= 0) {
-                  const charRange = document.createRange();
-                  charRange.setStart(textNode, exactOffset);
-                  charRange.setEnd(textNode, Math.min(exactOffset + 1, textNode.nodeValue?.length || 0));
-                  const charRects = charRange.getClientRects();
-                  if (charRects.length > 0) finalRect = charRects[0];
-              }
-
-              const parentLookup = isInsidePopup ? stack[popupIndex] : undefined;
-              const data: LookupData = {
-                  rect: finalRect,
-                  entries: res.entries,
-                  word,
-                  sentence,
-                  source: parentLookup?.source,
-                  screenPoint: parentLookup?.screenPoint,
-                  externalScreenshot: parentLookup?.externalScreenshot,
-              };
-
-              const sel = window.getSelection();
-              if (sel) {
-                  sel.removeAllRanges();
-                  const r = document.createRange();
-
-                  let currentLen = 0;
-                  let startNode = null; let startOffset = 0;
-                  let endNode = null; let endOffset = 0;
-
-                  const hlWalker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
-                      acceptNode: (n) => {
-                          if (n.parentElement?.tagName === 'RT' || n.parentElement?.tagName === 'RP') return NodeFilter.FILTER_REJECT;
-                          return NodeFilter.FILTER_ACCEPT;
-                      }
-                  });
-
-                  let hlNode = hlWalker.nextNode();
-                  while (hlNode) {
-                      const nodeLen = hlNode.nodeValue?.length || 0;
-                      if (!startNode && currentLen + nodeLen > originalMatchStart) {
-                          startNode = hlNode;
-                          startOffset = originalMatchStart - currentLen;
-                      }
-                      if (startNode && currentLen + nodeLen >= originalMatchStart + matchLen) {
-                          endNode = hlNode;
-                          endOffset = originalMatchStart + matchLen - currentLen;
-                          break;
-                      }
-                      currentLen += nodeLen;
-                      hlNode = hlWalker.nextNode();
-                  }
-
-                  if (startNode && endNode) {
-                      r.setStart(startNode, startOffset);
-                      r.setEnd(endNode, endOffset);
-                      sel.addRange(r);
-                  }
-              }
-
-              if (isInsidePopup && onReplaceAt) {
-                  onReplaceAt(popupIndex, data);
-              } else if (!isInsidePopup && onReplace) {
-                  onReplace(data);
-              }
-          };
-
+          const english = extractEnglishWordAtCursor(sentence, codePointToCodeUnitOffset(sentence, cursor));
           try {
-              // Let the native scanner try the whole sentence first. It knows about
-              // inflections, idioms and phrasal verbs (for example, closed up ->
-              // close up). Looking up the hovered English token first made an exact
-              // `closed` entry hide the more useful phrase match.
-              const res = await invoke<any>("scan_cursor", { sentence, cursor: cursorIndex });
-              if (mySerial !== scanSerial) return;
-
-              if (res && res.entries && res.entries.length > 0) {
-                  const entries = await mergeCambridgeEntries(res.word, res.entries);
-                  if (mySerial !== scanSerial) return;
-                  showLookup({ ...res, entries }, res.word, res.match_start, res.match_len);
+              const result = selectActiveLookupResult(await invoke<any>('scan_cursor', { sentence, cursor }), sentence, scanLive.current.settings);
+              if (!isCurrent()) return;
+              if (result?.entries?.length) {
+                  const entries = result.entries;
+                  publish(entries, result.word, result.match_start, result.match_len);
                   return;
               }
+              if (english) {
+                  const query = normalizeEnglishWord(english.word);
+                  const local = await invoke<DictEntry[]>('lookup_word', { word: query }).catch(() => []);
+                  if (!isCurrent()) return;
+                  const entries = local;
+                  if (entries.length) { publish(entries, english.word, english.start, english.len, 'codeUnit'); return; }
+              }
+          } catch {
+              if (!isCurrent()) return;
 
-              // Cambridge remains a fallback for English words which are not in the
-              // local database. This path deliberately runs after sentence scanning.
-              const english = extractEnglishWordAtCursor(sentence, cursorIndex);
-              if (english) {
-                  const query = normalizeCambridgeWord(english.word);
-                  const requestTarget: LookupScanTarget = {
-                      container,
-                      scope: isInsidePopup ? `popup:${popupIndex}` : "main",
-                      word: query,
-                      start: sentenceBaseOffset + english.start,
-                      len: english.len,
-                  };
-                  if (isSameScanTarget(lastEnglishRequestTargetRef.current, requestTarget)) return;
-                  lastEnglishRequestTargetRef.current = requestTarget;
-                  const localEntries = await invoke<DictEntry[]>("lookup_word", { word: query }).catch(() => []);
-                  const entries = await mergeCambridgeEntries(query, localEntries);
-                  if (mySerial !== scanSerial) return;
-                  if (entries.length > 0) {
-                      showLookup({ entries }, english.word, english.start, english.len);
-                      return;
-                  }
-              }
-          } catch (e) {
-              const english = extractEnglishWordAtCursor(sentence, cursorIndex);
-              if (english) {
-                  const entries = await fetchCambridgeEntries(english.word);
-                  if (mySerial !== scanSerial) return;
-                  if (entries.length > 0) {
-                      showLookup({ entries }, english.word, english.start, english.len);
-                  }
-              }
-          } finally {
-              finishScan();
           }
+          publish([], '', cursor, 0);
+      });
+      const hotkey = String(settings?.lookupHotkey || 'Shift');
+      const parts = hotkey.split('+').map(part => part.trim()).filter(Boolean);
+      const trigger = parts.find(part => !/^(ctrl|control|alt|shift)$/i.test(part)) || '';
+      const normalize = (code: string) => code.toLowerCase().replace(/^key/, '').replace(/^digit/, '');
+      let triggerHeld = false;
+      const matches = (event: MouseEvent | KeyboardEvent) => hotkey !== '__disabled__'
+          && event.ctrlKey === parts.some(part => /^(ctrl|control)$/i.test(part))
+          && event.altKey === parts.some(part => /^alt$/i.test(part))
+          && event.shiftKey === parts.some(part => /^shift$/i.test(part))
+          && (!trigger || triggerHeld);
+      const requestAtPointer = () => {
+          const point = scanPointer.current;
+          if (point) queue.request(findHoverTextPoint(point.x, point.y));
       };
-
+      const handleMouseMove = (event: MouseEvent) => {
+          scanPointer.current = { x: event.clientX, y: event.clientY };
+          if (matches(event)) requestAtPointer(); else queue.request(null);
+      };
+      const handleKeyDown = (event: KeyboardEvent) => {
+          if (event.repeat || (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], [data-shortcut-recorder="true"]'))) return;
+          if (trigger && normalize(event.code) === normalize(trigger)) triggerHeld = true;
+          if (!matches(event)) { queue.request(null); return; }
+          event.preventDefault(); event.stopPropagation(); requestAtPointer();
+      };
+      const handleKeyUp = (event: KeyboardEvent) => {
+          if (trigger && normalize(event.code) === normalize(trigger)) triggerHeld = false;
+          if (!matches(event)) queue.request(null);
+      };
+      const handleBlur = () => { triggerHeld = false; queue.request(null); };
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('keydown', handleKeyDown, { capture: true });
       window.addEventListener('keyup', handleKeyUp, { capture: true });
+      window.addEventListener('blur', handleBlur);
       return () => {
+          queue.dispose();
           window.removeEventListener('mousemove', handleMouseMove);
           window.removeEventListener('keydown', handleKeyDown, { capture: true });
           window.removeEventListener('keyup', handleKeyUp, { capture: true });
-          clearTimeout(debounceTimer);
+          window.removeEventListener('blur', handleBlur);
       };
-  }, [
-      settings?.lookupHotkey,
-      settings?.cambridgeApiEnabled,
-      settings?.cambridgeApiKey,
-      settings?.cambridgeApiDictionary,
-      settings?.cambridgeApiBaseUrl,
-      settings?.cambridgeApiOnlyWhenNoLocal,
-      onReplace,
-      onReplaceAt,
-      stack,
-  ]);
+  }, [settings?.lookupHotkey, settings?.dictionaries]);
 
   const handleWordLookup = async (e: React.MouseEvent, word: string, isKanji: boolean = false) => {
       e.stopPropagation();
@@ -1597,7 +1301,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
       if (onAppend) {
           try {
               const localEntries: DictEntry[] = await invoke("lookup_word", { word });
-              const entries = await mergeCambridgeEntries(word, localEntries || []);
+              const entries = localEntries || [];
               if (entries && entries.length > 0) {
                   const target = (e.target as HTMLElement);
                   const parentLookup = stack[stack.length - 1];
@@ -1618,14 +1322,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
 
   const groupedStack = useMemo(() => {
       return (stack || []).map((data) => {
-          let groupedEntries = groupDictionaryEntries(data.entries, settings, data.isKanjiLookup);
-          const hasDefinitions = groupedEntries.some((group) => Object.keys(group.cleanDictionaries || {}).length > 0);
-          const sourceHasDefinitions = (data.entries || []).some((entry) => typeof entry.definition === "string" && entry.definition.trim() !== "");
-
-          if ((!hasDefinitions || groupedEntries.length === 0) && sourceHasDefinitions) {
-              groupedEntries = groupDictionaryEntries(data.entries, { ...settings, dictionaries: [] }, data.isKanjiLookup);
-          }
-
+          const groupedEntries = groupDictionaryEntries(data.entries, settings, data.isKanjiLookup);
           return { data, groupedEntries };
       });
   }, [stack, settings]);
@@ -1633,7 +1330,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
   if (!stack || stack.length === 0) return null;
 
   // On phones, render the lookup as a bottom sheet (leaves the tapped word visible above).
-  const isMobileSheet = typeof window !== 'undefined' && window.innerWidth <= 760;
+  const isMobileSheet = isMobilePlatform();
 
   return (
     <>
@@ -1647,11 +1344,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
             const scaledWidth = baseWidth * scale;
             const margin = 10;
 
-            const browserContainer = document.getElementById('native-browser-container');
-            const browserRect = browserContainer?.getBoundingClientRect();
-            const browserIsVisible = !!browserRect && browserRect.width > 20 && browserRect.height > 20;
-            const rightLimit = browserIsVisible ? Math.max(margin + scaledWidth, browserRect.left - margin) : window.innerWidth - margin;
-
+            const rightLimit = window.innerWidth - margin;
             let left = (data.rect?.left || 0) + (index * 15);
             if (left + scaledWidth > rightLimit) {
                 left = (data.rect?.right || data.rect?.left || 0) - scaledWidth - (index * 15);
@@ -1720,7 +1413,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                             ×
                         </button>
                     )}
-                    {groupedEntries.map((group, i) => (
+                    <LookupPage entries={groupedEntries} english={settings?.appLanguage === 'en'}>{(group, i) => (
                         <LookupEntryItem 
                             key={i} group={group} settings={settings} sentence={data.sentence} onWordLookup={handleWordLookup}
                             activeGrammarDesc={activeGrammarDesc} setActiveGrammarDesc={setActiveGrammarDesc}
@@ -1732,7 +1425,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                             lookupData={data}
                             screenshotSource={screenshotSource}
                         />
-                    ))}
+                    )}</LookupPage>
                 </div>
             );
         })}

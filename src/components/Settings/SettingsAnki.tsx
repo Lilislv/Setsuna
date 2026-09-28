@@ -13,6 +13,7 @@ import {
     invokeAnki,
 } from "../../utils/anki";
 import { AppSettings } from "../SettingsModal";
+import SettingsAudio from './SettingsAudio';
 
 interface SettingsAnkiProps {
     settings: AppSettings;
@@ -502,6 +503,7 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
                 )}
             </div>
 
+            <SettingsAudio settings={settings} updateSetting={updateSetting} />
             {ankiConnected && (
                 <>
                     <div id="anki-cards" className={`modern-card ${highlightedSection === "anki-cards" ? "card-highlighted" : ""}`} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>

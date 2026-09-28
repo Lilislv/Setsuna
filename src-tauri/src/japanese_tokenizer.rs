@@ -40,7 +40,10 @@ struct Morpheme {
 
 impl Morpheme {
     fn feature(&self, index: usize) -> &str {
-        self.features.get(index).map(String::as_str).unwrap_or(NO_DATA)
+        self.features
+            .get(index)
+            .map(String::as_str)
+            .unwrap_or(NO_DATA)
     }
 }
 
@@ -68,7 +71,8 @@ impl WordBuilder {
 
     fn append(&mut self, morpheme: &Morpheme, append_lemma: bool) {
         self.text.push_str(&morpheme.surface);
-        self.reading.push_str(&clean_feature(morpheme.feature(READING)));
+        self.reading
+            .push_str(&clean_feature(morpheme.feature(READING)));
         if append_lemma {
             self.lemma.push_str(&clean_feature(morpheme.feature(BASIC)));
         }
@@ -224,11 +228,12 @@ fn group_ve_words(tokens: &[Morpheme]) -> Vec<TextToken> {
                     current.feature(CTYPE),
                     "特殊・タ" | "特殊・ナイ" | "特殊・タイ" | "特殊・マス" | "特殊・ヌ"
                 );
-                let previous_is_binding_particle = previous
-                    .is_some_and(|token| token.feature(POS2) == "係助詞");
+                let previous_is_binding_particle =
+                    previous.is_some_and(|token| token.feature(POS2) == "係助詞");
                 if qualifying && !previous_is_binding_particle {
                     attach_to_previous = true;
-                } else if current.feature(CTYPE) == "不変化型" && current.feature(BASIC) == "ん" {
+                } else if current.feature(CTYPE) == "不変化型" && current.feature(BASIC) == "ん"
+                {
                     attach_to_previous = true;
                 } else if matches!(current.feature(CTYPE), "特殊・ダ" | "特殊・デス")
                     && current.surface != "な"
@@ -238,7 +243,8 @@ fn group_ve_words(tokens: &[Morpheme]) -> Vec<TextToken> {
             }
             "動詞" => {
                 part_of_speech = "動詞".to_string();
-                if pos2 == "接尾" || (pos2 == "非自立" && current.feature(CFORM) != "命令ｉ") {
+                if pos2 == "接尾" || (pos2 == "非自立" && current.feature(CFORM) != "命令ｉ")
+                {
                     attach_to_previous = true;
                 }
             }
@@ -291,7 +297,10 @@ fn split_non_japanese_token(token: TextToken) -> Vec<TextToken> {
     }
 
     let chars: Vec<char> = token.text.chars().collect();
-    if !chars.iter().any(|character| is_latin_word_character(*character)) {
+    if !chars
+        .iter()
+        .any(|character| is_latin_word_character(*character))
+    {
         return vec![token];
     }
 
@@ -415,7 +424,10 @@ mod tests {
     fn returns_stable_offsets_and_never_splits_every_kanji() {
         let text = "米屋で米をもらい、来た道を引き返す。";
         let tokens = segment_text(text).unwrap();
-        assert_eq!(tokens.first().map(|token| token.text.as_str()), Some("米屋"));
+        assert_eq!(
+            tokens.first().map(|token| token.text.as_str()),
+            Some("米屋")
+        );
         assert!(tokens.iter().any(|token| token.text == "来た"));
         assert!(tokens.iter().any(|token| token.text == "引き返す"));
         for token in tokens {
@@ -429,10 +441,31 @@ mod tests {
     }
 
     #[test]
+    fn keeps_compounds_and_inflected_suffixes_anchored_for_lookup() {
+        let kawaii = segment_text("可愛がりたい！").unwrap();
+        let noriki = segment_text("乗り気だな").unwrap();
+
+        assert_eq!(kawaii.first().map(|token| token.start), Some(0));
+        assert_eq!(kawaii.first().map(|token| token.end), Some(6));
+        assert_eq!(
+            kawaii.first().and_then(|token| token.lemma.as_deref()),
+            Some("可愛がる")
+        );
+        assert_eq!(
+            noriki.first().map(|token| token.text.as_str()),
+            Some("乗り気")
+        );
+    }
+
+    #[test]
     fn keeps_latin_words_clickable_in_mixed_text() {
         let tokens = segment_text("Setsunaでlookupする").unwrap();
-        assert!(tokens.iter().any(|token| token.text == "Setsuna" && token.lookup));
-        assert!(tokens.iter().any(|token| token.text == "lookup" && token.lookup));
+        assert!(tokens
+            .iter()
+            .any(|token| token.text == "Setsuna" && token.lookup));
+        assert!(tokens
+            .iter()
+            .any(|token| token.text == "lookup" && token.lookup));
     }
 
     #[test]
@@ -440,7 +473,10 @@ mod tests {
         let text = "私は Setsuna を使う。\n次の行";
         let tokens = segment_text(text).unwrap();
         assert_eq!(
-            tokens.iter().map(|token| token.text.as_str()).collect::<String>(),
+            tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<String>(),
             text
         );
     }

@@ -10,11 +10,11 @@ Setsuna uses the Tauri v2 updater. Release builds attach `latest.json` and signe
 
 ## Publishing A Release
 
-1. Set the user-facing name in `src/release-info.json` as `displayVersion`. It can use any naming scheme.
-2. Increase `buildNumber` by exactly one. This is the only value used to order updates.
-3. Set `src-tauri/tauri.conf.json` version to `0.0.<buildNumber>`; for build 2 use `0.0.2`.
+1. Choose a semantic version greater than the latest published version, for example `0.2.0`.
+2. Set this same version in `src/release-info.json` (`displayVersion`), `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`. Run `node scripts/verify-release.mjs`.
+3. Increase `buildNumber` by one for release diagnostics. Since 0.2.0, updater ordering uses the actual semantic version. Existing 0.0.4 installations can update to 0.2.0.
 4. Commit the release changes.
-5. Push any desired release tag, for example `v0.1.0`. The tag name is not used for update ordering.
+5. Push the matching release tag, for example `v0.2.0`. CI checks the tag and version metadata agree.
 6. Wait for the `Release` workflow to finish.
 7. Open the draft GitHub release, edit notes, and publish it.
 
@@ -25,6 +25,11 @@ https://github.com/Lilislv/Setsuna/releases/latest/download/latest.json
 ```
 
 ## Local Signed Build
+
+Ordinary local previews use `npm run desktop:local`. They keep the release version
+and canonical installer filename, with a Local label in the application. Private
+preview features are opt-in and disabled in the public release workflow. Do not
+publish artifacts produced by `desktop:local`.
 
 For local release verification:
 

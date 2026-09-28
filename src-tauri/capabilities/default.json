@@ -4,9 +4,9 @@
   "description": "Capability for the main window",
   "windows": [
     "main",
-    "tab_*",
     "jl_mode",
-    "lookup_*"
+    "lookup_*",
+    "yatsu_lookup"
   ],
   "permissions": [
     "core:default",
@@ -17,6 +17,7 @@
     "opener:default",
     "clipboard-manager:default",
     "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
     "dialog:default",
     "fs:default",
     "process:default",
@@ -24,10 +25,18 @@
     {
       "identifier": "http:default",
       "allow": [
-        { "url": "https://jsonblob.com/*" },
-        { "url": "https://oauth2.googleapis.com/*" },
-        { "url": "https://www.googleapis.com/*" },
-        { "url": "http://127.0.0.1:8765/*" }
+        {
+          "url": "https://jsonblob.com/*"
+        },
+        {
+          "url": "https://oauth2.googleapis.com/*"
+        },
+        {
+          "url": "https://www.googleapis.com/*"
+        },
+        {
+          "url": "http://127.0.0.1:8765/*"
+        }
       ]
     }
   ]
