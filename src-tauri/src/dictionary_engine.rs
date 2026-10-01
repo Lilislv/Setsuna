@@ -369,19 +369,16 @@ pub(crate) async fn get_installed_dicts(app: tauri::AppHandle) -> Result<Vec<Str
     // Older builds could leave one row per dated revision. Clean those rows
     // before exposing dictionary names to the frontend.
     dictionary_import::cleanup_stale_dictionary_revisions(&mut db)?;
+    // Dictionary imports already record their title in dictionary_meta. Reading
+    // every metadata table here made the UI scan large frequency/pitch tables a
+    // second time immediately after an import, which looked like a frozen or
+    // crashed import dialog. Keep one fallback over entries for legacy DBs.
     let mut names = HashSet::new();
-    for table in ["entries", "frequencies", "pitches", "pronunciations"] {
-        let sql = format!(
-            "SELECT DISTINCT dict_name FROM {} WHERE dict_name IS NOT NULL AND dict_name != ''",
-            table
-        );
-        let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        for name in rows.flatten() {
-            names.insert(name);
-        }
+    let mut stmt = db.prepare("SELECT title FROM dictionary_meta WHERE title IS NOT NULL AND title != '' UNION SELECT DISTINCT dict_name FROM entries WHERE dict_name IS NOT NULL AND dict_name != ''")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    for name in rows.flatten() {
+        names.insert(name);
     }
     let mut names: Vec<String> = names.into_iter().collect();
     names.sort();

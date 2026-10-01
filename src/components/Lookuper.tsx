@@ -442,6 +442,12 @@ export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLoo
     const groupedMap = new Map<string, any>();
     
     (entries || []).forEach((ent, resultIndex) => {
+        // A kanji lookup has its own result type. The Rust lookup also carries
+        // frequency/pitch metadata for the same character, but those metadata
+        // rows are not dictionary articles and used to render as empty cards
+        // above the KANJIDIC result. Yomitan shows one kanji article here.
+        const isKanjidic = String(ent.dict_name || "").toUpperCase().includes("KANJI");
+        if (isKanjiLookup && !isKanjidic) return;
         const key = `${ent.term || ""}|${ent.reading || ""}`;
         if (!groupedMap.has(key)) {
             groupedMap.set(key, { 
@@ -479,7 +485,6 @@ export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLoo
         const dictSetting = settings?.dictionaries?.find((d: any) => d.name === ent.dict_name);
         if (dictSetting && dictSetting.allowDeinflect === false && ent.deinflection_reasons && ent.deinflection_reasons.length > 0) return;
 
-        const isKanjidic = ent.dict_name.toUpperCase().includes("KANJI");
         if (!isKanjiLookup && isKanjidic) return;
         if (isKanjiLookup && !isKanjidic) return;
 

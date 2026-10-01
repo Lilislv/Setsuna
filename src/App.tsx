@@ -1209,7 +1209,13 @@ export default function App() {
             });
             try {
                 await invoke("import_dictionaries", { paths });
-                await syncDictionaries();
+                // The native importer emits 100% before returning. Do not keep
+                // the modal mounted while rebuilding the settings list: on a
+                // large dictionary that follow-up query can take long enough
+                // to look like a frozen import (and older WebViews were
+                // sometimes restarted by the user at this point).
+                setDictImportProgress(null);
+                void syncDictionaries().catch(() => {});
                 return true;
             } catch (e) {
                 alert(t('app.importError', { error: String(e) }));
