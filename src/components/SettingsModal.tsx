@@ -45,7 +45,7 @@ export interface AppSettings {
   accountApiBaseUrl?: string; accountEmail?: string; accountAccessToken?: string; accountUserId?: string; accountDeviceName?: string;
   ankiColorNew: string; ankiColorOther: string; ankiColorSame: string; 
   ankiAllowDuplicatesOther: boolean; ankiAllowDuplicatesSame: boolean; 
-  fontSize: number; fontFamily: string; furiganaMode: 'none' | 'auto'; appLanguage: 'ru' | 'en'; autoScrollOffset: number; theme: 'dark' | 'light' | 'amoled'; textOrientation: 'horizontal' | 'vertical';
+  fontSize: number; fontFamily: string; customFontFamily?: string; customFontData?: string; customFontPath?: string; customFontName?: string; furiganaMode: 'none' | 'auto'; appLanguage: 'ru' | 'en'; autoScrollOffset: number; theme: 'dark' | 'light' | 'amoled'; textOrientation: 'horizontal' | 'vertical';
   jlModeFontSize?: number; jlModeFontFamily?: string; jlModeOpacity?: number; jlModeTextColor?: string; jlModeBackgroundColor?: string; jlModeBorderColor?: string; jlModeAlwaysOnTop?: boolean; jlModeShowControls?: boolean; jlModePadding?: number; jlModeLookupOnClick?: boolean;
   jlModeLookupTrigger?: 'hover' | 'click' | 'both'; jlModeHoverDelay?: number; jlModeBacklogCapacity?: number; jlModeHideLookupOnNewText?: boolean; jlModeAutoLookupFirstWord?: boolean;
   mobileOverlayEnabled?: boolean; mobileOverlayFontSize?: number; mobileOverlayFontFamily?: 'serif' | 'sans' | 'monospace'; mobileOverlayLineHeight?: number;
@@ -667,6 +667,49 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
       onSettingsChange({ ...settings, ...newValues });
   };
 
+  const handleCustomFontPick = async () => {
+      const selected = await open({
+          multiple: false,
+          directory: false,
+          filters: [{
+              name: settings.appLanguage === 'en' ? 'Font files' : 'Файлы шрифтов',
+              extensions: ['ttf', 'otf', 'woff', 'woff2'],
+          }],
+      });
+      const path = typeof selected === 'string' ? selected : null;
+      if (!path) return;
+
+      try {
+          const rawBytes = await invoke<number[]>('read_file_bytes', { path });
+          let binary = '';
+          for (const byte of rawBytes) binary += String.fromCharCode(byte);
+          const extension = (path.split('.').pop() || 'ttf').toLowerCase();
+          const mime = extension === 'woff2' ? 'font/woff2' : extension === 'woff' ? 'font/woff' : extension === 'otf' ? 'font/otf' : 'font/ttf';
+          const fileName = path.split(/[\\/]/).pop() || path;
+          updateMultipleSettings({
+              customFontFamily: 'SetsunaCustomFont',
+              customFontData: `data:${mime};base64,${btoa(binary)}`,
+              customFontPath: path,
+              customFontName: fileName,
+              fontFamily: "'SetsunaCustomFont', sans-serif",
+              jlModeFontFamily: "'SetsunaCustomFont', sans-serif",
+          });
+      } catch (error) {
+          setRemoteCaptureStatus(settings.appLanguage === 'en'
+              ? `Could not load font: ${String(error)}`
+              : `Не удалось загрузить шрифт: ${String(error)}`);
+      }
+  };
+
+  const clearCustomFont = () => updateMultipleSettings({
+      customFontFamily: '',
+      customFontData: '',
+      customFontPath: '',
+      customFontName: '',
+      fontFamily: DEFAULT_SETTINGS.fontFamily,
+      jlModeFontFamily: DEFAULT_SETTINGS.jlModeFontFamily,
+  });
+
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
           if (isOpen && (e.ctrlKey || e.metaKey) && (e.code === 'KeyZ' || e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'я')) {
@@ -691,6 +734,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
       onSettingsChange({
           ...settings,
           theme: 'dark', fontSize: 26, fontFamily: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif",
+          customFontFamily: '', customFontData: '', customFontPath: '', customFontName: '',
           panelPosition: 'bottom', autoScrollOffset: 80, textOrientation: 'horizontal',
           lookupScale: 1.0, lookupFontSize: 14, lookupTagFontSize: 11, lookupWidth: 380,
       });
@@ -883,7 +927,29 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                       </div>
                       <div style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
                           <span style={{ color: 'var(--text-muted)', fontSize: '13px', width: '130px' }}>{t('settings.textFont')}</span>
-                          <select className="modern-select" value={settings.fontFamily || "'Noto Serif JP', 'Yu Mincho', serif"} onChange={(e) => { updateSetting('fontFamily', e.target.value); document.documentElement.style.setProperty('--txt-font-family', e.target.value); }} style={{ flex: 1, marginTop: 0 }}><option value="'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif">{t('wizard.font.serif')}</option><option value="'Noto Sans JP', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'BIZ UDPGothic', sans-serif">{t('wizard.font.sans')}</option><option value="'Yu Gothic UI', 'Yu Gothic', 'Meiryo', sans-serif">{t('wizard.font.yu')}</option><option value="'Meiryo', 'Yu Gothic UI', sans-serif">{t('wizard.font.meiryo')}</option></select>
+                          <select className="modern-select" value={settings.fontFamily || "'Noto Serif JP', 'Yu Mincho', serif"} onChange={(e) => { updateSetting('fontFamily', e.target.value); document.documentElement.style.setProperty('--txt-font-family', e.target.value); }} style={{ flex: 1, marginTop: 0 }}>{(settings.customFontData || settings.customFontPath) && <option value={settings.fontFamily}>{settings.customFontName || (settings.appLanguage === 'en' ? 'Custom font' : 'Свой шрифт')}</option>}<option value="'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif">{t('wizard.font.serif')}</option><option value="'Noto Sans JP', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'BIZ UDPGothic', sans-serif">{t('wizard.font.sans')}</option><option value="'Yu Gothic UI', 'Yu Gothic', 'Meiryo', sans-serif">{t('wizard.font.yu')}</option><option value="'Meiryo', 'Yu Gothic UI', sans-serif">{t('wizard.font.meiryo')}</option></select>
+                      </div>
+                      <div style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '13px', width: '130px' }}>{settings.appLanguage === 'en' ? 'Custom font' : 'Свой шрифт'}</span>
+                          <div style={{ flex: 1, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <button type="button" className="btn-primary" onClick={() => void handleCustomFontPick()} style={{ padding: '7px 11px' }}>
+                                  {settings.appLanguage === 'en' ? 'Choose font file…' : 'Выбрать файл шрифта…'}
+                              </button>
+                              {settings.customFontData || settings.customFontPath ? (
+                                  <>
+                                      <span style={{ color: 'var(--text-main)', fontSize: 12 }} title={settings.customFontName || undefined}>
+                                          {settings.customFontName || (settings.appLanguage === 'en' ? 'Custom font loaded' : 'Свой шрифт подключён')}
+                                      </span>
+                                      <button type="button" onClick={clearCustomFont} style={{ padding: '6px 9px', color: 'var(--text-muted)', background: 'transparent', border: '1px solid var(--border-main)', borderRadius: 5, cursor: 'pointer' }}>
+                                          {settings.appLanguage === 'en' ? 'Remove' : 'Удалить'}
+                                      </button>
+                                  </>
+                              ) : (
+                                  <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                                      {settings.appLanguage === 'en' ? 'TTF, OTF, WOFF and WOFF2 are supported.' : 'Поддерживаются TTF, OTF, WOFF и WOFF2.'}
+                                  </span>
+                              )}
+                          </div>
                       </div>
                       <div style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
                           <span style={{ color: 'var(--text-muted)', fontSize: '13px', width: '130px' }}>{t('settings.furiganaMode')}</span>

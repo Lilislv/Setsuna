@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Lookuper, { type LookupData } from "./components/Lookuper";
 import type { AppSettings } from "./components/SettingsModal";
+import { loadCustomFont } from "./utils/customFonts";
 import "./App.css";
 import "./jl-popup.css";
 
@@ -34,6 +35,10 @@ function JlPopup() {
     const payloadKeyRef = useRef("");
     const language = settings.appLanguage === "en" ? "en" : "ru";
     const popupSettings = useMemo(() => ({ ...settings, lookupHotkey: "__disabled__" }), [settings]);
+
+    useEffect(() => {
+        void loadCustomFont(settings);
+    }, [settings]);
 
     useEffect(() => {
         let unlisten: (() => void) | undefined;

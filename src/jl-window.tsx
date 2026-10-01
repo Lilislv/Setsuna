@@ -7,6 +7,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { IconPin } from "./components/Icons";
 import type { AppSettings } from "./components/SettingsModal";
 import type { DictEntry, LookupData } from "./components/Lookuper";
+import { loadCustomFont } from "./utils/customFonts";
 import "./jl-window.css";
 
 type ResizeEdge = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
@@ -89,6 +90,7 @@ function JlWindow() {
 
     useEffect(() => {
         const root = document.documentElement;
+        void loadCustomFont(settings);
         root.style.setProperty("--jl-font", settings.jlModeFontFamily || settings.fontFamily || "'Noto Serif JP', 'Yu Mincho', 'Meiryo', serif");
         root.style.setProperty("--jl-font-size", `${clamp(Number(settings.jlModeFontSize) || 42, 12, 160)}px`);
         root.style.setProperty("--jl-padding", `${clamp(Number(settings.jlModePadding) || 18, 4, 80)}px`);

@@ -6,6 +6,7 @@ import Lookuper, { type LookupData } from './components/Lookuper';
 import type { AppSettings } from './components/SettingsModal';
 import { createHoverScanQueue } from './utils/hoverScan';
 import { selectActiveLookupResult } from './utils/lookupResults';
+import { loadCustomFont } from './utils/customFonts';
 import './App.css';
 import './jl-popup.css';
 import './yatsu-lookup.css';
@@ -21,6 +22,9 @@ function YatsuLookup() {
     const settingsRef = useRef(settings); settingsRef.current = settings;
     const isEn = settings.appLanguage === 'en';
     const dismiss = () => { void invoke('dismiss_yatsu_lookup', { revision: null }); };
+    useEffect(() => {
+        void loadCustomFont(settings);
+    }, [settings]);
     useEffect(() => {
         const escape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !event.repeat) { event.preventDefault(); event.stopImmediatePropagation(); dismiss(); } };
         window.addEventListener('keydown', escape, true);

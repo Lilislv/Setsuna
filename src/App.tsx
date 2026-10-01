@@ -32,6 +32,7 @@ import WorkspaceShell from "./components/WorkspaceShell";
 import releaseInfo from "./release-info.json";
 import { contentFingerprint, createLatestTaskQueue } from './utils/runtimeMemory';
 import { selectActiveLookupResult } from './utils/lookupResults';
+import { loadCustomFont } from './utils/customFonts';
 import {
     discordActivityTypeForMode,
     applyTabOrder,
@@ -71,6 +72,9 @@ type UpdateDialogState =
     | { kind: 'error'; message: string };
 
 const stripRemovedSettings = <T extends Record<string, any>>(settings: T): T => {
+    // Font bytes are kept in memory for the current session. Persist only the
+    // path so large CJK fonts do not overflow localStorage's quota.
+    delete settings.customFontData;
     for (const key of Object.keys(settings)) {
         if ((key.startsWith('jl') && key.includes('Overlay')) || key.startsWith('cambridgeApi') || ['helperUrl', 'searchEngine', 'topbarShowBrowser'].includes(key)) {
             delete settings[key];
@@ -247,6 +251,7 @@ export default function App() {
 
         root.style.setProperty('--txt-font-size', `${settings.fontSize || DEFAULT_SETTINGS.fontSize}px`);
         root.style.setProperty('--txt-font-family', normalizeJapaneseFontStack(settings.fontFamily || DEFAULT_SETTINGS.fontFamily));
+        void loadCustomFont(settings);
 
         root.style.setProperty('--accent', activeTheme['--accent-blue']);
         root.style.setProperty('--accent-bg', themeName === 'light' ? 'rgba(0, 102, 204, 0.12)' : 'rgba(79, 166, 255, 0.14)');
@@ -261,7 +266,7 @@ export default function App() {
 
         root.dataset.theme = themeName;
         document.body.dataset.theme = themeName;
-    }, [settings.theme, settings.fontSize, settings.fontFamily]);
+    }, [settings.theme, settings.fontSize, settings.fontFamily, settings.customFontData, settings.customFontFamily, settings.customFontPath]);
 
     const [tabs, setTabs] = useState<Tab[]>(() => {
         const savedTabs = localStorage.getItem('txthk-tabs');

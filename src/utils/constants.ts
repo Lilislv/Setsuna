@@ -111,7 +111,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     textSyncRemoteToken: '',
     ankiColorNew: '#4CAF50', ankiColorOther: '#4fa6ff', ankiColorSame: '#ff4444',
     ankiAllowDuplicatesOther: true, ankiAllowDuplicatesSame: false,
-    fontSize: 26, fontFamily: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif", furiganaMode: 'none',
+    fontSize: 26, fontFamily: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif", customFontFamily: '', customFontData: '', customFontPath: '', customFontName: '', furiganaMode: 'none',
     textOrientation: 'horizontal',
     jlModeFontSize: 42,
     jlModeFontFamily: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif",

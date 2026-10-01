@@ -98,7 +98,7 @@ export const IconAudioOff = () => <svg width="18" height="18" viewBox="0 0 24 24
 export const IconCamera = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>;
 export const IconEye = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>;
 
-const LOOKUP_FONT_STACK = '"Segoe UI", "Noto Sans JP", "Yu Gothic UI", "Yu Gothic", "Meiryo", "BIZ UDPGothic", Arial, sans-serif';
+const LOOKUP_FONT_STACK = 'var(--txt-font-family, "Segoe UI", "Noto Sans JP", "Yu Gothic UI", "Yu Gothic", "Meiryo", "BIZ UDPGothic", Arial, sans-serif)';
 
 const normalizeSpacedCyrillic = (value: string) => value
     .split('\n')
@@ -440,14 +440,35 @@ const extractEnglishWordAtCursor = (sentence: string, cursor: number) => {
 
 export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLookup: boolean = false) => {
     const groupedMap = new Map<string, any>();
+    const allEntries = entries || [];
+    const hasDefinition = (entry: any) => {
+        const raw = String(entry?.definition || '').trim();
+        if (!raw || raw === '[]' || raw === 'null' || raw === '""') return false;
+        try {
+            const parsed = JSON.parse(raw);
+            return !(Array.isArray(parsed) && parsed.length === 0);
+        } catch {
+            return true;
+        }
+    };
+    const kanjiArticles = allEntries.filter((entry: any) =>
+        String(entry?.dict_name || '').toUpperCase().includes('KANJI') && hasDefinition(entry),
+    );
+    // Some installations contain only term/frequency dictionaries. Keep a
+    // useful ordinary article in that case instead of making a kanji click
+    // appear to do nothing; use the dedicated KANJIDIC article whenever one
+    // is actually installed and enabled.
+    const sourceEntries = isKanjiLookup && kanjiArticles.length > 0
+        ? kanjiArticles
+        : allEntries.filter((entry: any) => !String(entry?.dict_name || '').toUpperCase().includes('KANJI'));
     
-    (entries || []).forEach((ent, resultIndex) => {
+    sourceEntries.forEach((ent, resultIndex) => {
         // A kanji lookup has its own result type. The Rust lookup also carries
         // frequency/pitch metadata for the same character, but those metadata
         // rows are not dictionary articles and used to render as empty cards
         // above the KANJIDIC result. Yomitan shows one kanji article here.
         const isKanjidic = String(ent.dict_name || "").toUpperCase().includes("KANJI");
-        if (isKanjiLookup && !isKanjidic) return;
+        if (isKanjiLookup && kanjiArticles.length > 0 && !isKanjidic) return;
         const key = `${ent.term || ""}|${ent.reading || ""}`;
         if (!groupedMap.has(key)) {
             groupedMap.set(key, { 
@@ -486,7 +507,7 @@ export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLoo
         if (dictSetting && dictSetting.allowDeinflect === false && ent.deinflection_reasons && ent.deinflection_reasons.length > 0) return;
 
         if (!isKanjiLookup && isKanjidic) return;
-        if (isKanjiLookup && !isKanjidic) return;
+        if (isKanjiLookup && kanjiArticles.length > 0 && !isKanjidic) return;
 
         // Both platforms return `definition` (JSON/text). Keep support for cached
         // entries from older Android builds with plain-text `definitions`,
@@ -928,7 +949,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                 <div className="dict-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'nowrap', marginBottom: '10px' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '6px' }}>
-                            <span style={{ fontSize: `${fSize * 2.0}px`, lineHeight: '1.45', fontWeight: 700, color: 'var(--text-main)', fontFamily: '"BIZ UDPGothic", "BIZ UDGothic", "Meiryo", "Noto Sans JP", "Yu Gothic UI", sans-serif', letterSpacing: 0 }}>
+                            <span style={{ fontSize: `${fSize * 2.0}px`, lineHeight: '1.45', fontWeight: 700, color: 'var(--text-main)', fontFamily: LOOKUP_FONT_STACK, letterSpacing: 0 }}>
                                 {splitOkurigana(group.term, group.reading).map((chunk, i) => {
                                     if (!chunk.reading) {
                                         return <span key={i}>{Array.from(chunk.text).map((c: any, j) => {
@@ -942,7 +963,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                                                 const isKanji = /[\u4e00-\u9faf]/.test(c);
                                                 return isKanji ? <span key={j} onClick={(e) => onWordLookup(e, c, true)} style={{ cursor: 'pointer', borderBottom: '1px dashed var(--text-muted)', paddingBottom: '1px' }}>{c}</span> : <span key={j}>{c}</span>;
                                             })}
-                                            <rt style={{ fontSize: `${Math.max(10, fSize * 0.48)}px`, color: 'var(--text-muted)', fontWeight: 600, userSelect: 'none', letterSpacing: 0, lineHeight: 1, textAlign: 'center', fontFamily: '"BIZ UDPGothic", "BIZ UDGothic", "Meiryo", "Noto Sans JP", "Yu Gothic UI", sans-serif' }}>{chunk.reading}</rt>
+                                            <rt style={{ fontSize: `${Math.max(10, fSize * 0.48)}px`, color: 'var(--text-muted)', fontWeight: 600, userSelect: 'none', letterSpacing: 0, lineHeight: 1, textAlign: 'center', fontFamily: LOOKUP_FONT_STACK }}>{chunk.reading}</rt>
                                         </ruby>
                                     );
                                 })}

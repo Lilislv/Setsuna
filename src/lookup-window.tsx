@@ -6,6 +6,7 @@ import LookupSurface from "./features/lookup/LookupSurface";
 import type { DictEntry, LookupData, LookupScreenshotSource } from "./components/Lookuper";
 import type { CaptureSourceBinding } from "./utils/constants";
 import { DEFAULT_SETTINGS, themes } from "./utils/constants";
+import { loadCustomFont } from "./utils/customFonts";
 import { getDecks } from "./utils/anki";
 import { getTranslator, translateBackendError, type AppLanguage } from "./utils/i18n";
 import "./index.css";
@@ -61,6 +62,8 @@ const applyTheme = (settings: ReturnType<typeof readSettings>) => {
     "--font-stack",
     '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Yu Gothic", "Meiryo"',
   );
+  root.style.setProperty("--txt-font-family", settings.fontFamily || DEFAULT_SETTINGS.fontFamily);
+  void loadCustomFont(settings);
 };
 
 const readSavedCaptureSource = (): CaptureSourceBinding | null => {
