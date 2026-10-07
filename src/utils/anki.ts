@@ -25,6 +25,60 @@ const ANKI_URL = 'http://127.0.0.1:8765';
 const META_TTL_MS = 60_000;
 const STATUS_TTL_MS = 15_000;
 
+export const SETSUNA_DEFAULT_DECK = "Setsuna";
+export const SETSUNA_DEFAULT_MODEL = "Setsuna Japanese";
+export const SETSUNA_MODEL_FIELDS = [
+    "Expression",
+    "ExpressionFurigana",
+    "ExpressionReading",
+    "MainDefinition",
+    "Sentence",
+    "SentenceFurigana",
+    "Dictionary",
+    "ExpressionAudio",
+    "PitchPosition",
+    "Frequency",
+    "DefinitionPicture",
+];
+
+export type AnkiSetup = {
+    decks: string[];
+    models: string[];
+    defaultDeck: string;
+    defaultModel: string;
+    fields: string[];
+    createdDeck: boolean;
+    createdModel: boolean;
+};
+
+const normalizeAnkiFieldName = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** Picks Setsuna's fields for Lapis, the generated model, Basic, and custom models. */
+export const recommendAnkiFieldSettings = (fields: string[]): Record<string, string> => {
+    const find = (...candidates: string[]) => {
+        const wanted = candidates.map(normalizeAnkiFieldName);
+        return fields.find((field) => wanted.includes(normalizeAnkiFieldName(field))) || "none";
+    };
+    const wordCandidate = find("Expression", "Word", "Term", "Front");
+    const word = wordCandidate !== "none" ? wordCandidate : fields[0] || "none";
+    const meaningCandidate = find("MainDefinition", "Definition", "Meaning", "Back");
+    const meaning = meaningCandidate !== "none"
+        ? meaningCandidate
+        : fields.find((field) => field !== word) || "none";
+    return {
+        ankiFieldWord: word,
+        ankiFieldReading: find("ExpressionFurigana", "Reading", "Furigana"),
+        ankiFieldMeaning: meaning,
+        ankiFieldSentence: find("Sentence"),
+        ankiFieldSentenceFurigana: find("SentenceFurigana", "Sentence Furigana", "SelectionFurigana"),
+        ankiFieldDict: find("Dictionary", "Source"),
+        ankiFieldAudio: find("ExpressionAudio", "Audio"),
+        ankiFieldPitch: find("PitchPosition", "Pitch", "PitchAccent"),
+        ankiFieldFreq: find("Frequency", "Freq"),
+        ankiFieldScreenshot: find("DefinitionPicture", "Picture", "Screenshot", "Image"),
+    };
+};
+
 const cache = {
     decks: null as CacheEntry<string[]> | null,
     models: null as CacheEntry<string[]> | null,
@@ -228,6 +282,93 @@ export const getModelFields = async (
     return promise;
 };
 
+const SETSUNA_MODEL_CSS = `
+.card { font-family: Arial, sans-serif; font-size: 22px; text-align: center; color: #222; background: #fff; }
+.sentence { margin-top: 18px; font-size: 18px; text-align: left; }
+.definition { margin-top: 16px; text-align: left; white-space: pre-wrap; }
+`;
+
+const SETSUNA_CARD_TEMPLATES = [
+    {
+        Name: "Setsuna card",
+        Front: "{{Expression}}<br><small>{{ExpressionReading}}</small>",
+        Back: "{{FrontSide}}<hr id=answer><div class=definition>{{MainDefinition}}</div><div class=sentence>{{Sentence}}</div>{{ExpressionAudio}}",
+    },
+];
+
+/**
+ * Makes a blank Anki profile usable without requiring the Lapis note type.
+ * Existing profiles are left intact; this only creates the first Setsuna deck
+ * and note type when Anki truly has no deck/model at all.
+ */
+export const ensureSetsunaAnkiSetup = async (): Promise<AnkiSetup> => {
+    let decks = await getDecks(true);
+    let models = await getModels(true);
+    let createdDeck = false;
+    let createdModel = false;
+
+    // The Android bridge can read and insert into existing note types, but it
+    // intentionally does not expose schema creation. Keep the user's AnkiDroid
+    // profile untouched and let the settings screen explain that a model is
+    // needed when the profile is completely empty.
+    if (getAnkiDroidBridge()) {
+        // AnkiDroid creates a missing target deck when the first note is
+        // inserted, so a blank profile can still use Setsuna immediately.
+        const defaultDeck = decks[0] || SETSUNA_DEFAULT_DECK;
+        const defaultModel = models.find((model) => /lapis/i.test(model)) || models[0] || "";
+        const fields = defaultModel ? await getModelFields(defaultModel, true) : [];
+        return { decks, models, defaultDeck, defaultModel, fields, createdDeck, createdModel };
+    }
+
+    if (decks.length === 0) {
+        try {
+            await invokeAnki("createDeck", { deck: SETSUNA_DEFAULT_DECK });
+            createdDeck = true;
+        } catch (error) {
+            // Another client may have created the first deck between the list
+            // and create calls. Refresh below and only fail if it is still empty.
+            console.warn("Could not create the default Setsuna deck", error);
+        }
+        clearAnkiMetaCache();
+        decks = await getDecks(true);
+    }
+
+    if (models.length === 0) {
+        try {
+            await invokeAnki("createModel", {
+                modelName: SETSUNA_DEFAULT_MODEL,
+                inOrderFields: SETSUNA_MODEL_FIELDS,
+                css: SETSUNA_MODEL_CSS,
+                cardTemplates: SETSUNA_CARD_TEMPLATES,
+            });
+            createdModel = true;
+        } catch (error) {
+            console.warn("Could not create the default Setsuna model", error);
+        }
+        clearAnkiMetaCache();
+        models = await getModels(true);
+    }
+
+    const defaultDeck = decks.includes(SETSUNA_DEFAULT_DECK)
+        ? SETSUNA_DEFAULT_DECK
+        : (decks[0] || "");
+    const defaultModel = models.find((model) => /lapis/i.test(model))
+        || models.find((model) => model === SETSUNA_DEFAULT_MODEL)
+        || models[0]
+        || "";
+    const fields = defaultModel ? await getModelFields(defaultModel, true) : [];
+
+    return {
+        decks,
+        models,
+        defaultDeck,
+        defaultModel,
+        fields,
+        createdDeck,
+        createdModel,
+    };
+};
+
 
 const isKanjiChar = (char: string): boolean => {
     return /[\u3400-\u9fff\uf900-\ufaff]/.test(char);
@@ -398,6 +539,21 @@ export const addNote = async (settings: any, noteData: any) => {
     const bridge = getAnkiDroidBridge();
     let localAudio: LocalAudioClip | null = null;
     let audioWarning: string | undefined;
+
+    // Older settings may contain a model/deck but no field mapping because the
+    // profile used to require Lapis. Resolve missing fields at card-add time so
+    // a normal Basic or custom note type works immediately as well.
+    if (settings.ankiModel) {
+        const modelFields = await getModelFields(settings.ankiModel).catch(() => []);
+        if (modelFields.length > 0) {
+            const recommended = recommendAnkiFieldSettings(modelFields);
+            const missing: Record<string, string> = {};
+            Object.entries(recommended).forEach(([key, value]) => {
+                if (!settings[key] || settings[key] === "none") missing[key] = value;
+            });
+            if (Object.keys(missing).length > 0) settings = { ...settings, ...missing };
+        }
+    }
 
     const rawWord = noteData.word || "";
     const rawReading = noteData.rawReading || noteData.reading || "";

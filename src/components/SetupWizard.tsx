@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { getDecks, invokeAnki } from "../utils/anki";
+import { ensureSetsunaAnkiSetup, invokeAnki, recommendAnkiFieldSettings } from "../utils/anki";
 import type { AppSettings } from "./SettingsModal";
 import { getTranslator, type AppLanguage } from "../utils/i18n";
 
@@ -290,7 +290,8 @@ export default function SetupWizard({
         setDeckError("");
 
         try {
-            const decks = await getDecks(true);
+            const setup = await ensureSetsunaAnkiSetup();
+            const decks = setup.decks;
             const safeDecks = Array.isArray(decks) ? decks : [];
 
             setAnkiDecks(safeDecks);
@@ -304,6 +305,13 @@ export default function SetupWizard({
                           : safeDecks[0];
 
                 applyDeck(preferred);
+                if (setup.defaultModel) {
+                    onSettingsPatch?.({
+                        ankiDeck: preferred,
+                        ankiModel: setup.defaultModel,
+                        ...recommendAnkiFieldSettings(setup.fields),
+                    });
+                }
             } else {
                 setDeckError(t("wizard.anki.noDecksError"));
             }

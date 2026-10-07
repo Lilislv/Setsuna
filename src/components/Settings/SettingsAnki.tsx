@@ -3,14 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-    getDecks,
-    getModels,
     getModelFields,
     clearAnkiMetaCache,
     getAnkiBackend,
     getAnkiDroidStatus,
     requestAnkiDroidPermission,
     invokeAnki,
+    ensureSetsunaAnkiSetup,
 } from "../../utils/anki";
 import { AppSettings } from "../SettingsModal";
 import SettingsAudio from './SettingsAudio';
@@ -51,12 +50,12 @@ const labels = {
         deck: "Колода:",
         model: "Модель:",
         cardFormat: "Формат карточки",
-        cardFormatHint: "По умолчанию используется безопасный пресет Lapis/Lapis++++. Ручные поля нужны только если карточка настроена необычно.",
-        lapisPreset: "Пресет Lapis++++",
+        cardFormatHint: "Поля подбираются по названиям выбранной модели. Lapis/Lapis++++ поддерживается, но для работы не обязателен.",
+        lapisPreset: "Автоподбор полей",
         showFields: "Открыть ручные настройки",
         hideFields: "Скрыть поля",
         activeModel: "Активная модель",
-        modelHint: "Для Lapis/Lapis++++ поля выставляются автоматически. Если карточка добавляется неправильно, открой ручные настройки и проверь поля.",
+        modelHint: "Поля подбираются автоматически для Lapis и обычных моделей Anki. Если карточка добавляется неправильно, открой ручные настройки и проверь поля.",
         notSelected: "не выбрана",
         none: "-- пусто --",
         fields: {
@@ -124,12 +123,12 @@ const labels = {
         deck: "Deck:",
         model: "Model:",
         cardFormat: "Card format",
-        cardFormatHint: "The safe Lapis/Lapis++++ preset is used by default. Manual fields are only needed for custom note types.",
-        lapisPreset: "Lapis++++ preset",
+        cardFormatHint: "Fields are selected from the chosen model automatically. Lapis/Lapis++++ is supported but not required.",
+        lapisPreset: "Auto-map fields",
         showFields: "Open manual settings",
         hideFields: "Hide fields",
         activeModel: "Active model",
-        modelHint: "For Lapis/Lapis++++ fields are filled automatically. If cards are added incorrectly, open manual settings and check the fields.",
+        modelHint: "Fields are mapped automatically for Lapis and ordinary Anki models. If cards are added incorrectly, open manual settings and check the fields.",
         notSelected: "not selected",
         none: "-- none --",
         fields: {
@@ -217,7 +216,9 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
         try {
             if (backend === "ankiconnect") await invokeAnki("version");
             clearAnkiMetaCache();
-            const [decks, models] = await Promise.all([getDecks(true), getModels(true)]);
+            const setup = await ensureSetsunaAnkiSetup();
+            const decks = setup.decks;
+            const models = setup.models;
             const safeDecks = Array.isArray(decks) ? decks : [];
             const safeModels = Array.isArray(models) ? models : [];
             setAnkiDecks(safeDecks);
@@ -225,10 +226,10 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
 
             const preferredDeck = settings.ankiDeck && safeDecks.includes(settings.ankiDeck)
                 ? settings.ankiDeck
-                : safeDecks[0] || "";
+                : setup.defaultDeck || safeDecks[0] || "";
             const preferredModel = settings.ankiModel && safeModels.includes(settings.ankiModel)
                 ? settings.ankiModel
-                : safeModels.find((model) => /lapis/i.test(model)) || safeModels[0] || "";
+                : setup.defaultModel || safeModels.find((model) => /lapis/i.test(model)) || safeModels[0] || "";
             const patch: Partial<AppSettings> = {};
             if (preferredDeck && preferredDeck !== settings.ankiDeck) patch.ankiDeck = preferredDeck;
             if (preferredModel && preferredModel !== settings.ankiModel) patch.ankiModel = preferredModel;
@@ -241,8 +242,15 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
             }
 
             if (preferredModel) {
-                const fields = await getModelFields(preferredModel, true);
+                const fields = setup.fields.length > 0 && preferredModel === setup.defaultModel
+                    ? setup.fields
+                    : await getModelFields(preferredModel, true);
                 setAnkiFields(fields);
+            }
+            if (setup.createdDeck || setup.createdModel) {
+                setAnkiSetupMessage(settings.appLanguage === "en"
+                    ? "Setsuna created a default deck and note type. Lapis is optional."
+                    : "Setsuna создала стандартную колоду и тип заметки. Lapis не обязателен.");
             }
             setAnkiConnected(true);
             return true;
@@ -328,10 +336,17 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
 
     const applyLapisPreset = (force = true) => {
         if (ankiFields.length === 0) return;
+        const wordField = findField("Expression", "Word", "Term", "Front") !== "none"
+            ? findField("Expression", "Word", "Term", "Front")
+            : ankiFields[0] || "none";
+        const meaningCandidate = findField("MainDefinition", "Definition", "Meaning", "Back");
+        const meaningField = meaningCandidate !== "none"
+            ? meaningCandidate
+            : ankiFields.find((field) => field !== wordField) || "none";
         const preset: Partial<AppSettings> = {
-            ankiFieldWord: findField("Expression"),
+            ankiFieldWord: wordField,
             ankiFieldReading: findField("ExpressionFurigana", "Reading", "Furigana"),
-            ankiFieldMeaning: findField("MainDefinition", "Definition", "Meaning"),
+            ankiFieldMeaning: meaningField,
             ankiFieldSentence: findField("Sentence"),
             ankiFieldSentenceFurigana: findField("SentenceFurigana", "Sentence Furigana", "SelectionFurigana"),
             ankiFieldDict: findField("Dictionary", "Source"),
@@ -342,7 +357,10 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
         };
 
         if (!force) {
-            const configured = Boolean(settings.ankiFieldWord && settings.ankiFieldWord !== "none" && settings.ankiFieldMeaning && settings.ankiFieldMeaning !== "none");
+            const configured = Boolean(
+                settings.ankiFieldWord && settings.ankiFieldWord !== "none" && ankiFields.includes(settings.ankiFieldWord)
+                && settings.ankiFieldMeaning && settings.ankiFieldMeaning !== "none" && ankiFields.includes(settings.ankiFieldMeaning),
+            );
             if (configured) return;
         }
 
@@ -351,7 +369,7 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
     };
 
     useEffect(() => {
-        if (!isOpen || ankiFields.length === 0 || !/lapis/i.test(settings.ankiModel || "")) return;
+        if (!isOpen || ankiFields.length === 0) return;
         applyLapisPreset(false);
     }, [isOpen, ankiFields.join("|"), settings.ankiModel]);
 
