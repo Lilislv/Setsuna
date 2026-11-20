@@ -1,42 +1,47 @@
-﻿export const calculateStats = (text: string, language: string = 'ru') => {
-    const cleanTextForChars = text.replace(/[^\p{L}\p{N}]/gu, '');
-    const chars = cleanTextForChars.length;
+const JAPANESE_RE = /[぀-ヿ㐀-鿿ｦ-ﾟ]/;
+const SENTENCE_END_RE = /[。．！？!?｡]+[」』）)】〉》"'”’］\]]*|\.(?=\s|$)/g;
 
-    const trimmed = text.trim();
-    const sentenceMatches = trimmed.match(/[。！？.!?]+/g) || [];
-    const sentences =
-        sentenceMatches.length > 0
-            ? sentenceMatches.length
-            : trimmed.length > 0
-                ? 1
-                : 0;
+let wordSegmenter: { segment: (text: string) => Iterable<{ isWordLike?: boolean }> } | null | undefined;
+const getWordSegmenter = () => {
+    if (wordSegmenter !== undefined) return wordSegmenter;
+    const Segmenter = (Intl as any).Segmenter;
+    wordSegmenter = typeof Segmenter === 'function' ? new Segmenter('ja', { granularity: 'word' }) : null;
+    return wordSegmenter;
+};
 
-    let words = 0;
-
-    if (language === 'ru' || language === 'en') {
-        words = text
-            .split(/\s+/)
-            .map((s) => s.trim())
-            .filter(Boolean).length;
-    } else {
-        // Для японского без Intl.Segmenter, чтобы не падал билд
-        const cleaned = text
-            .replace(/[。、！？.!?\s]+/g, ' ')
-            .trim();
-
-        if (!cleaned) {
-            words = 0;
-        } else {
-            words = cleaned
-                .split(/\s+/)
-                .filter(Boolean)
-                .length;
-
-            if (words === 0) {
-                words = Math.max(1, Math.ceil(chars / 2.5));
-            }
+const countWords = (text: string) => {
+    if (JAPANESE_RE.test(text)) {
+        const segmenter = getWordSegmenter();
+        if (segmenter) {
+            let words = 0;
+            for (const segment of segmenter.segment(text)) if (segment.isWordLike) words++;
+            return words;
         }
+        return Math.ceil(text.replace(/[^\p{L}\p{N}]/gu, '').length / 2.5);
     }
+    return text.split(/\s+/).filter((part) => /[\p{L}\p{N}]/u.test(part)).length;
+};
+
+/**
+ * Quick synchronous estimate used while a line is added. The authoritative
+ * word/sentence counts come from the native counter (`utils/textStats.ts`),
+ * which replaces these values for the active tab shortly after.
+ * The method follows the script of the text, not the UI language.
+ */
+export const calculateStats = (text: string, _language: string = 'ru') => {
+    const chars = text.replace(/[^\p{L}\p{N}]/gu, '').length;
+    const trimmed = text.trim();
+    if (!trimmed) return { chars, words: 0, sentences: 0 };
+
+    const words = countWords(trimmed);
+    let sentences = 0;
+    let lastEnd = 0;
+    for (const match of trimmed.matchAll(SENTENCE_END_RE)) {
+        const end = (match.index ?? 0) + match[0].length;
+        if (/[\p{L}\p{N}]/u.test(trimmed.slice(lastEnd, end))) sentences++;
+        lastEnd = end;
+    }
+    if (countWords(trimmed.slice(lastEnd)) >= 2) sentences++;
 
     return { chars, words, sentences };
 };

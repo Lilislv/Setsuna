@@ -67,161 +67,55 @@ body {
     width: 100vw;
 }
 
-.top-bar {
-    display: flex;
-    position: relative;
-    background-color: var(--bg-panel);
-    padding: 5px 10px 0;
-    border-bottom: 1px solid var(--border-main);
-    justify-content: space-between;
-    align-items: flex-end;
-    flex-shrink: 0;
-    transition: background-color 0.3s, border-color 0.3s;
-}
-
-/* Optional toolbar actions collapse horizontally so the tabs keep their space. */
-.top-bar .topbar-optional,
-.top-bar .topbar-secondary-ws {
-    max-width: 220px;
-    opacity: 1;
-    overflow: hidden;
-    white-space: nowrap;
-    transform: translateX(0);
-    transition:
-        max-width 260ms cubic-bezier(0.4, 0, 0.2, 1),
-        opacity 160ms ease,
-        padding 260ms cubic-bezier(0.4, 0, 0.2, 1),
-        transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.top-bar.is-compact .topbar-optional,
-.top-bar.is-compact .topbar-secondary-ws {
-    max-width: 0 !important;
-    opacity: 0;
-    padding-left: 0 !important;
-    padding-right: 0 !important;
-    pointer-events: none;
-    transform: translateX(10px);
-}
-
-.top-bar .header-actions {
-    transition: gap 260ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.top-bar.is-compact .header-actions {
-    gap: 0;
-}
-
-.top-bar.is-compact .header-actions > .header-btn:not(.topbar-optional):not(.topbar-secondary-ws) {
-    margin-left: 5px;
-}
-
-.topbar-collapse-toggle {
-    flex: 0 0 28px;
-    border-left: 1px solid var(--border-subtle);
-    border-radius: 0;
-    transition: color 160ms ease, background-color 160ms ease, transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-@media (max-width: 1200px) {
-    .top-bar:not(.is-compact) {
-        overflow: visible !important;
-    }
-
-    .top-bar:not(.is-compact) .header-actions {
-        position: absolute;
-        top: calc(100% + 1px);
-        left: 8px;
-        right: 8px;
-        z-index: 1200;
-        display: flex !important;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-        gap: 5px;
-        max-height: min(42vh, 260px);
-        padding: 8px;
-        overflow: auto !important;
-        background: var(--bg-panel);
-        border: 1px solid var(--border-main);
-        border-top: 0;
-        border-radius: 0 0 6px 6px;
-        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
-        animation: topbar-drawer-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
-    }
-}
-
-@keyframes topbar-drawer-in {
-    from { opacity: 0; transform: translateY(-6px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-.tabs {
-    display: flex;
-}
-
-.tab {
-    background-color: var(--bg-panel);
-    color: var(--text-muted);
-    padding: 6px 14px;
-    border-radius: 4px 4px 0 0;
-    margin-right: 2px;
+.tab-status {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1.5px solid var(--status-color);
+    background: var(--status-color);
     cursor: pointer;
-    font-size: 13px;
-    border: 1px solid var(--border-subtle);
-    border-bottom: none;
-    user-select: none;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    transition: 0.2s;
+    transition: transform 120ms ease, box-shadow 120ms ease;
 }
 
-    .tab:hover {
-        background-color: var(--hover-bg);
-        color: var(--text-main);
-    }
+.tab-status-planned { background: transparent; }
 
-    .tab.active {
-        background-color: var(--bg-main);
-        color: var(--text-main);
-        border-bottom: 1px solid var(--bg-main);
-        margin-bottom: -1px;
-        font-weight: bold;
-    }
+.tab-status:hover {
+    transform: scale(1.35);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-color) 25%, transparent);
+}
+
+.tab-rename {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: transparent;
+    color: var(--text-main);
+    border: none;
+    border-bottom: 1px solid var(--accent-blue);
+    outline: none;
+    font: inherit;
+}
 
 .tab-close {
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-muted);
     font-size: 16px;
     line-height: 1;
     cursor: pointer;
-    padding: 0 4px;
+    opacity: 0;
+    transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
 }
 
-    .tab-close:hover {
-        color: #ff4444;
-    }
-
-.tab-add {
-    box-sizing: border-box;
-    width: 33px;
-    min-width: 33px;
-    height: 33px;
-    flex: 0 0 33px;
-    padding: 0;
-    justify-content: center;
-    gap: 0;
-    font: 500 16px/1 var(--font-stack);
-    appearance: none;
-}
-
-.tab-add span {
-    display: block;
-    transform: translateY(-1px);
-}
-
-.header-actions {
-    display: flex;
-    gap: 5px;
-    padding-bottom: 5px;
+.tab-close:hover {
+    background: var(--hover-bg);
+    color: #ff5555;
 }
 
 .header-btn {
@@ -242,6 +136,7 @@ body {
     }
 
 .main-content {
+    animation: motion-rise-in var(--dur-slow) var(--ease-fluid) backwards;
     flex: 1;
     min-height: 0;
     overflow: hidden;
@@ -348,18 +243,35 @@ body {
 /* --- �B�R�P�L�\�B�@�_�Z�I�E �O�K�N�@ �R�L�O�B�@�Q�` --- */
 .dict-popup {
     position: fixed;
-    background-color: var(--bg-panel);
-    border: 1px solid var(--border-main);
-    border-radius: 6px;
-    padding: 14px;
+    background-color: var(--surface-glass);
+    backdrop-filter: blur(18px) saturate(1.2);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 16px 18px;
     font-size: 14px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    box-shadow: var(--shadow-float);
     max-height: 450px;
     overflow-y: auto;
     z-index: 10000;
     color: var(--text-main);
     font-family: var(--font-stack);
     transition: background-color 0.3s, border-color 0.3s, color 0.3s;
+}
+
+/* Soften legacy inline chrome inside lookup articles. */
+.dict-popup [style*="border: 1px solid var(--border-main)"],
+.dict-popup [style*="border: 1px solid var(--border-subtle)"] {
+    border-color: var(--line) !important;
+    border-radius: 8px !important;
+}
+
+.dict-popup .dict-meaning[style*="border-top: 1px solid"] {
+    border-top-color: var(--line) !important;
+}
+
+.dict-popup .dict-entry-container + .dict-entry-container {
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
 }
 
 /* ---- Mobile lookup bottom sheet ---- */
@@ -375,7 +287,7 @@ body {
 .dict-popup.dict-mobile-sheet {
     border: none;
     border-top: 1px solid var(--border-main);
-    border-radius: 8px 8px 0 0;
+    border-radius: 22px 22px 0 0;
     padding: 6px 15px 26px;
     box-shadow: 0 -18px 45px -18px rgba(0, 0, 0, 0.6);
     animation: mobile-sheet-up 0.32s cubic-bezier(0.22, 1, 0.36, 1);
@@ -699,75 +611,87 @@ body {
 }
 
 .modern-card {
-    background-color: var(--bg-panel);
-    border: 1px solid var(--border-main);
-    border-radius: 8px;
-    padding: 20px;
+    background-color: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 20px 22px;
+    transition: background-color 0.3s, border-color 0.3s, box-shadow 0.3s;
 }
 
 .card-label {
-    font-size: 14px;
-    color: var(--text-main);
-    margin-bottom: 12px;
     display: block;
-    font-weight: bold;
+    margin-bottom: 12px;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0;
+    color: var(--text-main);
 }
 
 .checkbox-label {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     cursor: pointer;
     font-size: 13px;
     color: var(--text-main);
     user-select: none;
 }
 
-    .checkbox-label input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
-        cursor: pointer;
-        accent-color: var(--accent-blue);
-    }
-
 .modern-input, .modern-select {
     width: 100%;
-    background: var(--bg-main);
+    min-height: 40px;
+    box-sizing: border-box;
+    padding: 9px 13px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface-0);
     color: var(--text-main);
-    border: 1px solid var(--border-main);
-    padding: 10px 12px;
-    border-radius: 6px;
     outline: none;
     font-family: var(--font-stack);
     font-size: 13px;
-    transition: 0.2s;
+    transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
 }
 
-    .modern-input:focus, .modern-select:focus {
-        border-color: var(--accent-blue);
-    }
+.modern-input:hover, .modern-select:hover { border-color: var(--line-strong); }
+
+.modern-input:focus, .modern-select:focus {
+    border-color: var(--accent-blue);
+    box-shadow: var(--focus-ring);
+}
+
+.modern-select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 36px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 13px center;
+    cursor: pointer;
+}
 
 .btn-primary {
+    min-height: 38px;
+    padding: 0 18px;
+    border: none;
+    border-radius: var(--radius);
     background: var(--accent-blue);
     color: #fff;
-    border: none;
-    padding: 10px 20px;
-    border-radius: 6px;
-    cursor: pointer;
+    font-family: var(--font-stack);
     font-size: 13px;
-    font-weight: bold;
-    transition: 0.2s;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--accent-blue) 80%, transparent);
+    transition: filter 160ms ease, box-shadow 160ms ease, scale var(--dur-press) var(--ease-spring);
 }
 
-    .btn-primary:hover {
-        filter: brightness(1.1);
-    }
+.btn-primary:hover { filter: brightness(1.08); }
 
-    .btn-primary:disabled {
-        background-color: var(--border-main);
-        color: var(--text-muted);
-        cursor: not-allowed;
-    }
+.btn-primary:disabled {
+    background-color: var(--surface-2);
+    color: var(--text-muted);
+    box-shadow: none;
+    cursor: not-allowed;
+}
 /* --- �P�L�@�B�N�\�E �@�N�I�M�@�W�I�I --- */
 
 /* �P�|�p�r�~���u �������r�|�u�~�y�u �����~�p */
@@ -811,14 +735,58 @@ body {
 
 /* �P���y�}�u�~���u�} �p�~�y�}�p���y�y �{ �������u�����r�������y�} �{�|�p�����p�} */
 .modal-overlay {
-    animation: fadeIn 0.2s ease-out forwards;
-    background-color: var(--overlay-bg) !important;
-    backdrop-filter: blur(3px); /* �K���p���y�r���u ���p�x�}�����y�u �����~�p �y�s����/���u�{�����p */
+    animation: motion-fade-in var(--dur-base) var(--ease-fluid) both;
+    background-color: color-mix(in srgb, var(--bg-main) 62%, transparent) !important;
+    backdrop-filter: blur(14px) saturate(0.75);
 }
 
-.modern-modal {
-    animation: popIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.1) forwards; /* �^�����u�{�� �|�u�s�{���z �������w�y�~�{�y */
-    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.4);
+/* Floating sheets: dialogs, notices, progress, capture picker, updates. */
+.modern-modal,
+.app-sheet {
+    background: var(--surface-glass) !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 22px !important;
+    box-shadow: var(--shadow-float) !important;
+    animation: motion-pop-in var(--dur-slow) var(--ease-spring) backwards;
+}
+
+.modern-modal h3,
+.app-sheet h3 {
+    font-weight: 600 !important;
+    letter-spacing: 0;
+}
+
+/* Secondary and danger variants of legacy inline-styled buttons. */
+.modern-modal .btn-primary[style*="background: transparent"],
+.app-sheet .btn-primary[style*="background: transparent"] {
+    background: var(--surface-2) !important;
+    border: 0 !important;
+    box-shadow: none;
+    color: var(--text-main) !important;
+}
+
+.modern-modal .btn-primary[style*="#ff4444"],
+.app-sheet .btn-primary[style*="#ff4444"] {
+    background: var(--danger) !important;
+    box-shadow: 0 6px 16px -8px var(--danger);
+}
+
+.modern-modal [style*="background-color: var(--bg-main)"],
+.app-sheet [style*="background: var(--bg-main)"],
+.app-sheet [style*="background: var(--bg-side)"] {
+    background: var(--surface-1) !important;
+    border-color: var(--line) !important;
+}
+
+.app-sheet [style*="border: 1px solid var(--border-main)"],
+.app-sheet [style*="borderBottom"],
+.app-sheet [style*="border-bottom: 1px solid var(--border-main)"] {
+    border-color: var(--line) !important;
+}
+
+.app-sheet button[style*="border-radius: 6px"],
+.app-sheet button[style*="border-radius: 8px"] {
+    border-radius: 10px !important;
 }
 
 /* �K�~�����{�y ���u���u���� �~�p�w�y�}�p�������� �����y�����~�u�u */
@@ -832,7 +800,7 @@ body {
 
 /* �D�|�� ���|�p�r�~���s�� �������r�|�u�~�y�� �����y���{�p (�t���q�p�r�� �{�|�p���� search-bar-anim �{ div-�� �����y���{�p, �u���|�y �������u����) */
 .search-bar-anim {
-    animation: slideLeft 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.1) forwards;
+    animation: motion-slide-in var(--dur-base) var(--ease-spring) backwards;
 }
 .mobile-shell {
     width: 100%;

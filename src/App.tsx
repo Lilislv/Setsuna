@@ -9,7 +9,8 @@ import { emit, emitTo, listen, UnlistenFn } from '@tauri-apps/api/event';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import TextContainer from "./components/TextContainer";
-import { SearchBar, TopBar, MobileLayout } from './components/AppLayout';
+import { SearchBar, MobileLayout } from './components/AppLayout';
+import { TopBar } from './components/ReaderChrome';
 import YatsuWorkspace, { hideYatsuWorkspace } from "./components/YatsuWorkspace";
 import StatsPanel from "./components/StatsPanel";
 import SettingsModal, { AppSettings, WsConfig } from "./components/SettingsModal";
@@ -19,6 +20,11 @@ import LookupSurface from "./features/lookup/LookupSurface";
 import "./App.css";
 
 import { calculateStats } from "./utils/helpers";
+import { countLineStats, sumLineStats } from "./utils/textStats";
+import { recordDailyLine, recordDailySeconds } from "./utils/dailyStats";
+import { cachedGlyphScale, glyphScaleFor } from "./utils/fontNormalize";
+import { appendSpeedSample } from "./utils/speedSamples";
+import { loadTabHistory, markTabHistorySaved, mergeTabHistory, pruneTabHistories, saveChangedTabHistories, slimTabForWorkspace, tailTabForCache } from "./utils/tabHistory";
 import { IconBookTab, IconPin, IconPlayerTab, IconSearch } from "./components/Icons";
 import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, Tab, themes, PlayerMiningClip, ReadingSpeedSample } from "./utils/constants";
 import { getTranslator } from "./utils/i18n";
@@ -29,16 +35,14 @@ import HomeScreen from "./components/HomeScreen";
 import { YATSU_READER_AVAILABLE } from './utils/featureFlags';
 import PlayerSkeleton from "./components/PlayerSkeleton";
 import WorkspaceShell from "./components/WorkspaceShell";
-import releaseInfo from "./release-info.json";
+import { appVersionLabel } from "./utils/appVersion";
 import { contentFingerprint, createLatestTaskQueue } from './utils/runtimeMemory';
 import { selectActiveLookupResult } from './utils/lookupResults';
 import { loadCustomFont } from './utils/customFonts';
 import {
-    discordActivityTypeForMode,
     applyTabOrder,
     extractHookPayload,
-    formatDiscordMode,
-    formatDiscordStats,
+    buildDiscordActivity,
     normalizeIncomingHookText,
     trimRuntimeLine,
     normalizeJapaneseFontStack,
@@ -249,9 +253,24 @@ export default function App() {
             root.style.setProperty(name, value);
         });
 
-        root.style.setProperty('--txt-font-size', `${settings.fontSize || DEFAULT_SETTINGS.fontSize}px`);
-        root.style.setProperty('--txt-font-family', normalizeJapaneseFontStack(settings.fontFamily || DEFAULT_SETTINGS.fontFamily));
-        void loadCustomFont(settings);
+        const baseFontSize = settings.fontSize || DEFAULT_SETTINGS.fontSize;
+        const textFamily = normalizeJapaneseFontStack(settings.fontFamily || DEFAULT_SETTINGS.fontFamily);
+        // Apply the known visual-size factor right away; setting the raw size
+        // first made the text jump twice on every size change.
+        const knownScale = settings.normalizeFontSize === false
+            ? 1
+            : (cachedGlyphScale(textFamily, DEFAULT_SETTINGS.fontFamily) ?? 1);
+        root.style.setProperty('--txt-font-size', `${(baseFontSize * knownScale).toFixed(2)}px`);
+        root.style.setProperty('--txt-font-family', textFamily);
+        // Fonts draw kana/kanji at different sizes in the same em box; scale the
+        // text so the chosen font looks as large as the reference font.
+        let fontCancelled = false;
+        void (async () => {
+            await loadCustomFont(settings);
+            if (settings.normalizeFontSize === false) return;
+            const scale = await glyphScaleFor(textFamily, DEFAULT_SETTINGS.fontFamily);
+            if (!fontCancelled && scale !== 1) root.style.setProperty('--txt-font-size', `${(baseFontSize * scale).toFixed(2)}px`);
+        })();
 
         root.style.setProperty('--accent', activeTheme['--accent-blue']);
         root.style.setProperty('--accent-bg', themeName === 'light' ? 'rgba(0, 102, 204, 0.12)' : 'rgba(79, 166, 255, 0.14)');
@@ -266,7 +285,8 @@ export default function App() {
 
         root.dataset.theme = themeName;
         document.body.dataset.theme = themeName;
-    }, [settings.theme, settings.fontSize, settings.fontFamily, settings.customFontData, settings.customFontFamily, settings.customFontPath]);
+        return () => { fontCancelled = true; };
+    }, [settings.theme, settings.fontSize, settings.fontFamily, settings.customFontData, settings.customFontFamily, settings.customFontPath, settings.normalizeFontSize]);
 
     const [tabs, setTabs] = useState<Tab[]>(() => {
         const savedTabs = localStorage.getItem('txthk-tabs');
@@ -305,7 +325,6 @@ export default function App() {
     const nextTabId = useRef(Math.max(...tabs.map((t) => t.id), 0) + 1);
 
     const mainContentRef = useRef<HTMLElement>(null);
-    const discordSessionStartRef = useRef(Date.now());
     const discordLastPayloadRef = useRef("");
     const discordFailureCountRef = useRef(0);
     const discordDisabledUntilRef = useRef(0);
@@ -369,6 +388,7 @@ export default function App() {
     const tabOrderPersistKey = useMemo(() => JSON.stringify(tabs.map((tab) => tab.id)), [tabs]);
     const workspacePersistenceRef = useRef({
         tabs: runtimeTabs,
+        rawTabs: tabs,
         order: tabOrderPersistKey,
         activeTabId,
     });
@@ -379,6 +399,7 @@ export default function App() {
     ));
     workspacePersistenceRef.current = {
         tabs: runtimeTabs,
+        rawTabs: tabs,
         order: tabOrderPersistKey,
         activeTabId,
     };
@@ -390,49 +411,74 @@ export default function App() {
     const persistWorkspaceNow = useCallback(() => {
         if (!workspaceHydratedRef.current) return;
         const snapshot = workspacePersistenceRef.current;
-        const serializedTabs = JSON.stringify(snapshot.tabs);
+        // Full line histories go to one file per tab (only changed tabs are
+        // rewritten); the workspace file and the cache stay small.
+        void saveChangedTabHistories(snapshot.rawTabs);
+        const serializedTabs = JSON.stringify(snapshot.tabs.map(slimTabForWorkspace));
         const updatedAt = Date.now();
         try {
-            localStorage.setItem('txthk-tabs', serializedTabs);
+            localStorage.setItem('txthk-tabs', JSON.stringify(snapshot.tabs.map(tailTabForCache)));
             localStorage.setItem(TAB_ORDER_STORAGE_KEY, snapshot.order);
             localStorage.setItem('txthk-active-tab', snapshot.activeTabId.toString());
             localStorage.setItem(WORKSPACE_UPDATED_AT_STORAGE_KEY, updatedAt.toString());
         } catch (error) {
             console.warn('Failed to persist workspace', error);
         }
-        queueWorkspaceFileSave(`{"version":1,"updatedAt":${updatedAt},"activeTabId":${snapshot.activeTabId},"tabs":${serializedTabs}}`);
+        queueWorkspaceFileSave(`{"version":2,"updatedAt":${updatedAt},"activeTabId":${snapshot.activeTabId},"tabs":${serializedTabs}}`);
     }, [queueWorkspaceFileSave]);
 
     useEffect(() => {
         let disposed = false;
         let restoredFromFile = false;
         invoke<string | null>('load_workspace_state')
-            .then((content) => {
-                if (disposed || !content) return;
-                const parsed = JSON.parse(content) as {
-                    version?: number;
-                    updatedAt?: number;
-                    activeTabId?: number;
-                    tabs?: unknown;
-                };
-                if (parsed.version !== 1) return;
-                const localUpdatedAt = Number.parseInt(localStorage.getItem(WORKSPACE_UPDATED_AT_STORAGE_KEY) || '0', 10) || 0;
-                const fileUpdatedAt = Number(parsed.updatedAt) || 0;
-                if (localUpdatedAt > fileUpdatedAt) return;
+            .then(async (content) => {
+                if (disposed) return;
+                let fileTabs: Tab[] | null = null;
+                let fileActiveId: number | null = null;
+                if (content) {
+                    const parsed = JSON.parse(content) as {
+                        version?: number;
+                        updatedAt?: number;
+                        activeTabId?: number;
+                        tabs?: unknown;
+                    };
+                    const localUpdatedAt = Number.parseInt(localStorage.getItem(WORKSPACE_UPDATED_AT_STORAGE_KEY) || '0', 10) || 0;
+                    const fileUpdatedAt = Number(parsed.updatedAt) || 0;
+                    if ((parsed.version === 1 || parsed.version === 2) && localUpdatedAt <= fileUpdatedAt) {
+                        const restored = normalizeStoredTabs(parsed.tabs, t('tabs.defaultName'));
+                        if (restored.length > 0) {
+                            // Version 2 keeps lines in per-tab history files.
+                            fileTabs = parsed.version === 2 ? restored.map((tab) => ({ ...tab, historyTail: true })) : restored;
+                            fileActiveId = Number(parsed.activeTabId);
+                        }
+                    }
+                }
 
-                const restoredTabs = normalizeStoredTabs(parsed.tabs, t('tabs.defaultName'));
-                if (restoredTabs.length === 0) return;
-                const restoredActiveId = Number(parsed.activeTabId);
-                const nextActiveId = Number.isFinite(restoredActiveId)
-                    && restoredTabs.some((tab) => tab.id === restoredActiveId && !tab.archived)
-                    ? restoredActiveId
-                    : restoredTabs.find((tab) => !tab.archived)?.id ?? restoredTabs[0].id;
+                // Attach the full line history of every tab (falls back to what
+                // is already in memory for tabs that have no history file yet).
+                const baseTabs = fileTabs ?? tabsRef.current;
+                const merged = await Promise.all(baseTabs.map(async (tab) => {
+                    const history = await loadTabHistory(tab.id);
+                    const next = mergeTabHistory(tab, history);
+                    if (history && next.lines.length === history.lines.length) markTabHistorySaved(next);
+                    return next;
+                }));
+                if (disposed) return;
 
                 restoredFromFile = true;
-                setTabs(restoredTabs);
-                setActiveTabId(nextActiveId);
-                activeTabIdRef.current = nextActiveId;
-                nextTabId.current = Math.max(...restoredTabs.map((tab) => tab.id), 0) + 1;
+                setTabs(merged);
+                if (fileTabs) {
+                    const nextActiveId = fileActiveId != null && Number.isFinite(fileActiveId)
+                        && merged.some((tab) => tab.id === fileActiveId && !tab.archived)
+                        ? fileActiveId
+                        : merged.find((tab) => !tab.archived)?.id ?? merged[0].id;
+                    setActiveTabId(nextActiveId);
+                    activeTabIdRef.current = nextActiveId;
+                }
+                nextTabId.current = Math.max(...merged.map((tab) => tab.id), nextTabId.current - 1, 0) + 1;
+                void pruneTabHistories(merged);
+                // Persist once so legacy workspaces are split into history files.
+                window.setTimeout(persistWorkspaceNow, 0);
             })
             .catch((error) => {
                 console.warn('Failed to load file-backed workspace', error);
@@ -548,6 +594,7 @@ export default function App() {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
     const [lookupStack, setLookupStack] = useState<LookupData[]>([]);
+    const closeLookupStack = useCallback(() => setLookupStack([]), []);
     const sentenceLookupRequestRef = useRef(0);
     const [mobileLookupNotice, setMobileLookupNotice] = useState('');
     const [mobileSettingsRequest, setMobileSettingsRequest] = useState({ id: 0, section: 'reading' });
@@ -587,12 +634,52 @@ export default function App() {
 
     useEffect(() => {
         if (splashPhase !== 'leaving') return;
-        const timer = window.setTimeout(() => setSplashPhase('hidden'), 600);
+        const timer = window.setTimeout(() => setSplashPhase('hidden'), 720);
         return () => window.clearTimeout(timer);
     }, [splashPhase]);
 
     const activeTab = tabs.find((t) => t.id === activeTabId);
-    const activeTabForDisplay = activeTab && timerDisplayOffset > 0
+    const tabsRef = useRef(tabs);
+    tabsRef.current = tabs;
+
+    // Words and sentences are derived from the tab's lines with the native
+    // Japanese-aware counter, so edits, deletions and old tabs with heuristic
+    // counts all converge to the same numbers.
+    const activeTabLines = activeTab?.lines;
+    useEffect(() => {
+        if (!activeTabLines || activeTabId == null) return;
+        let cancelled = false;
+        const apply = () => {
+            const result = sumLineStats(activeTabLines);
+            if (result.missing.length > 0) return result.missing;
+            setTabs((prev) => prev.map((tab) => {
+                if (tab.id !== activeTabId || tab.lines !== activeTabLines) return tab;
+                // Tabs from builds that trimmed history keep their full character
+                // count but only part of the text; extrapolate words/sentences
+                // from the surviving lines instead of collapsing them.
+                const ratio = result.chars > 0 && tab.stats.chars > result.chars * 1.05 ? tab.stats.chars / result.chars : 1;
+                const words = Math.round(result.words * ratio);
+                const sentences = Math.round(result.sentences * ratio);
+                return tab.stats.words !== words || tab.stats.sentences !== sentences
+                    ? { ...tab, stats: { ...tab.stats, words, sentences } }
+                    : tab;
+            }));
+            return [];
+        };
+        const missing = apply();
+        if (missing.length === 0) return;
+        const timer = window.setTimeout(() => {
+            countLineStats(missing)
+                .then(() => { if (!cancelled) apply(); })
+                .catch(() => {});
+        }, 120);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+    }, [activeTabId, activeTabLines]);
+
+    const activeTabForDisplay =activeTab && timerDisplayOffset > 0
         ? { ...activeTab, stats: { ...activeTab.stats, time: activeTab.stats.time + timerDisplayOffset } }
         : activeTab;
     const textHookerTabs = useMemo(
@@ -620,13 +707,26 @@ export default function App() {
         return () => unlisten?.();
     }, []);
 
+    // Latest values for the presence loop, read when an update is sent.
+    const discordStateRef = useRef({ settings, activeTab, isPaused, isInTray });
+    discordStateRef.current = { settings, activeTab, isPaused, isInTray };
+    const discordTimerStartRef = useRef<{ tabId: number; startMs: number } | null>(null);
+    // Discord shows a timer on every "Playing" card; without a start time it
+    // counts from the last update and restarted on every new line. A stable
+    // start is always sent: reading time, time since pause, or app uptime.
+    const discordAppStartRef = useRef(Date.now());
+    const discordPausedAtRef = useRef<number | null>(null);
+    const discordLastSentAtRef = useRef(0);
+
     useEffect(() => {
         if (!isAppLoaded) return;
 
         const sendPresence = async () => {
             if (Date.now() < discordDisabledUntilRef.current) return;
+            const { settings: current, activeTab: tab, isPaused: paused, isInTray: inTray } = discordStateRef.current;
 
-            if (isInTray || !settings.discordEnabled || !settings.discordClientId?.trim() || !activeTab) {
+            if (inTray || !current.discordEnabled || !current.discordClientId?.trim() || !tab) {
+                discordTimerStartRef.current = null;
                 if (discordLastPayloadRef.current) {
                     discordLastPayloadRef.current = "";
                     await invoke("clear_discord_presence").catch(() => {});
@@ -634,33 +734,51 @@ export default function App() {
                 return;
             }
 
-            const modeText = formatDiscordMode(activeTab.mode, settings);
-            const tabName = settings.discordShowTab && activeTab.name ? `: ${activeTab.name}` : "";
-            const details = `${modeText}${tabName}`;
-            const stateBase = formatDiscordStats(activeTab, settings);
-            const state = isPaused && (settings.discordShowPaused ?? true)
-                ? `${formatDiscordStats(activeTab, settings)} / ${settings.appLanguage === "en" ? "Paused" : "Пауза"}`
-                : stateBase;
-            const smallImage = settings.discordSmallImage?.trim() || activeTab.mode || "";
+            const text = buildDiscordActivity(tab, current, paused);
+
+            // The timer shows the tab's reading time (as in the stats panel) and
+            // only runs while the reading timer runs. The start is fixed for a
+            // running stretch so the payload does not change every second.
+            let startTimestampMs: number;
+            if (paused) {
+                discordTimerStartRef.current = null;
+                if (discordPausedAtRef.current === null) discordPausedAtRef.current = Date.now();
+            } else {
+                discordPausedAtRef.current = null;
+            }
+            if (current.discordShowTimer === false) {
+                startTimestampMs = discordAppStartRef.current;
+            } else if (paused) {
+                startTimestampMs = discordPausedAtRef.current!;
+            } else {
+                const known = discordTimerStartRef.current;
+                if (!known || known.tabId !== tab.id) {
+                    discordTimerStartRef.current = { tabId: tab.id, startMs: Date.now() - (tab.stats?.time || 0) * 1000 };
+                }
+                startTimestampMs = discordTimerStartRef.current!.startMs;
+            }
+
             const payload = {
                 enabled: true,
-                clientId: settings.discordClientId.trim(),
-                details,
-                state,
-                activityType: discordActivityTypeForMode(activeTab.mode, settings),
-                startTimestampMs: settings.discordShowTimer ? discordSessionStartRef.current : null,
-                largeImage: settings.discordLargeImage || "",
+                clientId: current.discordClientId.trim(),
+                details: text.details,
+                state: text.state,
+                activityType: text.activityType,
+                startTimestampMs,
+                largeImage: current.discordLargeImage || "setsuna",
                 largeText: "Setsuna",
-                smallImage,
-                smallText: modeText,
-                buttonLabel: settings.discordShowButtons ? settings.discordButtonLabel : "",
-                buttonUrl: settings.discordShowButtons ? settings.discordButtonUrl : "",
-                secondButtonLabel: settings.discordShowButtons ? settings.discordSecondButtonLabel : "",
-                secondButtonUrl: settings.discordShowButtons ? settings.discordSecondButtonUrl : "",
+                smallImage: current.discordSmallImage?.trim() || "",
+                smallText: text.details,
+                statusDisplay: current.discordTitleInMemberList !== false ? "details" : "name",
+                buttonLabel: current.discordShowButtons ? current.discordButtonLabel : "",
+                buttonUrl: current.discordShowButtons ? current.discordButtonUrl : "",
+                secondButtonLabel: current.discordShowButtons ? current.discordSecondButtonLabel : "",
+                secondButtonUrl: current.discordShowButtons ? current.discordSecondButtonUrl : "",
             };
             const payloadKey = JSON.stringify(payload);
             if (payloadKey === discordLastPayloadRef.current) return;
             discordLastPayloadRef.current = payloadKey;
+            discordLastSentAtRef.current = Date.now();
             await invoke("update_discord_presence", { payload }).then(() => {
                 discordFailureCountRef.current = 0;
             }).catch((error) => {
@@ -674,7 +792,11 @@ export default function App() {
             });
         };
 
-        const initialTimer = window.setTimeout(sendPresence, 220);
+        // Discord accepts about one update per 15 s. Counters are refreshed on
+        // that cadence; switching tabs, pausing or changing settings is sent
+        // right away (but never twice within a few seconds).
+        const sinceLast = Date.now() - discordLastSentAtRef.current;
+        const initialTimer = window.setTimeout(sendPresence, Math.max(250, 4000 - sinceLast));
         const interval = window.setInterval(sendPresence, 15000);
         return () => {
             window.clearTimeout(initialTimer);
@@ -686,31 +808,19 @@ export default function App() {
         activeTab?.id,
         activeTab?.name,
         activeTab?.mode,
-        activeTab?.epub?.progress,
-        activeTab?.stats?.chars,
-        activeTab?.stats?.words,
-        activeTab?.stats?.sentences,
         isPaused,
         settings.discordEnabled,
         settings.discordClientId,
         settings.discordShowTab,
         settings.discordShowStats,
-        settings.discordShowChars,
-        settings.discordShowWords,
-        settings.discordShowSentences,
-        settings.discordShowProgress,
-        settings.discordShowPaused,
+        settings.discordShowSpeed,
         settings.discordShowTimer,
+        settings.discordTitleInMemberList,
         settings.discordShowButtons,
         settings.discordTextActivityType,
-        settings.discordTextStatus,
         settings.discordCustomTextStatus,
-        settings.discordLargeImage,
-        settings.discordSmallImage,
-        settings.discordButtonLabel,
-        settings.discordButtonUrl,
-        settings.discordSecondButtonLabel,
-        settings.discordSecondButtonUrl,
+        settings.speedMetric,
+        settings.speedTimeframe,
         settings.appLanguage,
     ]);
 
@@ -886,6 +996,36 @@ export default function App() {
         setIsCaptureSourcePickerOpen(true);
         refreshCaptureSources();
     }, [refreshCaptureSources]);
+
+    // Flow window visibility, kept in sync by the backend (it can also be
+    // closed from the Flow window itself).
+    const [flowOpen, setFlowOpen] = useState(false);
+    useEffect(() => {
+        if (isMobileLayout) return;
+        let unlisten: UnlistenFn | undefined;
+        invoke<boolean>("is_jl_mode_window_open").then(setFlowOpen).catch(() => {});
+        listen<boolean>("setsuna://flow-visibility", (event) => setFlowOpen(Boolean(event.payload)))
+            .then((stop) => { unlisten = stop; })
+            .catch(() => {});
+        return () => unlisten?.();
+    }, [isMobileLayout]);
+
+    // The Flow window shows the same stats as the panel: send them while it is open.
+    const flowStatsTime = activeTabForDisplay?.stats.time ?? 0;
+    useEffect(() => {
+        if (!flowOpen || !activeTabForDisplay) return;
+        const stats = activeTabForDisplay.stats;
+        emitTo('jl_mode', 'flow_stats', {
+            tabName: activeTabForDisplay.name || '',
+            chars: stats.chars,
+            words: stats.words,
+            sentences: stats.sentences,
+            time: stats.time,
+            running: !isPaused,
+            speedMetric: settings.speedMetric || 'chars',
+            speedTimeframe: settings.speedTimeframe || 'hour',
+        }).catch(() => {});
+    }, [flowOpen, activeTabForDisplay?.id, activeTabForDisplay?.name, activeTabForDisplay?.stats.chars, flowStatsTime, isPaused, settings.speedMetric, settings.speedTimeframe]);
 
     const openJlModeWindow = useCallback(() => {
         const getLastJlLine = () => {
@@ -1615,22 +1755,20 @@ export default function App() {
         let lastNativeSeconds = nativeTimer?.elapsedSeconds ?? 0;
         const commitElapsed = (seconds: number) => {
             if (seconds <= 0) return;
+            recordDailySeconds(activeTabId, seconds);
             setTabs((prev) =>
                 prev.map((t) => {
                     if (t.id !== activeTabId) return t;
                     const nextStats = { ...t.stats, time: t.stats.time + seconds };
                     const crossedSampleBoundary = Math.floor(nextStats.time / 15) > Math.floor(t.stats.time / 15);
                     const speedSamples = crossedSampleBoundary
-                        ? [
-                              ...((t.speedSamples || []).slice(-239)),
-                              {
-                                  at: Date.now(),
-                                  chars: nextStats.chars,
-                                  words: nextStats.words,
-                                  sentences: nextStats.sentences,
-                                  time: nextStats.time,
-                              } satisfies ReadingSpeedSample,
-                          ]
+                        ? appendSpeedSample(t.speedSamples || [], {
+                              at: Date.now(),
+                              chars: nextStats.chars,
+                              words: nextStats.words,
+                              sentences: nextStats.sentences,
+                              time: nextStats.time,
+                          } satisfies ReadingSpeedSample)
                         : t.speedSamples;
                     return { ...t, stats: nextStats, speedSamples };
                 })
@@ -1763,6 +1901,12 @@ export default function App() {
 
         const newStats = calculateStats(cleanText, settings.appLanguage);
         const currentTabId = activeTabIdRef.current;
+        {
+            const currentTab = tabsRef.current.find((tab) => tab.id === currentTabId);
+            const lastLine = currentTab?.lines[currentTab.lines.length - 1];
+            const isDuplicate = settings.ignoreDuplicates && lastLine !== undefined && removeGarbageTags(lastLine).trim() === cleanText;
+            if (currentTab && !isDuplicate) recordDailyLine(currentTabId, cleanText, newStats.chars);
+        }
 
         setTabs((prev) =>
             prev.map((t) => {
@@ -1781,6 +1925,7 @@ export default function App() {
                     }
 
                     const nextLines = [...t.lines, cleanText];
+                    const nextLineCount = t.historyTail ? (t.lineCount || t.lines.length) + 1 : undefined;
                     const previousFurigana = Array.isArray(t.lineFurigana)
                         ? t.lineFurigana
                         : t.lines.map(() => null);
@@ -1789,6 +1934,7 @@ export default function App() {
                         ...t,
                         lines: nextLines,
                         lineFurigana: nextFurigana,
+                        ...(nextLineCount !== undefined ? { lineCount: nextLineCount } : {}),
                         stats: {
                             chars: t.stats.chars + newStats.chars,
                             words: t.stats.words + newStats.words,
@@ -2697,7 +2843,7 @@ export default function App() {
         }).catch(() => {});
     }, []);
 
-    const runSentenceTokenLookup = useCallback(async (word: string, sentence: string, cursor?: number) => {
+    const runSentenceTokenLookup = useCallback(async (word: string, sentence: string, cursor?: number, _boundaries?: number[], lemma?: string) => {
         const requestedWord = normalizeLookupText(word);
         if (!requestedWord) return null;
         const requestId = ++sentenceLookupRequestRef.current;
@@ -2718,14 +2864,17 @@ export default function App() {
             // so a tokenizer hint such as 可愛 can still resolve 可愛がりたい -> 可愛がる.
             if (Number.isFinite(cursor) && sentence) {
                 try {
-                    const rawResult = await invoke<{
+                    type ScanResult = {
                         entries: DictEntry[];
                         start?: number;
                         end?: number;
                         match_start?: number;
                         match_len?: number;
                         word: string;
-                    } | null>('scan_cursor', { sentence, cursor });
+                    } | null;
+                    const rawResult = await invoke<ScanResult>('scan_cursor', { sentence, cursor });
+                    // Word boundaries (いた|いた, 春花|の) are handled by the
+                    // backend scan itself, for every lookup surface.
                     const result = selectActiveLookupResult(rawResult, sentence, settings);
                     if (result) {
                         if (requestId !== sentenceLookupRequestRef.current) return null;
@@ -2757,7 +2906,17 @@ export default function App() {
                 }
             }
 
-            const entries = localEntries;
+            let entries = localEntries;
+            // The analyzer knows which word the tap is (いた -> verb いる), while
+            // the dictionary ranks exact kana matches first (いた -> 板). When the
+            // match is exactly the tapped word, entries for its lemma go first.
+            const tappedLength = Array.from(normalizeLookupText(word)).length;
+            if (lemma && lemma !== resolvedWord && match.start === cursor && match.length === tappedLength) {
+                const forLemma = (entry: DictEntry) => entry.term === lemma || entry.reading === lemma;
+                if (entries.some(forLemma)) {
+                    entries = [...entries.filter(forLemma), ...entries.filter((entry) => !forLemma(entry))];
+                }
+            }
             if (requestId !== sentenceLookupRequestRef.current) return null;
             if (entries.length === 0) {
                 setLookupStack([]);
@@ -2773,6 +2932,7 @@ export default function App() {
                 entries,
                 word: resolvedWord,
                 sentence: sentence || resolvedWord,
+                match: sentence ? match : undefined,
             }]);
             return match;
         } catch (error) {
@@ -2915,6 +3075,7 @@ export default function App() {
 
             {updateDialog && (
                 <div
+                    className="modal-overlay"
                     onClick={() => (updateDialog.kind !== 'available' || !updateDialog.busy) && setUpdateDialog(null)}
                     style={{
                         position: 'fixed',
@@ -2928,6 +3089,7 @@ export default function App() {
                     }}
                 >
                     <div
+                        className="app-sheet"
                         onClick={(e) => e.stopPropagation()}
                         style={{
                             width: 'min(420px, 92vw)',
@@ -2979,8 +3141,8 @@ export default function App() {
                                 {!updateDialog.busy && (
                                     <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 12 }}>
                                         {settings.appLanguage === 'en'
-                                            ? `Installed: ${releaseInfo.displayVersion}`
-                                            : `Установлено: ${releaseInfo.displayVersion}`}
+                                            ? `Installed: ${appVersionLabel()}`
+                                            : `Установлено: ${appVersionLabel()}`}
                                     </div>
                                 )}
                             </>
@@ -3002,6 +3164,7 @@ export default function App() {
 
             {isCaptureSourcePickerOpen && (
                 <div
+                    className="modal-overlay"
                     onClick={() => setIsCaptureSourcePickerOpen(false)}
                     style={{
                         position: 'fixed',
@@ -3015,6 +3178,7 @@ export default function App() {
                     }}
                 >
                     <div
+                        className="app-sheet"
                         onClick={(e) => e.stopPropagation()}
                         style={{
                             width: 'min(760px, 96vw)',
@@ -3350,9 +3514,17 @@ export default function App() {
                     activeTab={activeTab}
                     openCaptureSourcePicker={openCaptureSourcePicker}
                     openJlModeWindow={openJlModeWindow}
+                    flowOpen={flowOpen}
+                    toggleFlow={() => {
+                        if (flowOpen) invoke("close_jl_mode_window").catch(() => {});
+                        else openJlModeWindow();
+                    }}
                     clearAll={clearAll}
                     openHome={() => setActiveWorkspace("hub")}
                     openSettings={() => openSettingsPanel()}
+                    lookupOpen={lookupStack.length > 0}
+                    closeLookup={closeLookupStack}
+                    escMenuBlocked={isSearchOpen || isSettingsOpen || isCaptureSourcePickerOpen || Boolean(updateDialog)}
                 />
 
                 <main ref={mainContentRef} className="main-content" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
@@ -3383,6 +3555,8 @@ export default function App() {
                     speedTimeframe={settings.speedTimeframe}
                     language={settings.appLanguage}
                     textOrientation={settings.textOrientation}
+                    tabId={activeTab?.id ?? null}
+                    tabName={activeTab?.name || ''}
                 />
                 </>
                 )}
@@ -3430,6 +3604,7 @@ export default function App() {
                                 ? (activeTab?.ankiDeck || settings.ankiDeck)
                                 : settings.ankiDeck}
                         onClose={() => setLookupStack([])}
+                        onSentenceLookup={isMobileLayout ? runSentenceTokenLookup : undefined}
                     />
                 )}
             </div>

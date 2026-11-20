@@ -1,0 +1,144 @@
+/*
+ * Setsuna design layer. Surfaces, hairlines and radii are derived from the
+ * active theme variables (dark / light / amoled), so one set of rules works in
+ * every theme. Components and panels should use these tokens rather than raw
+ * --bg-* / --border-* values.
+ */
+:root {
+    --surface-0: var(--bg-main);
+    --surface-1: color-mix(in srgb, var(--text-main) 4%, var(--bg-panel));
+    --surface-2: color-mix(in srgb, var(--text-main) 7%, var(--bg-panel));
+    --surface-glass: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+    --line: color-mix(in srgb, var(--text-main) 9%, transparent);
+    --line-strong: color-mix(in srgb, var(--text-main) 16%, transparent);
+    --accent-soft: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    --accent-line: color-mix(in srgb, var(--accent-blue) 45%, transparent);
+    --danger: #e5645f;
+    --danger-soft: rgba(229, 100, 95, 0.12);
+    --radius-sm: 8px;
+    --radius: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 24px;
+    --shadow-float: 0 30px 80px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.18);
+    --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 35%, transparent);
+}
+
+/* ---- Secondary button (neutral filled) ---- */
+.btn-secondary {
+    min-height: 38px;
+    padding: 0 16px;
+    border: 0;
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--text-main);
+    font-family: var(--font-stack);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 160ms ease, scale var(--dur-press, 140ms) var(--ease-spring, ease);
+}
+
+.btn-secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--text-main) 12%, var(--bg-panel)); }
+.btn-secondary:active:not(:disabled) { scale: 0.95; }
+.btn-secondary:disabled { opacity: 0.45; cursor: default; }
+
+/* ---- Checkbox: rounded square with a spring check ---- */
+input[type="checkbox"]:not(.native-checkbox) {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    display: inline-grid;
+    place-content: center;
+    border: 1.5px solid var(--line-strong);
+    border-radius: 6px;
+    background: var(--surface-1);
+    cursor: pointer;
+    transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, scale var(--dur-press, 140ms) var(--ease-spring, ease);
+}
+
+input[type="checkbox"]:not(.native-checkbox)::before {
+    content: "";
+    width: 10px;
+    height: 10px;
+    background: #fff;
+    clip-path: polygon(14% 44%, 0 59%, 40% 100%, 100% 22%, 86% 8%, 40% 70%);
+    scale: 0;
+    transition: scale var(--dur-base, 300ms) var(--ease-spring, ease);
+}
+
+input[type="checkbox"]:not(.native-checkbox):checked {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+}
+
+input[type="checkbox"]:not(.native-checkbox):checked::before { scale: 1; }
+input[type="checkbox"]:not(.native-checkbox):hover { border-color: var(--accent-line); }
+input[type="checkbox"]:not(.native-checkbox):active { scale: 0.88; }
+input[type="checkbox"]:not(.native-checkbox):focus-visible { outline: none; box-shadow: var(--focus-ring); }
+input[type="checkbox"]:not(.native-checkbox):disabled { opacity: 0.45; cursor: default; }
+
+/* ---- Range slider: slim track, round thumb ---- */
+input[type="range"] {
+    appearance: none;
+    -webkit-appearance: none;
+    height: 22px;
+    background: transparent;
+    cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 4px;
+    background: var(--line-strong);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -7px;
+    border-radius: 50%;
+    border: 0;
+    background: #fff;
+    box-shadow: 0 0 0 4px var(--accent-blue), 0 2px 8px rgba(0, 0, 0, 0.35);
+    transition: scale var(--dur-press, 140ms) var(--ease-spring, ease);
+}
+
+input[type="range"]:active::-webkit-slider-thumb { scale: 1.15; }
+input[type="range"]:focus-visible { outline: none; }
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--accent-blue), var(--focus-ring); }
+
+input[type="range"]::-moz-range-track { height: 4px; border-radius: 4px; background: var(--line-strong); }
+input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 0 0 4px var(--accent-blue); }
+
+/* ---- Scrollbars: hidden until scrolled or approached (utils/autoScrollbars.ts) ---- */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+}
+
+.is-scrolling {
+    scrollbar-color: var(--line-strong) transparent;
+}
+
+.is-near-scrollbar {
+    scrollbar-color: color-mix(in srgb, var(--text-main) 32%, transparent) transparent;
+}
+
+/* Fallback for engines that only support the WebKit pseudo-elements. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 10px;
+    background: transparent;
+    background-clip: padding-box;
+}
+
+.is-scrolling::-webkit-scrollbar-thumb { background-color: var(--line-strong); }
+.is-near-scrollbar::-webkit-scrollbar-thumb { background-color: color-mix(in srgb, var(--text-main) 32%, transparent); }

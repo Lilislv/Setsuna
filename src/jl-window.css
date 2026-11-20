@@ -1,3 +1,4 @@
+/* Setsuna Flow — the floating line window over a game. */
 :root {
   color-scheme: dark;
   --jl-bg-rgb: 5, 5, 5;
@@ -7,79 +8,47 @@
   --jl-font: "Noto Serif JP", "Yu Mincho", "Meiryo", serif;
   --jl-font-size: 42px;
   --jl-padding: 18px;
+  --flow-ui: "Segoe UI", system-ui, sans-serif;
+  --flow-accent: #4fa6ff;
+  --flow-chip: rgba(255, 255, 255, 0.07);
+  --flow-chip-hover: rgba(255, 255, 255, 0.13);
+  --flow-line: rgba(255, 255, 255, 0.1);
 }
 
 * { box-sizing: border-box; letter-spacing: 0; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
 button { font: inherit; }
 
-.jl-shell {
+/* The window is the card plus a transparent strip above it; the control bar
+   appears in that strip on hover, so it never covers the text. */
+.flow-shell {
+  --flow-strip: 46px;
   position: fixed;
   inset: 0;
   overflow: hidden;
   color: var(--jl-text);
-  background: rgba(var(--jl-bg-rgb), var(--jl-opacity));
-  border: 1px solid var(--jl-border);
-  border-radius: 6px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.42);
+  background: transparent;
 }
 
-.jl-titlebar {
+.flow-card {
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 34px;
-  display: grid;
-  grid-template-columns: auto minmax(28px, 1fr) auto;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 7px 0 10px;
-  background: transparent;
-  border-bottom: 1px solid transparent;
-  cursor: move;
-  user-select: none;
-  z-index: 4;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  inset: var(--flow-strip) 0 0 0;
+  overflow: hidden;
+  background: rgba(var(--jl-bg-rgb), var(--jl-opacity));
+  border: 1px solid color-mix(in srgb, var(--jl-border) 55%, transparent);
+  border-radius: 14px;
+  transition: border-color 200ms ease;
 }
 
-.jl-titlebar:hover { background: rgba(0, 0, 0, 0.42); border-bottom-color: rgba(255, 255, 255, 0.1); }
-.jl-titlebar > * { opacity: 0; transform: translateY(-3px); transition: opacity 120ms ease, transform 120ms ease; }
-.jl-titlebar:hover > * { opacity: 1; transform: translateY(0); }
-.jl-identity { height: 100%; display: flex; align-items: center; gap: 8px; min-width: 0; font-family: "Segoe UI", sans-serif; cursor: move; }
-.jl-identity > * { pointer-events: none; }
-.jl-drag-handle { align-self: stretch; min-width: 28px; cursor: move; }
-.jl-mark { color: #4fa6ff; font-size: 12px; font-weight: 800; }
-.jl-counter { color: rgba(255, 255, 255, 0.58); font-size: 11px; font-variant-numeric: tabular-nums; }
-.jl-frozen { color: #f0bf5a; font-size: 11px; font-weight: 650; }
+.flow-shell:hover .flow-card { border-color: color-mix(in srgb, var(--jl-border) 90%, transparent); }
+.flow-shell.is-history .flow-card { border-color: rgba(240, 191, 90, 0.45); }
+.flow-shell.no-controls { --flow-strip: 0px; }
 
-.jl-controls { display: flex; align-items: center; gap: 5px; pointer-events: none; }
-.jl-titlebar:hover .jl-controls { pointer-events: auto; }
-.jl-control-group { display: inline-flex; align-items: center; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 5px; overflow: hidden; }
-.jl-control-group button { border-radius: 0; }
-.jl-control-group button + button { border-left-color: rgba(255, 255, 255, 0.1); }
-.jl-controls button {
-  min-width: 27px;
-  height: 25px;
-  padding: 0 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(255, 255, 255, 0.78);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  font: 600 12px/1 "Segoe UI", sans-serif;
-  cursor: pointer;
-}
-.jl-controls .jl-timer-button { gap: 5px; min-width: 68px; padding: 0 9px; color: #8cdd96; border-color: rgba(76, 175, 80, 0.35); background: rgba(76, 175, 80, 0.1); }
-.jl-controls .jl-timer-button.active { color: #ffd071; border-color: rgba(240, 191, 90, 0.42); background: rgba(240, 191, 90, 0.12); }
-.jl-controls button:hover:not(:disabled), .jl-controls button.active { color: #fff; border-color: rgba(79, 166, 255, 0.42); background: rgba(79, 166, 255, 0.14); }
-.jl-controls button.danger:hover { color: #ff7777; border-color: rgba(255, 80, 80, 0.45); background: rgba(255, 80, 80, 0.12); }
-.jl-controls button:disabled { opacity: 0.28; cursor: default; }
-
-.jl-text {
+/* ---- The line ---- */
+.flow-text {
   position: absolute;
   inset: 0;
-  padding: var(--jl-padding);
+  padding: var(--jl-padding) calc(var(--jl-padding) + 4px);
   overflow: auto;
   color: var(--jl-text);
   font-family: var(--jl-font);
@@ -92,43 +61,231 @@ button { font: inherit; }
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.92);
   user-select: text;
   cursor: text;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  animation: flow-line-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
-.jl-text.empty { color: rgba(255, 255, 255, 0.52); font: 500 17px/1.5 "Segoe UI", sans-serif; }
-.jl-text::selection { color: #fff; background: #287fd0; }
 
-.jl-appearance {
+.flow-text::-webkit-scrollbar { display: none; }
+.flow-text.empty { color: rgba(255, 255, 255, 0.5); font: 500 16px/1.5 var(--flow-ui); text-shadow: none; }
+.flow-text::selection { color: #fff; background: #287fd0; }
+.flow-shell.is-history .flow-text { color: color-mix(in srgb, var(--jl-text) 82%, #f0bf5a); }
+
+@keyframes flow-line-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---- Corner status, visible while the bar is hidden ---- */
+.flow-status {
   position: absolute;
-  top: 35px;
-  right: 8px;
-  z-index: 15;
-  width: min(240px, calc(100% - 16px));
-  padding: 10px 12px 12px;
-  color: rgba(255, 255, 255, 0.88);
-  background: rgba(18, 18, 18, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 6px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.46);
-  font: 600 12px/1.3 "Segoe UI", sans-serif;
-}
-
-.jl-appearance-label {
+  right: 12px;
+  bottom: 9px;
+  z-index: 3;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.55);
+  font: 600 11.5px/1 var(--flow-ui);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  transition: opacity 160ms ease;
 }
 
-.jl-appearance-label strong { color: #6cb5ff; font-variant-numeric: tabular-nums; }
-.jl-appearance input { display: block; width: 100%; margin: 0; accent-color: #4fa6ff; }
+.flow-status-history { color: #f0bf5a; }
+.flow-status-timer { display: inline-flex; align-items: center; gap: 6px; }
+.flow-status-timer i { width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, 0.35); }
+.flow-status-timer.is-running i { background: #5ccf75; box-shadow: 0 0 0 3px rgba(92, 207, 117, 0.18); }
 
+/* ---- "Back to the newest line" ---- */
+.flow-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid rgba(240, 191, 90, 0.45);
+  border-radius: 999px;
+  background: rgba(30, 24, 12, 0.92);
+  color: #f6cf7d;
+  font: 600 12.5px/1 var(--flow-ui);
+  cursor: pointer;
+  translate: -50% 0;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  animation: flow-pop 260ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+
+.flow-latest:hover { background: rgba(48, 36, 14, 0.96); color: #ffe0a0; }
+
+@keyframes flow-pop {
+  from { opacity: 0; scale: 0.9; }
+  to { opacity: 1; scale: 1; }
+}
+
+/* ---- Control bar: slides up from the bottom while the pointer is over Flow ---- */
+.flow-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 6px;
+  border: 1px solid var(--flow-line);
+  border-radius: 12px;
+  background: rgba(16, 17, 20, 0.9);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  font: 600 12.5px/1 var(--flow-ui);
+  color: rgba(255, 255, 255, 0.86);
+  cursor: move;
+  user-select: none;
+  opacity: 0;
+  translate: 0 8px;
+  pointer-events: none;
+  transition: opacity 160ms ease, translate 220ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+
+.flow-shell.is-bar .flow-bar { opacity: 1; translate: 0 0; pointer-events: auto; }
+
+/* Hover zone that brings the bar up: the strip above the card and the card's
+   very top edge. A small grip hints that the bar lives there. */
+.flow-bar-zone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: calc(var(--flow-strip) + 16px);
+  z-index: 4;
+}
+
+.flow-bar-grip {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--flow-strip) + 5px);
+  width: 46px;
+  height: 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.22);
+  translate: -50% 0;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.flow-shell:hover .flow-bar-grip { opacity: 1; }
+.flow-shell.is-bar .flow-bar-grip { opacity: 0; }
+
+.flow-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--flow-chip);
+}
+
+.flow-bar button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.82);
+  font: 600 12.5px/1 var(--flow-ui);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.flow-bar button svg { width: 14px; height: 14px; }
+.flow-bar button:hover:not(:disabled) { background: var(--flow-chip-hover); color: #fff; }
+.flow-bar button.active { background: rgba(79, 166, 255, 0.22); color: #9ccdff; }
+.flow-bar button.danger:hover { background: rgba(255, 80, 80, 0.18); color: #ff8a8a; }
+.flow-bar button:disabled { opacity: 0.3; cursor: default; }
+
+.flow-counter {
+  min-width: 58px;
+  padding: 0 4px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11.5px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-bar .flow-timer {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 9px;
+  background: var(--flow-chip);
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-bar .flow-timer span { font-size: 10px; }
+.flow-bar .flow-timer.is-running { background: rgba(92, 207, 117, 0.16); color: #8fe3a2; }
+
+.flow-stats {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-stats b { color: var(--flow-accent); font-weight: 600; }
+.flow-spacer { flex: 1; align-self: stretch; }
+
+/* Narrow Flow windows: keep the essentials. */
+@media (max-width: 620px) {
+  .flow-stats, .flow-counter { display: none; }
+}
+@media (max-width: 460px) {
+  .flow-bar .flow-group:nth-last-child(2) { display: none; }
+}
+
+/* ---- Opacity popover ---- */
+.flow-appearance {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  z-index: 15;
+  width: min(240px, calc(100% - 20px));
+  padding: 10px 12px 12px;
+  color: rgba(255, 255, 255, 0.88);
+  background: rgba(18, 18, 20, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.46);
+  font: 600 12px/1.3 var(--flow-ui);
+}
+
+.flow-appearance-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.flow-appearance-label strong { color: #6cb5ff; font-variant-numeric: tabular-nums; }
+.flow-appearance input { display: block; width: 100%; margin: 0; accent-color: #4fa6ff; }
+
+/* ---- Resize edges ---- */
 .jl-resize { position: absolute; z-index: 12; }
-.jl-resize.north { top: 0; left: 10px; right: 10px; height: 5px; cursor: n-resize; }
-.jl-resize.east { top: 10px; right: 0; bottom: 10px; width: 5px; cursor: e-resize; }
-.jl-resize.south { left: 10px; right: 10px; bottom: 0; height: 5px; cursor: s-resize; }
-.jl-resize.west { top: 10px; left: 0; bottom: 10px; width: 5px; cursor: w-resize; }
-.jl-resize.northwest, .jl-resize.northeast, .jl-resize.southwest, .jl-resize.southeast { width: 10px; height: 10px; }
+.jl-resize.north { top: 0; left: 12px; right: 12px; height: 5px; cursor: n-resize; }
+.jl-resize.east { top: 12px; right: 0; bottom: 12px; width: 5px; cursor: e-resize; }
+.jl-resize.south { left: 12px; right: 12px; bottom: 0; height: 5px; cursor: s-resize; }
+.jl-resize.west { top: 12px; left: 0; bottom: 12px; width: 5px; cursor: w-resize; }
+.jl-resize.northwest, .jl-resize.northeast, .jl-resize.southwest, .jl-resize.southeast { width: 12px; height: 12px; }
 .jl-resize.northwest { top: 0; left: 0; cursor: nw-resize; }
 .jl-resize.northeast { top: 0; right: 0; cursor: ne-resize; }
 .jl-resize.southwest { bottom: 0; left: 0; cursor: sw-resize; }
 .jl-resize.southeast { right: 0; bottom: 0; cursor: se-resize; }
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-text, .flow-latest { animation: none; }
+  .flow-bar { transition: opacity 120ms linear; translate: none; }
+}

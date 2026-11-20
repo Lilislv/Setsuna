@@ -1,0 +1,154 @@
+/*
+ * Shared motion language (ColorOS-like): fluid deceleration for things that
+ * leave, a soft spring with a small overshoot for things that arrive, and a
+ * firm spring for press feedback. Components read these tokens instead of
+ * hard-coding curves so every transition in the app feels the same.
+ */
+:root {
+    --ease-fluid: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+    --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+    --ease-spring-soft: cubic-bezier(0.3, 1.18, 0.5, 1);
+    --dur-press: 140ms;
+    --dur-fast: 200ms;
+    --dur-base: 340ms;
+    --dur-slow: 520ms;
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+    :root {
+        /* Damped springs sampled into linear(): ζ≈0.62 (bouncy) and ζ≈0.82 (soft). */
+        --ease-spring: linear(0, 0.0447, 0.1548, 0.2997, 0.4558, 0.6064, 0.7406, 0.8527, 0.9403, 1.0043, 1.047, 1.0717, 1.0823, 1.0826, 1.0758, 1.0649, 1.0522, 1.0392, 1.0272, 1.0169, 1.0085, 1.0021, 0.9977, 0.9949, 0.9935, 0.993, 0.9933, 0.9941, 0.9951, 0.9962, 1);
+        --ease-spring-soft: linear(0, 0.0505, 0.1666, 0.3089, 0.4528, 0.5843, 0.6968, 0.7881, 0.8591, 0.9121, 0.95, 0.976, 0.9929, 1.003, 1.0085, 1.0107, 1.011, 1.0102, 1.0088, 1.0072, 1.0056, 1.0042, 1.003, 1.0021, 1);
+    }
+}
+
+@keyframes motion-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes motion-pop-in {
+    from { opacity: 0; transform: scale(0.9) translateY(14px); }
+    to { opacity: 1; transform: none; }
+}
+
+@keyframes motion-rise-in {
+    from { opacity: 0; transform: translateY(16px) scale(0.97); }
+    to { opacity: 1; transform: none; }
+}
+
+@keyframes motion-enter {
+    from { opacity: 0; translate: 0 16px; scale: 0.97; }
+    to { opacity: 1; translate: 0 0; scale: 1; }
+}
+
+@keyframes motion-popover-in {
+    from { opacity: 0; transform: scale(0.92); }
+    to { opacity: 1; transform: none; }
+}
+
+@keyframes motion-slide-in {
+    from { opacity: 0; transform: translateX(24px); }
+    to { opacity: 1; transform: none; }
+}
+
+/* Press feedback uses the individual `scale` property so it never fights a
+   component's own `transform` (drag offsets, jelly deformation, layout). */
+.motion-press,
+.btn-primary,
+.modal-btn,
+.app-menu-tile,
+.app-menu-source,
+.app-menu-footer-actions button,
+.app-menu-icon-button,
+.app-menu-close,
+.home-mode,
+.settings-nav-item {
+    transition-property: scale, background-color, border-color, color, box-shadow, opacity;
+    transition-duration: var(--dur-press), 160ms, 160ms, 160ms, 200ms, 160ms;
+    transition-timing-function: var(--ease-spring), ease, ease, ease, ease, ease;
+}
+
+.motion-press:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.modal-btn:active:not(:disabled),
+.app-menu-tile:active,
+.app-menu-source:active,
+.app-menu-footer-actions button:active,
+.app-menu-icon-button:active,
+.app-menu-close:active,
+.settings-nav-item:active {
+    scale: 0.95;
+}
+
+.home-mode:not(:disabled):active { scale: 0.97; }
+
+/* Lookup popups grow out of the word they belong to, then glide to the next
+   word while the article inside cross-fades. */
+.dict-popup:not(.dict-mobile-sheet) {
+    animation: motion-popover-in var(--dur-base) var(--ease-spring-soft) both;
+    transform-origin: top left;
+    transition:
+        left 300ms var(--ease-fluid),
+        top 300ms var(--ease-fluid),
+        bottom 300ms var(--ease-fluid),
+        max-height 300ms var(--ease-fluid),
+        background-color 0.3s,
+        border-color 0.3s,
+        color 0.3s;
+}
+
+.dict-popup.is-leaving {
+    pointer-events: none;
+    animation: motion-popover-out 160ms var(--ease-exit) forwards;
+}
+
+.dict-popup.dict-mobile-sheet.is-leaving {
+    animation: motion-sheet-down 200ms var(--ease-exit) forwards;
+}
+
+.dict-mobile-scrim.is-leaving {
+    animation: motion-fade-out 200ms var(--ease-exit) forwards;
+}
+
+@keyframes motion-popover-out {
+    from { opacity: 1; transform: none; }
+    to { opacity: 0; transform: scale(0.95) translateY(4px); }
+}
+
+@keyframes motion-sheet-down {
+    from { transform: translateY(0); }
+    to { transform: translateY(100%); }
+}
+
+@keyframes motion-fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+.dict-popup-content {
+    animation: dict-content-in 260ms var(--ease-fluid) both;
+}
+
+@keyframes dict-content-in {
+    from { opacity: 0; translate: 0 6px; filter: blur(2px); }
+    to { opacity: 1; translate: 0 0; filter: blur(0); }
+}
+
+.jelly-target {
+    transform: var(--jelly-transform, none);
+    will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --dur-press: 1ms;
+        --dur-fast: 1ms;
+        --dur-base: 1ms;
+        --dur-slow: 1ms;
+    }
+
+    .dict-popup:not(.dict-mobile-sheet) { animation: none; transition: none; }
+    .dict-popup-content { animation: none; }
+}

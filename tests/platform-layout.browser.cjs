@@ -47,14 +47,14 @@ const {readFileSync} = require('node:fs');
             await page.addStyleTag({content: readFileSync('src/App.css', 'utf8').replace(/^@import.*$/m, '')});
             await page.addScriptTag({content: bundle.outputFiles[0].text});
             await page.locator('.home-mode-text').click();
-            await page.locator(mobile ? '.mobile-shell' : '.top-bar').waitFor();
+            await page.locator(mobile ? '.mobile-shell' : '.main-content').waitFor();
             await page.evaluate(() => window.openLookup());
             await page.locator('.dict-popup').waitFor();
             for (const width of [1280, 640, 480, 900, 1280]) {
                 await page.setViewportSize({width, height: 800});
                 await page.waitForTimeout(100);
                 assert.equal(await page.locator('.mobile-shell').count(), mobile ? 1 : 0, 'shell at ' + width);
-                assert.equal(await page.locator('.top-bar').count(), mobile ? 0 : 1, 'toolbar at ' + width);
+                assert.equal(await page.locator('.main-content').count(), mobile ? 0 : 1, 'toolbar at ' + width);
                 assert.equal(await page.locator('.dict-mobile-sheet').count(), mobile ? 1 : 0, 'popup at ' + width);
                 assert.equal(await page.locator('.dict-mobile-scrim').count(), mobile ? 1 : 0);
                 if (width === 640) await page.screenshot({path: 'output/platform-' + (mobile ? 'android' : 'desktop') + '-narrow.png'});

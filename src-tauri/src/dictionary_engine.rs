@@ -369,12 +369,19 @@ pub(crate) async fn get_installed_dicts(app: tauri::AppHandle) -> Result<Vec<Str
     // Older builds could leave one row per dated revision. Clean those rows
     // before exposing dictionary names to the frontend.
     dictionary_import::cleanup_stale_dictionary_revisions(&mut db)?;
-    // Dictionary imports already record their title in dictionary_meta. Reading
-    // every metadata table here made the UI scan large frequency/pitch tables a
-    // second time immediately after an import, which looked like a frozen or
-    // crashed import dialog. Keep one fallback over entries for legacy DBs.
+    // Dictionary imports record their title in dictionary_meta; entries covers
+    // legacy databases. Frequency/pitch-only dictionaries (JPDB, Jiten, …) have
+    // neither, so they never showed up in the list and could not be turned off
+    // or deleted. The name indexes keep those lookups to an index walk.
+    crate::core::database::ensure_metadata_dictionary_name_indexes(&db)?;
     let mut names = HashSet::new();
-    let mut stmt = db.prepare("SELECT title FROM dictionary_meta WHERE title IS NOT NULL AND title != '' UNION SELECT DISTINCT dict_name FROM entries WHERE dict_name IS NOT NULL AND dict_name != ''")
+    let mut stmt = db.prepare(
+        "SELECT title FROM dictionary_meta WHERE title IS NOT NULL AND title != ''
+         UNION SELECT DISTINCT dict_name FROM entries WHERE dict_name IS NOT NULL AND dict_name != ''
+         UNION SELECT DISTINCT dict_name FROM frequencies WHERE dict_name IS NOT NULL AND dict_name != ''
+         UNION SELECT DISTINCT dict_name FROM pitches WHERE dict_name IS NOT NULL AND dict_name != ''
+         UNION SELECT DISTINCT dict_name FROM pronunciations WHERE dict_name IS NOT NULL AND dict_name != ''",
+    )
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
     for name in rows.flatten() {
@@ -410,7 +417,7 @@ pub(crate) async fn check_dictionary_updates(
         rows.flatten().collect::<Vec<_>>()
     };
 
-    let client = reqwest::Client::builder()
+    let client = crate::http_client::builder()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
@@ -475,7 +482,7 @@ pub(crate) async fn update_dictionary_from_source(
         return Err("Dictionary update URL is invalid".to_string());
     }
 
-    let response = reqwest::Client::builder()
+    let response = crate::http_client::builder()
         .connect_timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?
@@ -531,6 +538,7 @@ pub(crate) async fn update_dictionary_from_source(
 pub(crate) async fn delete_dictionary(app: tauri::AppHandle, dict_name: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
     let mut db = open_db(&app)?;
+    crate::core::database::ensure_dictionary_name_indexes(&db)?;
     let tx = db.transaction().map_err(|e| e.to_string())?;
     tx.execute(
         "DELETE FROM entries WHERE dict_name = ?1",
@@ -566,6 +574,7 @@ pub(crate) async fn delete_dictionary(app: tauri::AppHandle, dict_name: String) 
 pub(crate) async fn delete_dictionaries(app: tauri::AppHandle, dict_names: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
     let mut db = open_db(&app)?;
+    crate::core::database::ensure_dictionary_name_indexes(&db)?;
     let tx = db.transaction().map_err(|e| e.to_string())?;
     for dict_name in dict_names {
         tx.execute(
@@ -2192,7 +2201,140 @@ pub(crate) async fn scan_cursor(
     tauri::async_runtime::spawn_blocking(move || { let db = open_db(&app)?; scan_cursor_in_db(&db, &sentence, cursor) }).await.map_err(|e| e.to_string())?
 }
 
+fn is_inline_furigana_base(c: char) -> bool {
+    is_kanji(&c)
+        || ('\u{20000}'..='\u{323af}').contains(&c)
+        || matches!(c, '\u{3005}' | '\u{30f5}' | '\u{30f6}')
+}
+
+fn is_inline_furigana_reading(c: char) -> bool {
+    ('\u{3041}'..='\u{309f}').contains(&c) || ('\u{30a1}'..='\u{30fa}').contains(&c) || c == '\u{30fc}'
+}
+
+/// Removes inline readings such as `幽(かす)かに` -> `幽かに` that some games emit
+/// when the original line carries ruby. A parenthesised group is only treated as a
+/// reading when it directly follows a kanji and contains nothing but kana.
+/// Returns the stripped text and, for each kept char, its index in the original text.
+pub(crate) fn strip_inline_furigana(chars: &[char]) -> Option<(Vec<char>, Vec<usize>)> {
+    const MAX_READING_LEN: usize = 16;
+    let mut kept = Vec::with_capacity(chars.len());
+    let mut origin = Vec::with_capacity(chars.len());
+    let mut stripped_any = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if matches!(c, '(' | '（') && i > 0 && is_inline_furigana_base(chars[i - 1]) {
+            let close = if c == '(' { ')' } else { '）' };
+            let reading_end = chars[i + 1..]
+                .iter()
+                .take(MAX_READING_LEN + 1)
+                .position(|&ch| ch == close)
+                .map(|offset| i + 1 + offset);
+            if let Some(end) = reading_end {
+                if end > i + 1 && chars[i + 1..end].iter().all(|&ch| is_inline_furigana_reading(ch)) {
+                    stripped_any = true;
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        kept.push(c);
+        origin.push(i);
+        i += 1;
+    }
+    stripped_any.then_some((kept, origin))
+}
+
+/// Word limits from the analyzer for a scan whose longest dictionary match
+/// covers `match_len` chars from `cursor`.
+struct ScanWordLimits {
+    /// Always prefer this length: the match runs into a repetition of the
+    /// word (いた|いた -> いたいた, いたい).
+    hard: Option<usize>,
+    /// Prefer this length when the match only adds trailing particles
+    /// (春花|の -> 春花の) — decided with frequency data by the caller, since
+    /// 何|か -> 何か is a real word.
+    particle: Option<usize>,
+}
+
+fn scan_word_limits(chars: &[char], cursor: usize, match_len: usize) -> ScanWordLimits {
+    let none = ScanWordLimits { hard: None, particle: None };
+    let sentence: String = chars.iter().collect();
+    let Ok(tokens) = segment_japanese_text(&sentence) else { return none };
+    let Some(tapped) = tokens
+        .iter()
+        .find(|token| token.start <= cursor && cursor < token.end)
+    else {
+        return none;
+    };
+    let match_end = cursor + match_len;
+    if match_end <= tapped.end {
+        return none;
+    }
+    // A repeated word (いた|いた) only matches longer by coincidence
+    // (いたいた "painful board", いたい "painful"): stay on the word. Kana words
+    // that the analyzer splits (リバー|シ, せい|げん) are not affected.
+    let next = tokens.iter().find(|token| token.start == tapped.end);
+    if next.is_some_and(|next| next.text == tapped.text) {
+        return ScanWordLimits { hard: Some(tapped.end - cursor), particle: None };
+    }
+    let ends_on_boundary = tokens.iter().any(|token| token.end == match_end);
+    if !ends_on_boundary {
+        return none;
+    }
+    // Strip particle words from the end of the match.
+    let mut end = match_end;
+    while let Some(token) = tokens
+        .iter()
+        .find(|token| token.end == end && token.start >= cursor && token.part_of_speech == "助詞")
+    {
+        end = token.start;
+    }
+    let particle = (end > cursor && end < match_end).then(|| end - cursor);
+    ScanWordLimits { hard: None, particle }
+}
+
 pub(crate) fn scan_cursor_in_db(
+    db: &Connection,
+    sentence: &str,
+    cursor: usize,
+) -> Result<CursorLookupResult, String> {
+    let chars: Vec<char> = sentence.chars().collect();
+    let Some((stripped, origin)) = strip_inline_furigana(&chars) else {
+        return scan_cursor_plain_in_db(db, sentence, cursor);
+    };
+    if stripped.is_empty() {
+        return Err("Empty sentence".into());
+    }
+    // A cursor inside a removed reading maps back to the start of the kanji run it annotates.
+    let mut mapped_cursor = origin.partition_point(|&index| index <= cursor).saturating_sub(1);
+    if origin.get(mapped_cursor) != Some(&cursor) {
+        while mapped_cursor > 0
+            && is_inline_furigana_base(stripped[mapped_cursor - 1])
+            && origin[mapped_cursor] == origin[mapped_cursor - 1] + 1
+        {
+            mapped_cursor -= 1;
+        }
+    }
+    let stripped_sentence: String = stripped.iter().collect();
+    let mut result = scan_cursor_plain_in_db(db, &stripped_sentence, mapped_cursor)?;
+    let to_original_len = |start: usize, len: usize| -> usize {
+        if len == 0 {
+            return 0;
+        }
+        let last = (start + len - 1).min(origin.len() - 1);
+        origin[last] - origin[start] + 1
+    };
+    let start = result.match_start.min(origin.len() - 1);
+    for entry in &mut result.entries {
+        entry.source_length = to_original_len(start, entry.source_length);
+    }
+    result.match_len = to_original_len(start, result.match_len);
+    result.match_start = origin[start];
+    Ok(result)
+}
+
+fn scan_cursor_plain_in_db(
     db: &Connection,
     sentence: &str,
     cursor: usize,
@@ -2272,7 +2414,7 @@ pub(crate) fn scan_cursor_in_db(
         return Err("No match".into());
     }
 
-    let Some((match_len, entries)) = lookup_japanese_prefixes(
+    let Some((mut match_len, mut entries)) = lookup_japanese_prefixes(
         &mut freq_stmt,
         &mut pitch_stmt,
         &mut pronunciation_stmt,
@@ -2284,6 +2426,39 @@ pub(crate) fn scan_cursor_in_db(
     ) else {
         return Err("No match".into());
     };
+    // The longest dictionary match can run past the word under the cursor
+    // (春花|の -> the pillow word 春花の, いた|いた -> いたいた). When the
+    // analyzer says the extra part is only particles, a coincidental kana run
+    // or stops inside the next word, the entries for the word itself go first
+    // and only the word is highlighted; the longer entries stay below.
+    let limits = scan_word_limits(&chars, cursor, match_len);
+    let has_frequency = |length: usize| {
+        entries
+            .iter()
+            .any(|entry| entry.source_length == length && !entry.frequencies.is_empty())
+    };
+    let preferred = limits.hard.or_else(|| {
+        // Word + particle: keep the longer item when it is a common word
+        // (it has frequency data, like 何か), otherwise prefer the word.
+        limits
+            .particle
+            .filter(|length| has_frequency(*length) && !has_frequency(match_len))
+    });
+    if let Some(limit) = preferred {
+        let best = entries
+            .iter()
+            .map(|entry| entry.source_length)
+            .filter(|length| *length > 0 && *length <= limit)
+            .max();
+        if let Some(best) = best.filter(|best| *best < match_len) {
+            let (mut first, rest): (Vec<DictEntry>, Vec<DictEntry>) = entries
+                .into_iter()
+                .partition(|entry| entry.source_length == best);
+            first.extend(rest);
+            entries = first;
+            match_len = best;
+        }
+    }
     let word: String = chars[cursor..cursor + match_len].iter().collect();
     Ok(CursorLookupResult {
         entries,

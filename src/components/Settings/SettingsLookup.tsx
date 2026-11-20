@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useJelly } from "../../utils/jelly";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openMobileDictionaryPicker } from "../../utils/mobileFiles";
 import { invoke } from "@tauri-apps/api/core";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { LookupEntryItem, groupDictionaryEntries } from "../Lookuper";
+import { LookupEntryItem, groupDictionaryEntries, resolveLookupFontFamily, LOOKUP_FONT_FOLLOW_TEXT, LOOKUP_DEFAULT_FONT_STACK } from "../Lookuper";
+import FontPicker from "../FontPicker";
 import { AppSettings } from "../SettingsModal";
 
 interface SettingsLookupProps {
@@ -41,6 +43,14 @@ const labels = {
         zoom: "Масштаб окна:",
         width: "Ширина окна:",
         fontSize: "Размер текста:",
+        font: "Шрифт:",
+        fontDefault: "Стандартный (без засечек)",
+        fontFollowText: "Как у основного текста",
+        fontSans: "Noto Sans JP / Yu Gothic",
+        fontYu: "Yu Gothic UI",
+        fontMeiryo: "Meiryo",
+        fontSerif: "С засечками (Mincho)",
+        fontCustom: "Свой шрифт",
         tagSize: "Размер тегов:",
         showTags: "Показывать грамматику и теги",
         showAudio: "Показывать кнопку аудио",
@@ -66,6 +76,14 @@ const labels = {
         zoom: "Window scale:",
         width: "Window width:",
         fontSize: "Text size:",
+        font: "Font:",
+        fontDefault: "Default (sans-serif)",
+        fontFollowText: "Same as reader text",
+        fontSans: "Noto Sans JP / Yu Gothic",
+        fontYu: "Yu Gothic UI",
+        fontMeiryo: "Meiryo",
+        fontSerif: "Serif (Mincho)",
+        fontCustom: "Custom font",
         tagSize: "Tag size:",
         showTags: "Show grammar and tags",
         showAudio: "Show audio button",
@@ -82,9 +100,13 @@ const labels = {
 
 function SortableDictItem({ dict, idx, totalLen, toggleDict, changeDictColor, deleteDict, moveDict, toggleSelection, isSelected, isSelectionMode, t, updateStatus, updateDictionary, isUpdating, updateLabel }: any) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: dict.name });
+    const nodeRef = useRef<HTMLDivElement | null>(null);
+    const setRefs = useCallback((node: HTMLDivElement | null) => { nodeRef.current = node; setNodeRef(node); }, [setNodeRef]);
+    useJelly(() => nodeRef.current, isDragging, { axis: 'y' });
     const style = {
-        transform: CSS.Transform.toString(transform),
-        transition,
+        // dnd-kit positions the row; the jelly deformation is composed after it.
+        transform: `${CSS.Transform.toString(transform) || ''} var(--jelly-transform, scale(1))`,
+        transition: transition ? `${transition}, box-shadow 200ms ease` : 'box-shadow 200ms ease',
         display: "flex",
         flexDirection: "column" as const,
         alignItems: "stretch",
@@ -92,16 +114,16 @@ function SortableDictItem({ dict, idx, totalLen, toggleDict, changeDictColor, de
         border: isSelected ? "1px solid var(--accent-blue)" : "1px solid transparent",
         padding: "8px",
         marginBottom: "6px",
-        borderRadius: "4px",
-        opacity: isDragging ? 0.9 : 1,
-        boxShadow: isDragging ? "0 0 15px rgba(79, 166, 255, 0.6)" : "none",
+        borderRadius: "8px",
+        opacity: 1,
+        boxShadow: isDragging ? "0 14px 34px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(79, 166, 255, 0.55)" : "none",
         zIndex: isDragging ? 99 : 0,
         position: "relative" as const,
         cursor: isSelectionMode ? "pointer" : "default",
     };
 
     return (
-        <div ref={setNodeRef} style={style} onClick={() => isSelectionMode && toggleSelection(dict.name)}>
+        <div ref={setRefs} style={style} onClick={() => isSelectionMode && toggleSelection(dict.name)}>
             <div className="dictionary-item-header" style={{ display: "flex", alignItems: "center", gap: "10px", width: "100%" }}>
                 <span {...attributes} {...listeners} style={{ color: "var(--text-muted)", fontSize: "18px", padding: "0 5px", cursor: "grab", touchAction: "none" }}>☰</span>
                 <span style={{ color: "var(--text-muted)", fontSize: "12px", width: "20px", textAlign: "right", userSelect: "none" }}>{idx + 1}.</span>
@@ -419,6 +441,24 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
                 {[
                     [t.zoom, <><input type="range" min="0.5" max="1.5" step="0.1" value={settings.lookupScale || 1.0} onChange={(e) => updateSetting("lookupScale", Number(e.target.value))} style={{ flex: 1 }} /><span style={{ color: "var(--text-main)", width: "40px", textAlign: "center", fontWeight: "bold" }}>{Math.round((settings.lookupScale || 1.0) * 100)}%</span></>],
                     [t.width, <><input type="range" min="250" max="800" step="10" value={settings.lookupWidth || 380} onChange={(e) => updateSetting("lookupWidth", Number(e.target.value))} style={{ flex: 1 }} /><span style={{ color: "var(--text-muted)", width: "45px", textAlign: "center", fontSize: "12px" }}>{settings.lookupWidth || 380}px</span></>],
+                    [t.font, <FontPicker
+                        english={settings.appLanguage === "en"}
+                        title={t.font.replace(/:$/, "")}
+                        value={settings.lookupFontFamily || ""}
+                        onChange={(value) => updateSetting("lookupFontFamily", value)}
+                        sampleText="触れる · ふれる — 1) касаться, трогать"
+                        presets={[
+                            { value: "", label: t.fontDefault, previewFamily: LOOKUP_DEFAULT_FONT_STACK },
+                            { value: LOOKUP_FONT_FOLLOW_TEXT, label: t.fontFollowText, previewFamily: settings.fontFamily || undefined },
+                            { value: "'Noto Sans JP', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'BIZ UDPGothic', sans-serif", label: t.fontSans },
+                            { value: "'Yu Gothic UI', 'Yu Gothic', 'Meiryo', sans-serif", label: t.fontYu },
+                            { value: "'Meiryo', 'Yu Gothic UI', sans-serif", label: t.fontMeiryo },
+                            { value: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif", label: t.fontSerif },
+                        ]}
+                        customFont={settings.customFontFamily && (settings.customFontData || settings.customFontPath)
+                            ? { value: `"${settings.customFontFamily}"`, label: `${t.fontCustom}${settings.customFontName ? `: ${settings.customFontName}` : ""}` }
+                            : null}
+                    />],
                     [t.fontSize, <><input type="range" min="10" max="36" step="1" value={settings.lookupFontSize || 14} onChange={(e) => updateSetting("lookupFontSize", Number(e.target.value))} style={{ flex: 1 }} /><span style={{ color: "var(--text-muted)", width: "45px", textAlign: "center", fontSize: "12px" }}>{settings.lookupFontSize || 14}px</span></>],
                     [t.tagSize, <><input type="range" min="8" max="24" step="1" value={settings.lookupTagFontSize || 11} onChange={(e) => updateSetting("lookupTagFontSize", Number(e.target.value))} style={{ flex: 1 }} /><span style={{ color: "var(--text-muted)", width: "45px", textAlign: "center", fontSize: "12px" }}>{settings.lookupTagFontSize || 11}px</span></>],
                 ].map(([label, control]: any) => (
@@ -441,7 +481,7 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
                         <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>{t.previewWord}</span>
                         <input type="text" className="modern-input" value={previewWord} onChange={(e) => setPreviewWord(e.target.value)} style={{ width: "150px" }} />
                     </div>
-                    <div style={{ width: `${settings.lookupWidth || 380}px`, maxHeight: "450px", overflowY: "auto", background: "var(--bg-panel)", border: "1px solid var(--border-main)", borderRadius: "6px", padding: "14px", boxShadow: "0 10px 25px rgba(0,0,0,0.4)", zoom: settings.lookupScale || 1.0, textAlign: "left" }}>
+                    <div style={{ width: `${settings.lookupWidth || 380}px`, maxHeight: "450px", overflowY: "auto", background: "var(--bg-panel)", border: "1px solid var(--border-main)", borderRadius: "6px", padding: "14px", boxShadow: "0 10px 25px rgba(0,0,0,0.4)", zoom: settings.lookupScale || 1.0, textAlign: "left", ["--lookup-font-family" as any]: resolveLookupFontFamily(settings) }}>
                         {groupedPreview.map((group, i) => (
                             <LookupEntryItem key={i} group={group} settings={settings} sentence={previewWord} onWordLookup={() => {}} activeGrammarDesc={activeGrammarDesc} setActiveGrammarDesc={setActiveGrammarDesc} playAudio={() => {}} audioFailed={{}} playingAudio={null} isKanjidic={Object.keys(group.cleanDictionaries)[0]?.toUpperCase().includes("KANJI")} ankiStatus="loading" onStatusChange={() => {}} />
                         ))}

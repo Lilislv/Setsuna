@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Setsuna",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 480,
+        "minHeight": 400,
+        "backgroundColor": "#1a1a1a",
+        "visible": false
+      }
+    ]
+  }
+}

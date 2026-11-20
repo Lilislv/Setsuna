@@ -1,4 +1,6 @@
 {
-  "displayVersion": "0.2.0",
-  "buildNumber": 5
+  "displayVersion": "0.5.0",
+  "buildNumber": 6,
+  "desktopLabel": "0.5.0 beta",
+  "mobileLabel": "0.1.0 alpha"
 }

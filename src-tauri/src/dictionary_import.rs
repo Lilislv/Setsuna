@@ -135,6 +135,18 @@ fn import_dictionaries_blocking(
          PRAGMA cache_size = -131072;"
     })
     .map_err(|e| format!("Failed to optimize dictionary database: {}", e))?;
+    if !super::core::database::has_dictionary_name_indexes(&db) {
+        emit_progress(
+            &app,
+            "Dictionary import",
+            total_dicts,
+            0,
+            1,
+            0,
+            "Optimizing dictionary database (one time)...",
+        );
+        super::core::database::ensure_dictionary_name_indexes(&db)?;
+    }
     if !cfg!(target_os = "android") { drop_import_indexes(&db)?; }
 
     let mut total_added = 0usize;
@@ -701,6 +713,15 @@ fn import_yomitan_zip(
         "Waiting for dictionary database...",
     );
     let tx = begin_import_transaction(db)?;
+    emit_progress(
+        app,
+        &dict_name,
+        1,
+        0,
+        total_files,
+        0,
+        "Removing previous version...",
+    );
     let mut words_added = 0usize;
 
     // A revision may have a different title (for example `JMdict [2026-07-31]`)
@@ -2863,6 +2884,26 @@ mod tests {
         let entry: (String, String, i64) = db.query_row("SELECT tags, lookup_rules, score FROM entries", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
         assert_eq!(entry, ("common popular".into(), "v1".into(), 42));
         assert_eq!(added, 1);
+    }
+
+    #[test]
+    fn kanji_bank_import_keeps_meanings() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::core::database::ensure_canonical_schema(&mut db).unwrap();
+        let tx = db.transaction().unwrap();
+        let bank = r#"[["亜", "ア", "つ.ぐ", "jouyou", ["Asia", "rank next", "come after", "-ous"], {"freq": "1509", "grade": "8", "jlpt": "1"}]]"#;
+        let mut added = 0;
+        stream_json_array(Cursor::new(bank.as_bytes()), |entry| {
+            import_yomitan_bank_entry(&tx, "kanji_bank_1.json", entry.as_array().unwrap(), "KANJIDIC (English)", &mut added);
+            Ok(())
+        })
+        .unwrap();
+        tx.commit().unwrap();
+        let (reading, definition): (String, String) = db
+            .query_row("SELECT reading, definition FROM entries WHERE term = '亜'", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert_eq!(reading, "ア つ.ぐ");
+        assert_eq!(definition, r#"["Asia","rank next","come after","-ous"]"#);
     }
 
     #[test]

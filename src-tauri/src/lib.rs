@@ -4,6 +4,9 @@ mod dictionary_import;
 use dictionary_engine::{DictEntry, lookup_word_in_db, scan_cursor_in_db};
 mod core;
 mod japanese_tokenizer;
+mod text_stats;
+mod http_client;
+mod tab_lines;
 mod lookup_normalization;
 mod japanese_deinflector;
 mod local_audio;
@@ -647,7 +650,7 @@ async fn upload_db_to_drive(
         .await
         .map_err(|e| format!("Failed to inspect dictionary database: {}", e))?
         .len();
-    let client = reqwest::Client::new();
+    let client = crate::http_client::client();
     emit_drive_progress(&app, "upload", 0, file_len);
 
     if !url.contains("uploadType=resumable") && !url.contains("upload_id=") {
@@ -968,7 +971,7 @@ async fn load_sync_file(path: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn anki_request(action: String, params: Value) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = crate::http_client::client()
         .post("http://127.0.0.1:8765")
         .json(&serde_json::json!({
             "action": action,
@@ -1095,7 +1098,7 @@ async fn account_login(
     device_id: String,
     device_name: String,
 ) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = crate::http_client::client()
         .post(format!(
             "{}/auth/login",
             normalize_api_base_url(&api_base_url)
@@ -1120,7 +1123,7 @@ async fn account_register(
     device_id: String,
     device_name: String,
 ) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = crate::http_client::client()
         .post(format!(
             "{}/auth/register",
             normalize_api_base_url(&api_base_url)
@@ -1156,7 +1159,7 @@ async fn account_register_device(
     if let Some(value) = capture_agent_token {
         body["captureAgentToken"] = Value::String(value);
     }
-    let response = reqwest::Client::new()
+    let response = crate::http_client::client()
         .post(format!("{}/devices", normalize_api_base_url(&api_base_url)))
         .bearer_auth(token)
         .json(&body)
@@ -1168,7 +1171,7 @@ async fn account_register_device(
 
 #[tauri::command]
 async fn account_list_devices(api_base_url: String, token: String) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = crate::http_client::client()
         .get(format!("{}/devices", normalize_api_base_url(&api_base_url)))
         .bearer_auth(token)
         .send()
@@ -1198,6 +1201,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(generate_handler![
+            text_stats::count_text_stats,
             dictionary_engine::delete_dictionary,
             dictionary_engine::update_dictionary_from_source,
             dictionary_engine::check_dictionary_updates,
@@ -1234,6 +1238,9 @@ pub fn run() {
             save_sync_file,
             load_sync_file,
             anki_request,
+            tab_lines::save_tab_lines,
+            tab_lines::load_tab_lines,
+            tab_lines::prune_tab_lines,
             save_workspace_state,
             load_workspace_state,
             stop_capture_agent_server,
@@ -1529,6 +1536,72 @@ mod deinflect_tests {
             .entries
             .iter()
             .any(|entry| entry.term == "所為" && entry.source_length == 2));
+    }
+
+    #[test]
+    fn scan_prefers_the_word_over_word_plus_particle() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        for (term, reading) in [("春花の", "はるはなの"), ("春花", "しゅんか")] {
+            conn.execute(
+                "INSERT INTO entries (term, reading, definition, dict_name, tags)
+                 VALUES (?1, ?2, '[\"test\"]', 'Scan test', '')",
+                params![term, reading],
+            )
+            .unwrap();
+        }
+        // Only the word itself is a common item (has a frequency); the pillow
+        // word 春花の has none.
+        conn.execute(
+            "INSERT INTO frequencies (term, reading, display_value, value, dict_name)
+             VALUES ('春花', 'しゅんか', '20000', 20000, 'Freq test')",
+            [],
+        )
+        .unwrap();
+        let result = scan_cursor_in_db(&conn, "私は春花の言葉に従った", 2).expect("春花 must resolve");
+        assert_eq!(result.word, "春花");
+        assert_eq!(result.match_len, 2);
+        assert_eq!(result.entries.first().map(|entry| entry.term.as_str()), Some("春花"));
+        // The longer pillow-word entry is still offered, just not first.
+        assert!(result.entries.iter().any(|entry| entry.term == "春花の"));
+    }
+
+    #[test]
+    fn scan_keeps_common_words_that_end_in_a_particle() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        for term in ["何か", "何"] {
+            conn.execute(
+                "INSERT INTO entries (term, reading, definition, dict_name, tags)
+                 VALUES (?1, '', '[\"test\"]', 'Scan test', '')",
+                params![term],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO frequencies (term, reading, display_value, value, dict_name)
+                 VALUES (?1, '', '100', 100, 'Freq test')",
+                params![term],
+            )
+            .unwrap();
+        }
+        let result = scan_cursor_in_db(&conn, "何かあった", 0).expect("何か must resolve");
+        assert_eq!(result.word, "何か");
+    }
+
+    #[test]
+    fn scan_stays_on_a_repeated_word() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        for (term, reading) in [("痛板", "いたいた"), ("板", "いた")] {
+            conn.execute(
+                "INSERT INTO entries (term, reading, definition, dict_name, tags)
+                 VALUES (?1, ?2, '[\"test\"]', 'Scan test', '')",
+                params![term, reading],
+            )
+            .unwrap();
+        }
+        let result = scan_cursor_in_db(&conn, "あ、いたいた", 2).expect("いた must resolve");
+        assert_eq!(result.match_len, 2, "the scan must stay on the first いた");
     }
 
     #[test]

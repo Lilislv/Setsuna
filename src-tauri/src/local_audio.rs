@@ -126,7 +126,7 @@ pub async fn lookup_online_audio(term: String, reading: String) -> Result<Option
     let term = term.trim();
     let reading = if reading.trim().is_empty() { term } else { reading.trim() };
     if term.is_empty() || term.chars().count() > 200 || reading.chars().count() > 200 { return Ok(None); }
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(6))
+    let client = crate::http_client::builder().timeout(Duration::from_secs(6))
         .build().map_err(|e| e.to_string())?;
     let mut url = reqwest::Url::parse("https://assets.languagepod101.com/dictionary/japanese/audiomp3.php").map_err(|e| e.to_string())?;
     url.query_pairs_mut().append_pair("kanji", term).append_pair("kana", reading);

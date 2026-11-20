@@ -1,4 +1,4 @@
-import releaseInfo from "../release-info.json";
+import { appVersionLabel } from "../utils/appVersion";
 import type { ReactNode } from "react";
 import { IconBookTab, IconPlayerTab, IconSettings, IconTextTab, IconWifi } from "./Icons";
 import { ANIME_PLAYER_AVAILABLE, EPUB_READER_AVAILABLE, YATSU_READER_AVAILABLE } from "../utils/featureFlags";
@@ -87,6 +87,7 @@ export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, o
                             key={item.id}
                             type="button"
                             className={`home-mode home-mode-${item.id}`}
+                            style={{ ['--i' as any]: index }}
                             onClick={item.action}
                             disabled={item.disabled}
                             title={item.disabled ? (isEn ? "Coming soon" : "Скоро") : item.title}
@@ -110,7 +111,7 @@ export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, o
 
                 <footer className="home-menu-footer">
                     <span>{isEn ? "One library. Three ways to read." : "Одна библиотека. Три режима чтения."}</span>
-                    <span className="home-menu-version">Setsuna {releaseInfo.displayVersion}{import.meta.env.VITE_PRIVATE_READER === '1' ? (isEn ? ' · Local' : ' · Локальная') : ''}</span>
+                    <span className="home-menu-version">Setsuna {appVersionLabel()}{import.meta.env.VITE_PRIVATE_READER === '1' ? (isEn ? ' · Local' : ' · Локальная') : ''}</span>
                 </footer>
             </div>
         </section>

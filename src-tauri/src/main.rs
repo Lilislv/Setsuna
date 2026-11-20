@@ -81,6 +81,10 @@ mod epub_import;
 #[cfg(target_os = "linux")]
 mod hover_lookup;
 mod japanese_tokenizer;
+mod text_stats;
+mod http_client;
+mod tab_lines;
+mod system_fonts;
 mod lookup_normalization;
 mod japanese_deinflector;
 mod local_audio;
@@ -193,7 +197,7 @@ fn launch_anki() -> Result<(), String> {
 #[tauri::command]
 async fn anki_request(action: String, params: Value) -> Result<Value, String> {
     let mut payload = serde_json::json!({
-        "action": action,
+        "action": &action,
         "version": 6,
         "params": params,
     });
@@ -203,9 +207,17 @@ async fn anki_request(action: String, params: Value) -> Result<Value, String> {
 
     // AnkiConnect is strictly local. Bypassing system/VPN proxies avoids sending
     // 127.0.0.1 traffic through a proxy which can reply with an unrelated 403.
+    // Adding a note can make AnkiConnect download the audio first, which often
+    // takes longer than a normal request; a too-short timeout reported failure
+    // for notes that were actually added.
+    let timeout = if matches!(action.as_str(), "addNote" | "addNotes" | "storeMediaFile" | "multi") {
+        Duration::from_secs(45)
+    } else {
+        Duration::from_secs(8)
+    };
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(8))
+        .timeout(timeout)
         .build()
         .map_err(|error| format!("Could not create AnkiConnect client: {error}"))?;
     let response = client
@@ -214,7 +226,13 @@ async fn anki_request(action: String, params: Value) -> Result<Value, String> {
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("AnkiConnect is unavailable: {error}"))?;
+        .map_err(|error| {
+            if error.is_timeout() {
+                format!("AnkiConnect timed out: {error}")
+            } else {
+                format!("AnkiConnect is unavailable: {error}")
+            }
+        })?;
 
     let status = response.status();
     let body = response
@@ -718,10 +736,24 @@ pub struct DiagnosticsState {
 
 pub struct JlModeState {
     pub last_line: Mutex<String>,
+    /// Whether the Flow window is shown (it is shown/hidden through Win32
+    /// directly, so the window's own visibility flag is not reliable).
+    pub visible: AtomicBool,
+}
+
+/// Where the looked-up word is on screen (logical px): the lookup window is
+/// placed under it, or above it when there is no room below.
+#[derive(Clone, Copy, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowLookupAnchor {
+    pub x: f64,
+    pub top: f64,
+    pub bottom: f64,
 }
 
 pub struct JlLookupState {
     pub payload: Mutex<Option<Value>>,
+    pub anchor: Mutex<FlowLookupAnchor>,
 }
 
 pub struct FlowTimerState {
@@ -875,6 +907,10 @@ struct DiscordPresencePayload {
     button_url: Option<String>,
     second_button_label: Option<String>,
     second_button_url: Option<String>,
+    /// Which field the member list shows after "Playing": "details" puts the
+    /// reading title there instead of the app name.
+    #[serde(default)]
+    status_display: Option<String>,
 }
 
 static DIAGNOSTICS_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1304,6 +1340,25 @@ fn delete_google_refresh_token() -> Result<(), String> {
     }
 }
 
+/// The dictionary DB runs in WAL mode: recent writes may live only in
+/// `dictionary.db-wal`. Fold them into the main file before it is copied/replaced.
+fn checkpoint_dictionary_wal(db_path: &Path) -> Result<(), String> {
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(db_path).map_err(|e| format!("Failed to open dictionary database: {}", e))?;
+    conn.busy_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?;
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get::<_, i64>(0))
+        .map_err(|e| format!("Failed to checkpoint dictionary database: {}", e))
+        .and_then(|busy| if busy == 0 { Ok(()) } else { Err("Dictionary database is busy; try again after the current import or lookup finishes.".to_string()) })
+}
+
+fn sqlite_sidecar(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut name = db_path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
 #[tauri::command]
 async fn upload_db_to_drive(
     app: tauri::AppHandle,
@@ -1313,6 +1368,12 @@ async fn upload_db_to_drive(
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     let db_path = get_dictionary_db_path(&app)?;
+    {
+        let path = db_path.clone();
+        tauri::async_runtime::spawn_blocking(move || checkpoint_dictionary_wal(&path))
+            .await
+            .map_err(|e| e.to_string())??;
+    }
     let mut file = tokio::fs::File::open(&db_path)
         .await
         .map_err(|e| format!("Failed to open dictionary database: {}", e))?;
@@ -1511,7 +1572,28 @@ async fn download_db_from_drive(
             ));
         }
     }
+    let header = {
+        use tokio::io::AsyncReadExt;
+        let mut header = [0_u8; 16];
+        let read = match tokio::fs::File::open(&temp_path).await {
+            Ok(mut downloaded_file) => downloaded_file.read(&mut header).await.unwrap_or(0),
+            Err(_) => 0,
+        };
+        read == header.len() && &header == b"SQLite format 3\0"
+    };
+    if !header {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err("Downloaded file is not a SQLite dictionary database.".to_string());
+    }
 
+    // Fold the current WAL into the old file so the rollback copy is complete,
+    // and so no stale -wal/-shm is replayed on top of the restored database.
+    {
+        let path = db_path.clone();
+        tauri::async_runtime::spawn_blocking(move || checkpoint_dictionary_wal(&path))
+            .await
+            .map_err(|e| e.to_string())??;
+    }
     let _ = tokio::fs::remove_file(&rollback_path).await;
     if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
         tokio::fs::rename(&db_path, &rollback_path)
@@ -1523,6 +1605,9 @@ async fn download_db_from_drive(
             let _ = tokio::fs::rename(&rollback_path, &db_path).await;
         }
         return Err(format!("Failed to apply downloaded dictionary: {}", error));
+    }
+    for suffix in ["-wal", "-shm"] {
+        let _ = tokio::fs::remove_file(sqlite_sidecar(&db_path, suffix)).await;
     }
     emit_drive_progress(&app, "download", downloaded, downloaded);
     Ok(())
@@ -1571,9 +1656,8 @@ async fn start_oauth_server(app: tauri::AppHandle) -> Result<OAuthServerStart, S
         loop {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    let mut buffer = [0; 4096];
-                    if let Ok(size) = stream.read(&mut buffer) {
-                        let request = String::from_utf8_lossy(&buffer[..size]);
+                    prepare_accepted_stream(&stream);
+                    if let Ok(request) = read_http_request(&mut stream) {
                         if request.starts_with("GET ") {
                             let first_line = request.lines().next().unwrap_or("");
                             let parts: Vec<&str> = first_line.split_whitespace().collect();
@@ -1720,13 +1804,123 @@ fn get_jl_mode_line(state: State<'_, JlModeState>) -> String {
         .clone()
 }
 
+// ---- Setsuna Flow windows ----
+//
+// Flow floats over a game. Both of its windows are created non-focusable and
+// are shown with SW_SHOWNOACTIVATE, so opening Flow, looking a word up or
+// clicking inside never takes keyboard focus away from the game (many games
+// pause or drop input when they lose focus). tao's own show() always uses
+// SW_SHOW, which activates the window, hence the direct Win32 calls.
+
+const FLOW_LOOKUP_WIDTH: f64 = 440.0;
+const FLOW_LOOKUP_MAX_HEIGHT: f64 = 540.0;
+const FLOW_LOOKUP_MIN_HEIGHT: f64 = 140.0;
+
+#[cfg(target_os = "windows")]
+fn flow_hwnd(window: &tauri::WebviewWindow) -> Option<windows::Win32::Foundation::HWND> {
+    window
+        .hwnd()
+        .ok()
+        .map(|handle| windows::Win32::Foundation::HWND(handle.0 as _))
+}
+
+fn show_flow_window(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = flow_hwnd(window) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+        };
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+        return;
+    }
+    let _ = window.show();
+}
+
+fn hide_flow_window(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = flow_hwnd(window) {
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+        return;
+    }
+    let _ = window.hide();
+}
+
+fn set_flow_visible(app: &AppHandle, visible: bool) {
+    if let Some(state) = app.try_state::<JlModeState>() {
+        state.visible.store(visible, Ordering::SeqCst);
+    }
+    let _ = app.emit("setsuna://flow-visibility", visible);
+}
+
+fn build_flow_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    tauri::WebviewWindowBuilder::new(app, "jl_mode", WebviewUrl::App("jl-window.html".into()))
+        .title("Setsuna Flow")
+        .visible(false)
+        .focused(false)
+        .focusable(false)
+        .decorations(false)
+        .transparent(true)
+        .background_color(Color(0, 0, 0, 0))
+        .shadow(false)
+        .resizable(true)
+        .always_on_top(true)
+        .skip_taskbar(false)
+        // 46 px on top is the transparent strip for the control bar.
+        .inner_size(900.0, 236.0)
+        .min_inner_size(260.0, 136.0)
+        .build()
+        .map_err(|error| format!("Failed to create Setsuna Flow window: {error}"))
+}
+
+fn build_flow_lookup_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        "jl_lookup",
+        WebviewUrl::App("jl-popup.html".into()),
+    )
+    .title("Setsuna Flow Lookup")
+    .visible(false)
+    .focused(false)
+    .focusable(false)
+    .decorations(false)
+    .transparent(true)
+    .background_color(Color(0, 0, 0, 0))
+    .shadow(false)
+    .resizable(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .inner_size(FLOW_LOOKUP_WIDTH, 360.0);
+    if let Some(owner) = app.get_webview_window("jl_mode") {
+        builder = builder
+            .parent(&owner)
+            .map_err(|error| format!("Failed to attach Setsuna Flow lookup window: {error}"))?;
+    }
+    builder
+        .build()
+        .map_err(|error| format!("Failed to create Setsuna Flow lookup window: {error}"))
+}
+
 #[tauri::command]
 fn open_jl_mode_window(
     app: AppHandle,
     state: State<'_, JlModeState>,
     initial_text: Option<String>,
 ) -> Result<(), String> {
-    const LABEL: &str = "jl_mode";
     let text_to_send = initial_text
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| {
@@ -1742,84 +1936,72 @@ fn open_jl_mode_window(
         *last_line = text_to_send.clone();
     }
 
-    if let Some(window) = app.get_webview_window(LABEL) {
+    let window = match app.get_webview_window("jl_mode") {
+        Some(window) => window,
+        None => build_flow_window(&app)?,
+    };
+    if window.is_minimized().unwrap_or(false) {
         let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-        if !text_to_send.trim().is_empty() {
-            let _ = window.emit("jl_mode_line", text_to_send);
-        }
-        return Ok(());
     }
-
-    append_diagnostics_line(
-        &app,
-        serde_json::json!({
-            "ts": unix_time_ms(),
-            "kind": "jl_backend",
-            "event": "create_requested",
-            "has_text": !text_to_send.trim().is_empty(),
-            "text_len": text_to_send.chars().count(),
-        }),
-    );
-
-    let app_for_load = app.clone();
-    let text_for_load = text_to_send.clone();
-    let window =
-        tauri::WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("jl-window.html".into()))
-            .title("Setsuna Flow")
-            .visible(true)
-            .focused(true)
-            .decorations(false)
-            .transparent(true)
-            .background_color(Color(0, 0, 0, 0))
-            .shadow(false)
-            .resizable(true)
-            .always_on_top(true)
-            .skip_taskbar(false)
-            .inner_size(900.0, 190.0)
-            .min_inner_size(180.0, 70.0)
-            .on_page_load(move |window, payload| {
-                append_diagnostics_line(
-                    &app_for_load,
-                    serde_json::json!({
-                        "ts": unix_time_ms(),
-                        "kind": "jl_backend",
-                        "event": "page_load",
-                        "url": window.url().map(|url| url.to_string()).unwrap_or_default(),
-                        "payload": format!("{:?}", payload),
-                    }),
-                );
-                let text = text_for_load.trim();
-                if !text.is_empty() {
-                    let _ = window.emit("jl_mode_line", text.to_string());
-                }
-            })
-            .build()
-            .map_err(|e| format!("Failed to create Setsuna Flow window: {}", e))?;
-
-    let _ = window.set_always_on_top(true);
-    append_diagnostics_line(
-        &app,
-        serde_json::json!({
-            "ts": unix_time_ms(),
-            "kind": "jl_backend",
-            "event": "created",
-            "url": window.url().map(|url| url.to_string()).unwrap_or_default(),
-        }),
-    );
+    show_flow_window(&window);
+    set_flow_visible(&app, true);
+    if !text_to_send.trim().is_empty() {
+        let _ = window.emit("jl_mode_line", text_to_send.clone());
+    }
     emit_jl_mode_line(app, text_to_send);
     Ok(())
 }
 
 #[tauri::command]
 fn close_jl_mode_window(app: AppHandle) {
-    if let Some(window) = app.get_webview_window("jl_mode") {
-        let _ = window.hide();
-    }
     if let Some(window) = app.get_webview_window("jl_lookup") {
-        let _ = window.hide();
+        hide_flow_window(&window);
     }
+    if let Some(window) = app.get_webview_window("jl_mode") {
+        hide_flow_window(&window);
+    }
+    set_flow_visible(&app, false);
+}
+
+#[tauri::command]
+fn is_jl_mode_window_open(state: State<'_, JlModeState>) -> bool {
+    state.visible.load(Ordering::SeqCst)
+}
+
+/// Places the lookup window under the word, or above it when the screen has
+/// no room below, keeping it inside the monitor's work area.
+fn place_flow_lookup_window(window: &tauri::WebviewWindow, anchor: FlowLookupAnchor, height: f64) {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let (left, top, right, bottom) = match &monitor {
+        Some(monitor) => {
+            let scale = monitor.scale_factor();
+            let area = monitor.work_area();
+            let left = area.position.x as f64 / scale;
+            let top = area.position.y as f64 / scale;
+            (
+                left,
+                top,
+                left + area.size.width as f64 / scale,
+                top + area.size.height as f64 / scale,
+            )
+        }
+        None => (0.0, 0.0, 1920.0, 1080.0),
+    };
+    let gap = 8.0;
+    let y = if anchor.bottom + gap + height <= bottom {
+        anchor.bottom + gap
+    } else if anchor.top - gap - height >= top {
+        anchor.top - gap - height
+    } else {
+        (bottom - height).max(top)
+    };
+    let x = (anchor.x - 18.0).clamp(left, (right - FLOW_LOOKUP_WIDTH).max(left));
+    let _ = window.set_size(tauri::LogicalSize::new(FLOW_LOOKUP_WIDTH, height));
+    let _ = window.set_position(tauri::LogicalPosition::new(x, y));
 }
 
 #[tauri::command]
@@ -1827,59 +2009,39 @@ fn show_jl_lookup_window(
     app: AppHandle,
     state: State<'_, JlLookupState>,
     payload: serde_json::Value,
-    x: f64,
-    y: f64,
+    anchor: FlowLookupAnchor,
 ) -> Result<(), String> {
-    const LABEL: &str = "jl_lookup";
-    let position = tauri::LogicalPosition::new(x.max(0.0), y.max(0.0));
-    *state
-        .payload
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = Some(payload.clone());
+    *state.payload.lock().unwrap_or_else(|error| error.into_inner()) = Some(payload.clone());
+    *state.anchor.lock().unwrap_or_else(|error| error.into_inner()) = anchor;
 
-    if let Some(window) = app.get_webview_window(LABEL) {
-        let _ = window.set_position(position);
-        let _ = window.set_always_on_top(true);
-        let _ = window.unminimize();
-        let _ = window.show();
-        window
-            .emit("jl_lookup_result", payload)
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-
-    let payload_for_load = payload.clone();
-    let mut builder =
-        tauri::WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("jl-popup.html".into()))
-            .title("Setsuna Flow Lookup")
-            .visible(true)
-            .focused(false)
-            .decorations(false)
-            .transparent(false)
-            .background_color(Color(24, 24, 24, 255))
-            .shadow(true)
-            .resizable(true)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .position(position.x, position.y)
-            .inner_size(520.0, 620.0)
-            .min_inner_size(360.0, 260.0)
-            .on_page_load(move |window, _| {
-                let _ = window.emit("jl_lookup_result", payload_for_load.clone());
-            });
-
-    if let Some(owner) = app.get_webview_window("jl_mode") {
-        builder = builder
-            .parent(&owner)
-            .map_err(|error| format!("Failed to attach Setsuna Flow lookup window: {error}"))?;
-    }
-
-    let window = builder
-        .build()
-        .map_err(|error| format!("Failed to create Setsuna Flow lookup window: {error}"))?;
-
-    let _ = window.set_always_on_top(true);
+    let window = match app.get_webview_window("jl_lookup") {
+        Some(window) => window,
+        None => build_flow_lookup_window(&app)?,
+    };
+    // Start from the last fitted height; the popup reports its real content
+    // height right after rendering (fit_jl_lookup_window).
+    let height = window
+        .inner_size()
+        .ok()
+        .zip(window.scale_factor().ok())
+        .map(|(size, scale)| size.height as f64 / scale)
+        .unwrap_or(360.0)
+        .clamp(FLOW_LOOKUP_MIN_HEIGHT, FLOW_LOOKUP_MAX_HEIGHT);
+    place_flow_lookup_window(&window, anchor, height);
+    window
+        .emit("jl_lookup_result", payload)
+        .map_err(|error| error.to_string())?;
+    show_flow_window(&window);
     Ok(())
+}
+
+/// Called by the lookup popup with the height its article needs.
+#[tauri::command]
+fn fit_jl_lookup_window(app: AppHandle, state: State<'_, JlLookupState>, height: f64) {
+    let Some(window) = app.get_webview_window("jl_lookup") else { return };
+    let anchor = *state.anchor.lock().unwrap_or_else(|error| error.into_inner());
+    let height = height.clamp(FLOW_LOOKUP_MIN_HEIGHT, FLOW_LOOKUP_MAX_HEIGHT);
+    place_flow_lookup_window(&window, anchor, height);
 }
 
 #[tauri::command]
@@ -1894,7 +2056,7 @@ fn get_jl_lookup_payload(state: State<'_, JlLookupState>) -> Option<Value> {
 #[tauri::command]
 fn hide_jl_lookup_window(app: AppHandle) {
     if let Some(window) = app.get_webview_window("jl_lookup") {
-        let _ = window.hide();
+        hide_flow_window(&window);
     }
 }
 
@@ -1917,53 +2079,11 @@ fn toggle_flow_timer(state: State<'_, FlowTimerState>) -> bool {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn prepare_jl_windows(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window("jl_mode").is_none() {
-        tauri::WebviewWindowBuilder::new(app, "jl_mode", WebviewUrl::App("jl-window.html".into()))
-            .title("Setsuna Flow")
-            .visible(false)
-            .focused(false)
-            .decorations(false)
-            .transparent(true)
-            .background_color(Color(0, 0, 0, 0))
-            .shadow(false)
-            .resizable(true)
-            .always_on_top(true)
-            .skip_taskbar(false)
-            .inner_size(900.0, 190.0)
-            .min_inner_size(180.0, 70.0)
-            .build()
-            .map_err(|error| format!("Failed to prepare Setsuna Flow window: {error}"))?;
+        build_flow_window(app)?;
     }
-
     if app.get_webview_window("jl_lookup").is_none() {
-        let mut builder = tauri::WebviewWindowBuilder::new(
-            app,
-            "jl_lookup",
-            WebviewUrl::App("jl-popup.html".into()),
-        )
-        .title("Setsuna Flow Lookup")
-        .visible(false)
-        .focused(false)
-        .decorations(false)
-        .transparent(false)
-        .background_color(Color(24, 24, 24, 255))
-        .shadow(true)
-        .resizable(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .inner_size(520.0, 620.0)
-        .min_inner_size(360.0, 260.0);
-
-        if let Some(owner) = app.get_webview_window("jl_mode") {
-            builder = builder
-                .parent(&owner)
-                .map_err(|error| format!("Failed to attach Setsuna Flow lookup window: {error}"))?;
-        }
-
-        builder
-            .build()
-            .map_err(|error| format!("Failed to prepare Setsuna Flow lookup window: {error}"))?;
+        build_flow_lookup_window(app)?;
     }
-
     Ok(())
 }
 
@@ -1974,6 +2094,12 @@ fn sanitize_main_window_size(main_win: &tauri::WebviewWindow) {
     const FALLBACK_HEIGHT: f64 = 800.0;
 
     let _ = main_win.set_min_size(Some(tauri::LogicalSize::new(MIN_WIDTH, MIN_HEIGHT)));
+    // A maximized or fullscreen window is exactly as large as the monitor.
+    // Clamping it below that size un-maximized it on every start and left a
+    // strip of desktop visible at the right edge.
+    if main_win.is_maximized().unwrap_or(false) || main_win.is_fullscreen().unwrap_or(false) {
+        return;
+    }
     let monitors = main_win.available_monitors().unwrap_or_default();
     let monitor = main_win
         .current_monitor()
@@ -1992,6 +2118,15 @@ fn sanitize_main_window_size(main_win: &tauri::WebviewWindow) {
     let monitor_logical = monitor
         .as_ref()
         .map(|item| item.size().to_logical::<f64>(item.scale_factor()));
+    // A window that covers (almost) the whole monitor but is not maximized is
+    // what older builds left behind after clamping a maximized window; the
+    // window-state plugin keeps restoring it. Maximize it properly instead.
+    if let Some(size) = monitor_logical {
+        if logical_size.width >= size.width * 0.9 && logical_size.height >= size.height * 0.8 {
+            let _ = main_win.maximize();
+            return;
+        }
+    }
     let max_width = monitor_logical
         .map(|size| (size.width - 32.0).max(MIN_WIDTH))
         .unwrap_or(3840.0);
@@ -2159,6 +2294,16 @@ fn update_discord_presence_blocking(
                 ));
         }
         presence = presence.assets(assets);
+    }
+
+    match payload.status_display.as_deref() {
+        Some("details") => {
+            presence = presence.status_display_type(activity::StatusDisplayType::Details);
+        }
+        Some("state") => {
+            presence = presence.status_display_type(activity::StatusDisplayType::State);
+        }
+        _ => {}
     }
 
     let mut buttons = Vec::new();
@@ -3506,6 +3651,30 @@ fn handle_text_sync_request(
     http_json("404 Not Found", r#"{"error":"not found"}"#)
 }
 
+/// Accepted sockets inherit the listener's non-blocking mode on Windows, so the
+/// first `read` could fail with `WouldBlock` before the request bytes arrived and
+/// large responses could be cut off mid-`write_all`. Switch them back to blocking
+/// I/O with timeouts.
+fn prepare_accepted_stream(stream: &TcpStream) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(15)));
+}
+
+/// Binds a LAN listener, retrying briefly while a just-stopped server thread on the
+/// same port is still releasing its socket (it polls its stop flag every 50 ms).
+fn bind_lan_listener(port: u16) -> std::io::Result<TcpListener> {
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    loop {
+        match TcpListener::bind(("0.0.0.0", port)) {
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(60));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 8192];
@@ -3585,7 +3754,13 @@ fn start_text_sync_server(
         }
     }
 
-    let listener = TcpListener::bind(("0.0.0.0", bind_port))
+    // Stop a running instance first so its listener releases the port.
+    if let Ok(mut runtime) = state.runtime.lock() {
+        if let Some(old) = runtime.take() {
+            old.stop.store(true, Ordering::Relaxed);
+        }
+    }
+    let listener = bind_lan_listener(bind_port)
         .map_err(|e| format!("Text sync bind failed: {}", e))?;
     listener
         .set_nonblocking(true)
@@ -3614,6 +3789,7 @@ fn start_text_sync_server(
         while !stop.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((mut stream, _addr)) => {
+                    prepare_accepted_stream(&stream);
                     if let Ok(request) = read_http_request(&mut stream) {
                         let response = handle_text_sync_request(
                             &request,
@@ -4061,7 +4237,13 @@ fn start_capture_agent_server(
             )
         });
     let bind_port = port.unwrap_or(48731);
-    let listener = TcpListener::bind(("0.0.0.0", bind_port))
+    // Stop a running instance first so its listener releases the port.
+    if let Ok(mut runtime) = state.runtime.lock() {
+        if let Some(old) = runtime.take() {
+            old.stop.store(true, Ordering::Relaxed);
+        }
+    }
+    let listener = bind_lan_listener(bind_port)
         .map_err(|e| format!("Capture agent bind failed: {}", e))?;
     listener
         .set_nonblocking(true)
@@ -4086,9 +4268,8 @@ fn start_capture_agent_server(
         while !stop.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((mut stream, _addr)) => {
-                    let mut buffer = [0_u8; 8192];
-                    if let Ok(size) = stream.read(&mut buffer) {
-                        let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+                    prepare_accepted_stream(&stream);
+                    if let Ok(request) = read_http_request(&mut stream) {
                         let response = handle_capture_agent_request(&request, &server_token);
                         let _ = stream.write_all(response.as_bytes());
                     }
@@ -5153,6 +5334,67 @@ mod tests {
     }
 
     #[test]
+    fn accepted_lan_stream_waits_for_late_request_bytes() {
+        use std::io::Write;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            stream.write_all(b"GET /health HTTP/1.1
+Host: x
+
+").unwrap();
+        });
+        let mut accepted = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        };
+        prepare_accepted_stream(&accepted);
+        let request = read_http_request(&mut accepted).unwrap();
+        assert!(request.starts_with("GET /health"));
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn scan_cursor_ignores_inline_furigana_readings() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entries (term, reading, definition, dict_name, tags) VALUES ('幽か', 'かすか', 'faint', 'test', 'adj-na')",
+            [],
+        )
+        .unwrap();
+        let sentence = "幽(かす)かに苦笑して、有島さんは肩をすくめた。";
+
+        let result = scan_cursor_in_db(&db, sentence, 0).unwrap();
+        assert_eq!(result.entries[0].term, "幽か");
+        assert_eq!(result.match_start, 0);
+        // 幽(かす)か spans 6 chars of the original line.
+        assert_eq!(result.match_len, 6);
+        assert!(result.entries.iter().all(|entry| entry.source_length <= 6));
+
+        // Hovering the reading itself resolves the annotated word.
+        let on_reading = scan_cursor_in_db(&db, sentence, 2).unwrap();
+        assert_eq!(on_reading.entries[0].term, "幽か");
+        assert_eq!(on_reading.match_start, 0);
+
+        let full_width = scan_cursor_in_db(&db, "幽（かす）かに", 0).unwrap();
+        assert_eq!(full_width.entries[0].term, "幽か");
+        assert_eq!(full_width.match_len, 6);
+    }
+
+    #[test]
+    fn inline_furigana_strip_keeps_regular_parentheses() {
+        let chars: Vec<char> = "（ああ、雪が降っているのね）".chars().collect();
+        assert!(dictionary_engine::strip_inline_furigana(&chars).is_none());
+        let chars: Vec<char> = "彼(18歳)".chars().collect();
+        assert!(dictionary_engine::strip_inline_furigana(&chars).is_none());
+    }
+
+    #[test]
     fn scan_cursor_uses_longest_kana_reading_and_keeps_shorter_homophones() {
         let db = test_db();
         db.execute(
@@ -5533,6 +5775,35 @@ fn hide_windows_to_tray(app: &AppHandle) {
     }
 }
 
+/// In debug builds the window/tray icon gets an orange "dev" badge in the
+/// bottom-right corner so a dev instance is easy to tell apart from the
+/// installed release.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn app_icon(app: &tauri::App) -> Option<tauri::image::Image<'static>> {
+    let icon = app.default_window_icon()?.clone().to_owned();
+    if !cfg!(debug_assertions) {
+        return Some(icon);
+    }
+    let (width, height) = (icon.width(), icon.height());
+    let mut rgba = icon.rgba().to_vec();
+    let size = width.min(height) as f32;
+    let radius = size * 0.30;
+    let border = (size * 0.045).max(1.0);
+    let (cx, cy) = (width as f32 - radius - 1.0, height as f32 - radius - 1.0);
+    for y in 0..height {
+        for x in 0..width {
+            let distance = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            if distance > radius {
+                continue;
+            }
+            let color: [u8; 4] = if distance > radius - border { [255, 255, 255, 255] } else { [255, 138, 0, 255] };
+            let index = ((y * width + x) * 4) as usize;
+            rgba[index..index + 4].copy_from_slice(&color);
+        }
+    }
+    Some(tauri::image::Image::new_owned(rgba, width, height))
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, "tray_show", "Открыть Setsuna", true, None::<&str>)?;
@@ -5561,8 +5832,11 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
                 show_main_from_tray(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon().cloned() {
+    if let Some(icon) = app_icon(app) {
         tray = tray.icon(icon);
+    }
+    if cfg!(debug_assertions) {
+        tray = tray.tooltip("Setsuna DEV");
     }
     tray.build(app)?;
     Ok(())
@@ -5647,9 +5921,11 @@ fn main() {
     };
     let jl_mode_state = JlModeState {
         last_line: Mutex::new(String::new()),
+        visible: AtomicBool::new(false),
     };
     let jl_lookup_state = JlLookupState {
         payload: Mutex::new(None),
+        anchor: Mutex::new(FlowLookupAnchor::default()),
     };
     let flow_timer_state = FlowTimerState {
         paused: AtomicBool::new(true),
@@ -5704,6 +5980,8 @@ fn main() {
             yatsu::get_yatsu_request,
             #[cfg(feature = "private-reader")]
             yatsu::highlight_yatsu_match,
+            text_stats::count_text_stats,
+            system_fonts::list_system_fonts,
             local_audio::inspect_local_audio_database,
             local_audio::lookup_local_audio,
             local_audio::lookup_online_audio,
@@ -5718,7 +5996,9 @@ fn main() {
             dictionary_engine::update_dictionary_from_source,
             open_jl_mode_window,
             close_jl_mode_window,
+            is_jl_mode_window_open,
             show_jl_lookup_window,
+            fit_jl_lookup_window,
             get_jl_lookup_payload,
             hide_jl_lookup_window,
             get_flow_timer_state,
@@ -5728,6 +6008,9 @@ fn main() {
             get_jl_mode_line,
             save_sync_file,
             load_sync_file,
+            tab_lines::save_tab_lines,
+            tab_lines::load_tab_lines,
+            tab_lines::prune_tab_lines,
             save_workspace_state,
             load_workspace_state,
             get_data_file_path,
@@ -5825,6 +6108,18 @@ fn main() {
 
             if let Some(main_win) = app.get_webview_window("main") {
                 sanitize_main_window_size(&main_win);
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                if cfg!(debug_assertions) {
+                    if let Some(icon) = app_icon(app) {
+                        let _ = main_win.set_icon(icon);
+                    }
+                    let _ = main_win.set_title("Setsuna DEV");
+                }
+                // The window is created hidden (tauri.conf.json) so the restored
+                // size/maximized state and the dark background are in place
+                // before it appears, instead of a white window that resizes.
+                let _ = main_win.show();
+                let _ = main_win.set_focus();
                 #[cfg(target_os = "windows")]
                 webview_recovery::install(&main_win);
 

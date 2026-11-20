@@ -4,12 +4,13 @@ version = 4
 
 [[package]]
 name = "Setsuna"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "atspi",
  "base64 0.22.1",
  "discord-rich-presence",
  "flate2",
+ "fontdb",
  "image 0.25.10",
  "jni",
  "keyring",
@@ -37,6 +38,7 @@ dependencies = [
  "tauri-plugin-window-state",
  "tokio",
  "tokio-util",
+ "ttf-parser",
  "webview2-com",
  "winapi",
  "windows 0.58.0",

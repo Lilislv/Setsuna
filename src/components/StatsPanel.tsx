@@ -1,6 +1,8 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { getTranslator, type AppLanguage } from '../utils/i18n';
 import type { ReadingSpeedSample } from '../utils/constants';
+import { useJelly } from '../utils/jelly';
+import SpeedAnalytics from './SpeedAnalytics';
 
 interface TabStats {
     chars: number;
@@ -19,21 +21,11 @@ interface StatsPanelProps {
     speedTimeframe: 'minute' | 'hour';
     language?: AppLanguage;
     textOrientation?: 'horizontal' | 'vertical';
+    tabId?: number | string | null;
+    tabName?: string;
 }
 
-const chartWidth = 760;
-const chartHeight = 250;
 
-const colors = {
-    bg: '#1a1a1a',
-    panel: '#202020',
-    panel2: '#252525',
-    border: '#3a3a3a',
-    text: '#f1f1f1',
-    muted: '#a8a8a8',
-    blue: '#4fa6ff',
-    green: '#35d07f',
-};
 
 const formatTime = (seconds: number, t: ReturnType<typeof getTranslator>) => {
     const h = Math.floor(seconds / 3600);
@@ -51,6 +43,96 @@ const IconSpeed = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="no
 const IconPlay = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>;
 const IconPause = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>;
 
+const POSITION_KEY = 'setsuna-stats-panel-position';
+const EDGE = 8;
+
+type PanelOffset = { right: number; top: number };
+
+const readSavedOffset = (): PanelOffset | null => {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(POSITION_KEY) || 'null');
+        if (parsed && Number.isFinite(parsed.right) && Number.isFinite(parsed.top)) return parsed;
+    } catch {}
+    return null;
+};
+
+/**
+ * Lets the floating stats card be dragged anywhere inside its container. The
+ * offset is kept from the right edge so the card stays put when the window is
+ * resized, and it is clamped back into view if the window shrinks.
+ */
+const useDraggablePanel = (enabled: boolean) => {
+    const panelRef = useRef<HTMLDivElement>(null);
+    const [offset, setOffset] = useState<PanelOffset | null>(() => readSavedOffset());
+    const [dragging, setDragging] = useState(false);
+    const dragRef = useRef<{ pointerX: number; pointerY: number; right: number; top: number } | null>(null);
+
+    const clamp = useCallback((value: PanelOffset): PanelOffset => {
+        const panel = panelRef.current;
+        const parent = panel?.offsetParent as HTMLElement | null;
+        if (!panel || !parent) return value;
+        const maxRight = Math.max(EDGE, parent.clientWidth - panel.offsetWidth - EDGE);
+        const maxTop = Math.max(EDGE, parent.clientHeight - panel.offsetHeight - EDGE);
+        return {
+            right: Math.min(maxRight, Math.max(EDGE, value.right)),
+            top: Math.min(maxTop, Math.max(EDGE, value.top)),
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!enabled) return;
+        const parent = panelRef.current?.offsetParent as HTMLElement | null;
+        if (!parent) return;
+        const observer = new ResizeObserver(() => setOffset((current) => (current ? clamp(current) : current)));
+        observer.observe(parent);
+        return () => observer.disconnect();
+    }, [clamp, enabled]);
+
+    const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+        if (!enabled || event.button !== 0 || (event.target as HTMLElement).closest('button')) return;
+        const panel = panelRef.current;
+        const parent = panel?.offsetParent as HTMLElement | null;
+        if (!panel || !parent) return;
+        const panelRect = panel.getBoundingClientRect();
+        const parentRect = parent.getBoundingClientRect();
+        dragRef.current = {
+            pointerX: event.clientX,
+            pointerY: event.clientY,
+            right: parentRect.right - panelRect.right,
+            top: panelRect.top - parentRect.top,
+        };
+        panel.setPointerCapture(event.pointerId);
+        setDragging(true);
+        event.preventDefault();
+    };
+    const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+        const drag = dragRef.current;
+        if (!drag) return;
+        setOffset(clamp({
+            right: drag.right - (event.clientX - drag.pointerX),
+            top: drag.top + (event.clientY - drag.pointerY),
+        }));
+    };
+    const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+        if (!dragRef.current) return;
+        dragRef.current = null;
+        setDragging(false);
+        try { panelRef.current?.releasePointerCapture(event.pointerId); } catch {}
+        setOffset((current) => {
+            if (current) {
+                try { localStorage.setItem(POSITION_KEY, JSON.stringify(current)); } catch {}
+            }
+            return current;
+        });
+    };
+    const reset = () => {
+        setOffset(null);
+        try { localStorage.removeItem(POSITION_KEY); } catch {}
+    };
+
+    return { panelRef, offset, dragging, reset, handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp } };
+};
+
 const getMetric = (sample: ReadingSpeedSample | TabStats, metric: StatsPanelProps['speedMetric']) => {
     if (metric === 'words') return sample.words;
     if (metric === 'sentences') return sample.sentences;
@@ -67,12 +149,39 @@ const StatsPanel = memo(function StatsPanel({
     speedTimeframe,
     language = 'ru',
     textOrientation = 'horizontal',
+    tabId = null,
+    tabName = '',
 }: StatsPanelProps) {
     const [analyticsOpen, setAnalyticsOpen] = useState(false);
-    const [rangeValue, setRangeValue] = useState(30);
-    const [rangeUnit, setRangeUnit] = useState<'minutes' | 'hours'>('minutes');
+    const [analyticsClosing, setAnalyticsClosing] = useState(false);
+    const closeAnalytics = useCallback(() => {
+        setAnalyticsClosing(true);
+        window.setTimeout(() => { setAnalyticsOpen(false); setAnalyticsClosing(false); }, 180);
+    }, []);
+    useEffect(() => {
+        if (!analyticsOpen) return;
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            closeAnalytics();
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [analyticsOpen, closeAnalytics]);
     const t = getTranslator(language);
     const { chars, words, sentences, time } = stats;
+    const drag = useDraggablePanel(position === 'top-right');
+    useJelly(() => drag.panelRef.current, drag.dragging);
+    // In a small window the full floating card covers a good part of the text;
+    // it shrinks to a pill with the timer, time and speed.
+    const isSmallWindow = () => typeof window !== 'undefined' && (window.innerWidth < 900 || window.innerHeight < 560);
+    const [compact, setCompact] = useState(isSmallWindow);
+    useEffect(() => {
+        const onResize = () => setCompact(isSmallWindow());
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
 
     const multiplier = speedTimeframe === 'minute' ? 60 : 3600;
     const speedValue = time > 0 ? Math.round((getMetric(stats, speedMetric) / time) * multiplier) : 0;
@@ -80,35 +189,6 @@ const StatsPanel = memo(function StatsPanel({
     const timeframeText = speedTimeframe === 'minute' ? t('stats.minutesShort') : t('stats.hoursShort');
     const metricLabel = `${metricText}/${timeframeText}`;
 
-    const analytics = useMemo(() => {
-        const now = Date.now();
-        const rangeMs = Math.max(1, rangeValue || 1) * (rangeUnit === 'minutes' ? 60_000 : 3_600_000);
-        const filtered = speedSamples.filter((sample) => sample.at >= now - rangeMs);
-        const source = filtered.length >= 2 ? filtered : speedSamples.slice(-48);
-
-        const intervals = source
-            .map((sample, index, arr) => {
-                if (index === 0) return null;
-                const prev = arr[index - 1];
-                const deltaTime = Math.max(1, sample.time - prev.time);
-                const deltaMetric = Math.max(0, getMetric(sample, speedMetric) - getMetric(prev, speedMetric));
-                return Math.round((deltaMetric / deltaTime) * multiplier);
-            })
-            .filter((value): value is number => value !== null);
-
-        const values = intervals.length ? intervals : [speedValue];
-        const max = Math.max(1, ...values);
-        const min = Math.min(...values);
-        const avg = Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
-        const peak = Math.max(...values);
-        const points = values.map((value, index) => {
-            const x = values.length === 1 ? chartWidth / 2 : (index / (values.length - 1)) * chartWidth;
-            const y = chartHeight - (value / max) * (chartHeight - 20) - 10;
-            return `${x.toFixed(1)},${y.toFixed(1)}`;
-        }).join(' ');
-
-        return { values, points, peak, min, avg, max, count: source.length };
-    }, [multiplier, rangeUnit, rangeValue, speedMetric, speedSamples, speedValue]);
 
     const speedButton = (
         <button
@@ -120,108 +200,31 @@ const StatsPanel = memo(function StatsPanel({
                 border: 0,
                 padding: 0,
                 background: 'transparent',
-                color: colors.blue,
+                color: 'var(--accent-blue)',
                 fontWeight: 'bold',
                 cursor: 'pointer',
             }}
             title={language === 'en' ? 'Open reading speed analytics' : 'Открыть аналитику скорости чтения'}
         >
             <span style={{ fontSize: position === 'top-right' ? 13 : 16 }}>{speedValue}</span>
-            <span style={{ color: colors.muted, fontSize: position === 'top-right' ? 10 : 11, fontWeight: 'normal' }}>{metricLabel}</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: position === 'top-right' ? 10 : 11, fontWeight: 'normal' }}>{metricLabel}</span>
         </button>
     );
 
-    const analyticsModal = analyticsOpen ? (
-        <div
-            onMouseDown={(event) => {
-                if (event.target === event.currentTarget) setAnalyticsOpen(false);
-            }}
-            style={{
-                position: 'fixed',
-                inset: 0,
-                zIndex: 5000,
-                display: 'grid',
-                placeItems: 'center',
-                padding: 24,
-                background: 'rgba(0,0,0,0.58)',
-            }}
-        >
-            <div
-                style={{
-                    width: 'min(920px, calc(100vw - 48px))',
-                    maxHeight: 'min(720px, calc(100vh - 48px))',
-                    overflow: 'auto',
-                    border: `1px solid ${colors.border}`,
-                    borderRadius: 10,
-                    background: colors.panel,
-                    color: colors.text,
-                    boxShadow: '0 22px 70px rgba(0,0,0,0.55)',
-                }}
-            >
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, padding: '18px 20px', borderBottom: `1px solid ${colors.border}` }}>
-                    <div>
-                        <h2 style={{ margin: 0, fontSize: 22 }}>{language === 'en' ? 'Reading Speed Analytics' : 'Аналитика скорости чтения'}</h2>
-                        <div style={{ color: colors.muted, fontSize: 13, marginTop: 4 }}>
-                            {language === 'en' ? 'Based on recent reading samples' : 'По последним замерам чтения'} · {metricLabel}
-                        </div>
-                    </div>
-                    <button
-                        onClick={() => setAnalyticsOpen(false)}
-                        style={{ width: 34, height: 34, border: `1px solid ${colors.border}`, borderRadius: 7, background: colors.panel2, color: colors.text, cursor: 'pointer', fontSize: 18 }}
-                    >
-                        x
-                    </button>
-                </div>
-
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', padding: '16px 20px 0' }}>
-                    <span style={{ color: colors.muted, fontSize: 13 }}>{language === 'en' ? 'Show last' : 'Показать последние'}</span>
-                    <input
-                        type="number"
-                        min={1}
-                        max={rangeUnit === 'minutes' ? 1440 : 168}
-                        value={rangeValue}
-                        onChange={(event) => setRangeValue(Math.max(1, Number(event.target.value) || 1))}
-                        style={{ width: 92, height: 34, padding: '0 10px', borderRadius: 7, border: `1px solid ${colors.border}`, background: '#151515', color: colors.text }}
-                    />
-                    <select
-                        value={rangeUnit}
-                        onChange={(event) => setRangeUnit(event.target.value as 'minutes' | 'hours')}
-                        style={{ height: 34, padding: '0 10px', borderRadius: 7, border: `1px solid ${colors.border}`, background: '#151515', color: colors.text }}
-                    >
-                        <option value="minutes">{language === 'en' ? 'minutes' : 'минут'}</option>
-                        <option value="hours">{language === 'en' ? 'hours' : 'часов'}</option>
-                    </select>
-                    <span style={{ color: colors.muted, fontSize: 13 }}>
-                        {language === 'en' ? 'samples' : 'замеров'}: {analytics.count}
-                    </span>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, padding: 20 }}>
-                    <MetricCard label={language === 'en' ? 'Current' : 'Сейчас'} value={speedValue} suffix={metricLabel} accent={colors.blue} />
-                    <MetricCard label={language === 'en' ? 'Peak' : 'Пик'} value={analytics.peak} suffix={metricLabel} accent={colors.green} />
-                    <MetricCard label={language === 'en' ? 'Lowest' : 'Минимум'} value={analytics.min} suffix={metricLabel} accent="#ff7a7a" />
-                    <MetricCard label={language === 'en' ? 'Average' : 'Средняя'} value={analytics.avg} suffix={metricLabel} accent="#d7b8ff" />
-                </div>
-
-                <div style={{ padding: '0 20px 22px' }}>
-                    <div style={{ border: `1px solid ${colors.border}`, borderRadius: 8, background: '#161616', padding: 16 }}>
-                        <svg width="100%" height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" style={{ display: 'block' }}>
-                            {[0, 0.25, 0.5, 0.75, 1].map((level) => {
-                                const y = 10 + level * (chartHeight - 20);
-                                return <line key={level} x1="0" x2={chartWidth} y1={y} y2={y} stroke="#2d2d2d" strokeWidth="1" />;
-                            })}
-                            <polyline points={analytics.points} fill="none" stroke={colors.blue} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                            {analytics.values.map((value, index) => {
-                                const x = analytics.values.length === 1 ? chartWidth / 2 : (index / (analytics.values.length - 1)) * chartWidth;
-                                const y = chartHeight - (value / Math.max(1, analytics.max)) * (chartHeight - 20) - 10;
-                                return <circle key={`${index}-${value}`} cx={x} cy={y} r="3" fill={colors.blue} opacity={index === analytics.values.length - 1 ? 1 : 0.45} />;
-                            })}
-                        </svg>
-                    </div>
-                </div>
-            </div>
-        </div>
-    ) : null;
+    const analyticsModal = (
+        <SpeedAnalytics
+            open={analyticsOpen}
+            closing={analyticsClosing}
+            onClose={closeAnalytics}
+            english={language === 'en'}
+            tabId={tabId}
+            tabName={tabName}
+            stats={stats}
+            samples={speedSamples}
+            defaultMetric={speedMetric}
+            timeframe={speedTimeframe}
+        />
+    );
 
     const pauseButton = (
         <>
@@ -232,14 +235,67 @@ const StatsPanel = memo(function StatsPanel({
 
     if (position === 'top-right') {
         const isVertical = textOrientation === 'vertical';
+        if (compact) {
+            return (
+                <>
+                    <div
+                        ref={drag.panelRef}
+                        {...drag.handlers}
+                        onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button')) drag.reset(); }}
+                        title={language === 'en' ? 'Drag to move · double-click to reset position' : 'Перетащи, чтобы сдвинуть · двойной клик — вернуть на место'}
+                        style={{
+                            position: 'absolute',
+                            top: drag.offset ? `${drag.offset.top}px` : '10px',
+                            right: drag.offset ? `${drag.offset.right}px` : (isVertical ? 'auto' : '12px'),
+                            left: drag.offset ? 'auto' : (isVertical ? '12px' : 'auto'),
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '4px 12px 4px 4px', borderRadius: '999px',
+                            backgroundColor: 'var(--surface-glass)', border: '1px solid var(--line)', backdropFilter: 'blur(14px)',
+                            boxShadow: drag.dragging ? '0 14px 40px rgba(0,0,0,0.38)' : '0 8px 24px rgba(0,0,0,0.2)',
+                            zIndex: 90, transform: 'var(--jelly-transform, none)',
+                            cursor: drag.dragging ? 'grabbing' : 'grab', userSelect: 'none', touchAction: 'none',
+                        }}
+                    >
+                        <button
+                            type="button"
+                            onClick={onTogglePause}
+                            title={isPaused ? t('stats.start') : t('stats.pause')}
+                            style={{
+                                width: 28, height: 28, display: 'grid', placeItems: 'center', border: 0, borderRadius: '50%',
+                                background: isPaused ? 'var(--surface-2)' : 'var(--accent-blue)',
+                                color: isPaused ? 'var(--text-muted)' : '#fff', cursor: 'pointer',
+                            }}
+                        >
+                            {isPaused ? <IconPlay /> : <IconPause />}
+                        </button>
+                        <span style={{ color: 'var(--text-main)', fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{formatTime(time, t)}</span>
+                        {speedButton}
+                    </div>
+                    {analyticsModal}
+                </>
+            );
+        }
         return (
             <>
-                <div style={{
-                    position: 'absolute', top: '50px', right: isVertical ? 'auto' : '20px', left: isVertical ? '20px' : 'auto',
-                    backgroundColor: 'var(--bg-panel)', border: '1px solid var(--border-main)',
-                    borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column',
-                    gap: '10px', boxShadow: '0 8px 30px rgba(0,0,0,0.2)', zIndex: 90, opacity: 0.95, transition: '0.3s'
-                }}>
+                <div
+                    ref={drag.panelRef}
+                    {...drag.handlers}
+                    onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button')) drag.reset(); }}
+                    title={language === 'en' ? 'Drag to move · double-click to reset position' : 'Перетащи, чтобы сдвинуть · двойной клик — вернуть на место'}
+                    style={{
+                        position: 'absolute',
+                        top: drag.offset ? `${drag.offset.top}px` : '12px',
+                        right: drag.offset ? `${drag.offset.right}px` : (isVertical ? 'auto' : '20px'),
+                        left: drag.offset ? 'auto' : (isVertical ? '20px' : 'auto'),
+                        backgroundColor: 'var(--surface-glass)', border: '1px solid var(--line)',
+                        backdropFilter: 'blur(14px)',
+                        borderRadius: '16px', padding: '12px 14px', display: 'flex', flexDirection: 'column',
+                        gap: '10px', boxShadow: drag.dragging ? '0 14px 40px rgba(0,0,0,0.38)' : '0 8px 30px rgba(0,0,0,0.2)',
+                        zIndex: 90, opacity: 0.95, transform: 'var(--jelly-transform, none)', willChange: drag.dragging ? 'transform' : undefined,
+                        cursor: drag.dragging ? 'grabbing' : 'grab', userSelect: 'none', touchAction: 'none',
+                        transition: drag.dragging ? 'box-shadow 0.15s' : 'box-shadow 0.15s, background-color 0.3s, border-color 0.3s',
+                    }}
+                >
                     <div style={{ display: 'grid', gridTemplateColumns: '20px 1fr', gap: '8px 12px', alignItems: 'center', fontSize: '13px' }}>
                         <div style={{ color: 'var(--text-muted)', display: 'flex', justifyContent: 'center' }} title={t('stats.chars')}><IconChars /></div>
                         <div style={{ color: 'var(--text-main)', fontWeight: 'bold' }}>{chars}</div>
@@ -316,12 +372,5 @@ const StatBlock = ({ label, value }: { label: string; value: React.ReactNode }) 
     </div>
 );
 
-const MetricCard = ({ label, value, suffix, accent }: { label: string; value: number; suffix: string; accent: string }) => (
-    <div style={{ border: `1px solid ${colors.border}`, borderRadius: 8, background: colors.panel2, padding: 14 }}>
-        <div style={{ color: colors.muted, fontSize: 12, marginBottom: 8 }}>{label}</div>
-        <div style={{ color: accent, fontSize: 28, fontWeight: 800, lineHeight: 1 }}>{value}</div>
-        <div style={{ color: colors.muted, fontSize: 11, marginTop: 6 }}>{suffix}</div>
-    </div>
-);
 
 export default StatsPanel;

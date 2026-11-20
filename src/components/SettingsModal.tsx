@@ -1,8 +1,8 @@
 ﻿import { useState, useEffect, useRef } from "react";
+import FontPicker from './FontPicker';
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ReactNode } from "react";
-import { getVersion } from "@tauri-apps/api/app";
-import releaseInfo from "../release-info.json";
+import { appVersionLabel } from "../utils/appVersion";
 import { invoke } from "@tauri-apps/api/core";
 import SetupWizard from "./SetupWizard"; 
 
@@ -25,7 +25,7 @@ export interface AppSettings {
   allowManualPaste: boolean; allowManualPasteDuringPause: boolean;
   
   lookupHotkey: string;
-  lookupScale: number; lookupFontSize: number; lookupTagFontSize: number; lookupWidth: number; lookupShowTags: boolean; lookupShowAudio: boolean;
+  lookupScale: number; lookupFontSize: number; lookupFontFamily?: string; lookupTagFontSize: number; lookupWidth: number; lookupShowTags: boolean; lookupShowAudio: boolean;
   globalLookupEnabled?: boolean; globalLookupRestoreClipboard?: boolean; globalLookupShortcut?: string;
   hookProcesses: { name: string; active: boolean; icon?: string; path?: string; pid?: number }[];
 
@@ -45,9 +45,10 @@ export interface AppSettings {
   accountApiBaseUrl?: string; accountEmail?: string; accountAccessToken?: string; accountUserId?: string; accountDeviceName?: string;
   ankiColorNew: string; ankiColorOther: string; ankiColorSame: string; 
   ankiAllowDuplicatesOther: boolean; ankiAllowDuplicatesSame: boolean; 
-  fontSize: number; fontFamily: string; customFontFamily?: string; customFontData?: string; customFontPath?: string; customFontName?: string; furiganaMode: 'none' | 'auto'; appLanguage: 'ru' | 'en'; autoScrollOffset: number; theme: 'dark' | 'light' | 'amoled'; textOrientation: 'horizontal' | 'vertical';
+  fontSize: number; fontFamily: string; normalizeFontSize?: boolean; customFontFamily?: string; customFontData?: string; customFontPath?: string; customFontName?: string; furiganaMode: 'none' | 'auto'; appLanguage: 'ru' | 'en'; autoScrollOffset: number; theme: 'dark' | 'light' | 'amoled'; textOrientation: 'horizontal' | 'vertical';
   jlModeFontSize?: number; jlModeFontFamily?: string; jlModeOpacity?: number; jlModeTextColor?: string; jlModeBackgroundColor?: string; jlModeBorderColor?: string; jlModeAlwaysOnTop?: boolean; jlModeShowControls?: boolean; jlModePadding?: number; jlModeLookupOnClick?: boolean;
   jlModeLookupTrigger?: 'hover' | 'click' | 'both'; jlModeHoverDelay?: number; jlModeBacklogCapacity?: number; jlModeHideLookupOnNewText?: boolean; jlModeAutoLookupFirstWord?: boolean;
+  jlModeLookupMode?: 'scan' | 'click'; jlModeScanDelay?: number;
   mobileOverlayEnabled?: boolean; mobileOverlayFontSize?: number; mobileOverlayFontFamily?: 'serif' | 'sans' | 'monospace'; mobileOverlayLineHeight?: number;
   mobileOverlayOpacity?: number; mobileOverlayTextColor?: string; mobileOverlayBackgroundColor?: string; mobileOverlayBorderColor?: string;
   mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
@@ -55,7 +56,7 @@ export interface AppSettings {
   epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubPagePadding?: number; epubShowImages?: boolean; epubImageMaxWidth?: number;
   playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerMiningPreferVideo: boolean; playerMiningUseClipForAnki: boolean;
   playerKeyPlayPause: string; playerKeyBack: string; playerKeyForward: string; playerKeyMine: string; playerKeyOffsetMinus: string; playerKeyOffsetPlus: string;
-  discordEnabled: boolean; discordClientId: string; discordShowTab: boolean; discordShowStats: boolean; discordShowChars: boolean; discordShowWords: boolean; discordShowSentences: boolean; discordShowProgress: boolean; discordShowPaused: boolean; discordShowTimer: boolean; discordShowButtons: boolean;
+  discordEnabled: boolean; discordClientId: string; discordShowTab: boolean; discordShowStats: boolean; discordShowChars: boolean; discordShowWords: boolean; discordShowSentences: boolean; discordShowProgress: boolean; discordShowPaused: boolean; discordShowTimer: boolean; discordShowButtons: boolean; discordShowSpeed?: boolean; discordTitleInMemberList?: boolean;
   discordTextActivityType: 'playing' | 'watching' | 'listening' | 'competing'; discordTextStatus: 'playing' | 'reading' | 'watching' | 'mining' | 'custom'; discordCustomTextStatus: string;
   discordLargeImage: string; discordSmallImage: string; discordButtonLabel: string; discordButtonUrl: string; discordSecondButtonLabel: string; discordSecondButtonUrl: string;
   updateAutoCheck: boolean;
@@ -134,7 +135,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
   const [isCaptureAgentStarting, setIsCaptureAgentStarting] = useState(false);
   const [isRemoteCaptureChecking, setIsRemoteCaptureChecking] = useState(false);
   const [remoteCaptureStatus, setRemoteCaptureStatus] = useState("");
-  const [appVersion, setAppVersion] = useState("");
 
   const normalizeWebSocketUrl = (value: string) => {
       const trimmed = value.trim();
@@ -616,6 +616,21 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
     }
   };
 
+  // Stay mounted briefly after closing so the window can animate out.
+  const [presenceOpen, setPresenceOpen] = useState(isOpen);
+  const [isClosing, setIsClosing] = useState(false);
+  useEffect(() => {
+      if (isOpen) {
+          setPresenceOpen(true);
+          setIsClosing(false);
+          return;
+      }
+      if (!presenceOpen) return;
+      setIsClosing(true);
+      const timer = window.setTimeout(() => { setPresenceOpen(false); setIsClosing(false); }, 200);
+      return () => window.clearTimeout(timer);
+  }, [isOpen]);
+
   useEffect(() => {
       if (isOpen) {
           initialSettingsRef.current = JSON.parse(JSON.stringify(settings));
@@ -640,9 +655,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
 
   useEffect(() => { setLocalFontSize(settings.fontSize || 26); }, [settings.fontSize]);
   useEffect(() => { setLocalScrollOffset(settings.autoScrollOffset ?? 80); }, [settings.autoScrollOffset]);
-  useEffect(() => {
-      getVersion().then(setAppVersion).catch(() => setAppVersion(""));
-  }, []);
 
   useEffect(() => {
       if (!isOpen || activeTab !== 'sync' || !settings.accountAccessToken || accountBusy) return;
@@ -662,6 +674,49 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
       historyRef.current.push(JSON.parse(JSON.stringify(settings))); 
       onSettingsChange({ ...settings, [key]: value }); 
   };
+  // Dragging the text size / autoscroll sliders turns Settings see-through
+  // (only the slider row stays) so the change is visible on the reader behind.
+  // One undo entry per drag; the live values skip the history.
+  const [peekSlider, setPeekSlider] = useState<null | 'fontSize' | 'autoScroll'>(null);
+  const peekValuesRef = useRef({ fontSize: localFontSize, autoScroll: localScrollOffset });
+  peekValuesRef.current = { fontSize: localFontSize, autoScroll: localScrollOffset };
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  // The applied text size is the setting times the font's visual-size factor
+  // (font normalization). Previewing with the same factor avoids a second jump
+  // when the slider is released and the app re-applies the size.
+  const fontScaleRef = useRef(1);
+  const readFontScale = () => {
+      const applied = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--txt-font-size'));
+      const base = settings.fontSize || 26;
+      return applied > 0 && base > 0 ? applied / base : 1;
+  };
+  const previewFontSize = (value: number) => {
+      document.documentElement.style.setProperty('--txt-font-size', `${(value * fontScaleRef.current).toFixed(2)}px`);
+  };
+  const beginPeek = (slider: 'fontSize' | 'autoScroll') => {
+      historyRef.current.push(JSON.parse(JSON.stringify(settings)));
+      if (slider === 'fontSize') fontScaleRef.current = readFontScale();
+      setPeekSlider(slider);
+  };
+  useEffect(() => {
+      if (!peekSlider) return;
+      const finish = () => {
+          const values = peekValuesRef.current;
+          onSettingsChange(peekSlider === 'fontSize'
+              ? { ...settingsRef.current, fontSize: values.fontSize }
+              : { ...settingsRef.current, autoScrollOffset: values.autoScroll });
+          setPeekSlider(null);
+      };
+      window.addEventListener('pointerup', finish);
+      window.addEventListener('pointercancel', finish);
+      return () => {
+          window.removeEventListener('pointerup', finish);
+          window.removeEventListener('pointercancel', finish);
+      };
+  }, [peekSlider]);
+  const peekRowClass = (slider: 'fontSize' | 'autoScroll') => `settings-peek-row${peekSlider === slider ? ' is-peek-target' : ''}`;
+
   const updateMultipleSettings = (newValues: Partial<AppSettings>) => {
       historyRef.current.push(JSON.parse(JSON.stringify(settings)));
       onSettingsChange({ ...settings, ...newValues });
@@ -799,7 +854,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
   };
   const currentSection = sectionMeta[activeTab];
 
-  if (!isOpen) return null;
+  if (!isOpen && !presenceOpen) return null;
 
   return (
     <>
@@ -834,8 +889,8 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           </div>
       )}
 
-      <div className={`settings-overlay${isPreviewMode ? ' is-preview' : ''}`} onClick={() => { if (!isPreviewMode) { handleCancel(); onClearLookup(); } }}>
-        <div className={`settings-window${isPreviewMode ? ' is-preview' : ''}`} onClick={(e) => { e.stopPropagation(); onClearLookup(); }}>
+      <div className={`settings-overlay${isPreviewMode ? ' is-preview' : ''}${peekSlider ? ' is-peeking' : ''}${isClosing ? ' is-closing' : ''}`} onClick={() => { if (!isPreviewMode) { handleCancel(); onClearLookup(); } }}>
+        <div className={`settings-window${isPreviewMode ? ' is-preview' : ''}${peekSlider ? ' is-peeking' : ''}${isClosing ? ' is-closing' : ''}`} onClick={(e) => { e.stopPropagation(); onClearLookup(); }}>
           <header className="settings-topbar">
               <div className="settings-title-block">
                   <span className="settings-eyebrow">Setsuna</span>
@@ -898,7 +953,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
             </nav>
 
             <main ref={scrollContainerRef} className="settings-content">
-              <div className="settings-content-inner">
+              <div className="settings-content-inner" key={activeTab}>
               
               {/* === TEXT TAB === */}
               {activeTab === 'text' && (
@@ -915,41 +970,42 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                               <select className="modern-select" value={settings.appLanguage || 'ru'} onChange={(e) => updateSetting('appLanguage', e.target.value as any)}><option value="ru">{t('wizard.language.ru')}</option><option value="en">{t('wizard.language.en')}</option></select>
                           </div>
                       </div>
-                      <div style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
+                      <div className={peekRowClass('fontSize')} style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
                           <span style={{ color: 'var(--text-muted)', fontSize: '13px', width: '130px' }}>{t('settings.fontSize')}</span>
-                          <input type="range" min="12" max="64" value={localFontSize} onChange={(e) => { const val = Number(e.target.value); setLocalFontSize(val); document.documentElement.style.setProperty('--txt-font-size', `${val}px`); }} onMouseUp={() => updateSetting('fontSize', localFontSize)} style={{ flex: 1 }} />
+                          <input type="range" min="12" max="64" value={localFontSize} onPointerDown={() => beginPeek('fontSize')} onChange={(e) => { const val = Number(e.target.value); setLocalFontSize(val); if (peekSlider) previewFontSize(val); else updateSetting('fontSize', val); }} style={{ flex: 1 }} />
                           <span style={{ color: 'var(--text-main)', fontWeight: 'bold', width: '40px', textAlign: 'center' }}>{localFontSize}px</span>
                       </div>
-                      <div style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
+                      <div className={peekRowClass('autoScroll')} style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
                           <span style={{ color: 'var(--text-muted)', fontSize: '13px', width: '130px' }}>{t('settings.autoscroll')}</span>
-                          <input type="range" min="30" max="85" value={localScrollOffset} onChange={(e) => setLocalScrollOffset(Number(e.target.value))} onMouseUp={() => updateSetting('autoScrollOffset', localScrollOffset)} style={{ flex: 1 }} />
+                          <input type="range" min="30" max="85" value={localScrollOffset} onPointerDown={() => beginPeek('autoScroll')} onChange={(e) => { const val = Number(e.target.value); setLocalScrollOffset(val); if (peekSlider) onSettingsChange({ ...settings, autoScrollOffset: val }); else updateSetting('autoScrollOffset', val); }} style={{ flex: 1 }} />
                           <span style={{ color: 'var(--text-main)', fontWeight: 'bold', width: '40px', textAlign: 'center' }}>{localScrollOffset}%</span>
                       </div>
                       <div style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
                           <span style={{ color: 'var(--text-muted)', fontSize: '13px', width: '130px' }}>{t('settings.textFont')}</span>
-                          <select className="modern-select" value={settings.fontFamily || "'Noto Serif JP', 'Yu Mincho', serif"} onChange={(e) => { updateSetting('fontFamily', e.target.value); document.documentElement.style.setProperty('--txt-font-family', e.target.value); }} style={{ flex: 1, marginTop: 0 }}>{(settings.customFontData || settings.customFontPath) && <option value={settings.fontFamily}>{settings.customFontName || (settings.appLanguage === 'en' ? 'Custom font' : 'Свой шрифт')}</option>}<option value="'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif">{t('wizard.font.serif')}</option><option value="'Noto Sans JP', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'BIZ UDPGothic', sans-serif">{t('wizard.font.sans')}</option><option value="'Yu Gothic UI', 'Yu Gothic', 'Meiryo', sans-serif">{t('wizard.font.yu')}</option><option value="'Meiryo', 'Yu Gothic UI', sans-serif">{t('wizard.font.meiryo')}</option></select>
+                          <FontPicker
+                              english={settings.appLanguage === 'en'}
+                              title={t('settings.textFont').replace(/:$/, '')}
+                              value={settings.fontFamily || "'Noto Serif JP', 'Yu Mincho', serif"}
+                              onChange={(value) => { updateSetting('fontFamily', value); document.documentElement.style.setProperty('--txt-font-family', value); }}
+                              presets={[
+                                  { value: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif", label: t('wizard.font.serif') },
+                                  { value: "'Noto Sans JP', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'BIZ UDPGothic', sans-serif", label: t('wizard.font.sans') },
+                                  { value: "'Yu Gothic UI', 'Yu Gothic', 'Meiryo', sans-serif", label: t('wizard.font.yu') },
+                                  { value: "'Meiryo', 'Yu Gothic UI', sans-serif", label: t('wizard.font.meiryo') },
+                              ]}
+                              customFont={(settings.customFontData || settings.customFontPath) && settings.customFontFamily
+                                  ? { value: `'${settings.customFontFamily}', sans-serif`, label: settings.customFontName || (settings.appLanguage === 'en' ? 'Custom font' : 'Свой шрифт'), hint: settings.appLanguage === 'en' ? 'Font file' : 'Файл шрифта' }
+                                  : null}
+                              onPickFile={() => void handleCustomFontPick()}
+                              onRemoveCustom={clearCustomFont}
+                          />
                       </div>
                       <div style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
-                          <span style={{ color: 'var(--text-muted)', fontSize: '13px', width: '130px' }}>{settings.appLanguage === 'en' ? 'Custom font' : 'Свой шрифт'}</span>
-                          <div style={{ flex: 1, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                              <button type="button" className="btn-primary" onClick={() => void handleCustomFontPick()} style={{ padding: '7px 11px' }}>
-                                  {settings.appLanguage === 'en' ? 'Choose font file…' : 'Выбрать файл шрифта…'}
-                              </button>
-                              {settings.customFontData || settings.customFontPath ? (
-                                  <>
-                                      <span style={{ color: 'var(--text-main)', fontSize: 12 }} title={settings.customFontName || undefined}>
-                                          {settings.customFontName || (settings.appLanguage === 'en' ? 'Custom font loaded' : 'Свой шрифт подключён')}
-                                      </span>
-                                      <button type="button" onClick={clearCustomFont} style={{ padding: '6px 9px', color: 'var(--text-muted)', background: 'transparent', border: '1px solid var(--border-main)', borderRadius: 5, cursor: 'pointer' }}>
-                                          {settings.appLanguage === 'en' ? 'Remove' : 'Удалить'}
-                                      </button>
-                                  </>
-                              ) : (
-                                  <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                                      {settings.appLanguage === 'en' ? 'TTF, OTF, WOFF and WOFF2 are supported.' : 'Поддерживаются TTF, OTF, WOFF и WOFF2.'}
-                                  </span>
-                              )}
-                          </div>
+                          <span style={{ width: '130px', flex: '0 0 130px' }} />
+                          <label className="checkbox-label" title={settings.appLanguage === 'en' ? 'Different fonts draw Japanese at different sizes; this scales the text so every font looks the same size.' : 'Шрифты рисуют японские знаки разного размера; эта опция подгоняет текст, чтобы любой шрифт выглядел одинаково крупным.'}>
+                              <input type="checkbox" checked={settings.normalizeFontSize !== false} onChange={(e) => updateSetting('normalizeFontSize', e.target.checked)} />
+                              {settings.appLanguage === 'en' ? 'Even out the visual size of different fonts' : 'Выравнивать видимый размер разных шрифтов'}
+                          </label>
                       </div>
                       <div style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
                           <span style={{ color: 'var(--text-muted)', fontSize: '13px', width: '130px' }}>{t('settings.furiganaMode')}</span>
@@ -961,50 +1017,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                               <option value="horizontal">{settings.appLanguage === 'en' ? 'Horizontal' : 'Горизонтально'}</option>
                               <option value="vertical">{settings.appLanguage === 'en' ? 'Vertical right-to-left' : 'Вертикально справа налево'}</option>
                           </select>
-                      </div>
-                      <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--border-main)' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 12 }}>
-                              <div>
-                                  <div className="card-label" style={{ margin: 0, color: 'var(--text-main)' }}>{settings.appLanguage === 'en' ? 'Top bar' : 'Верхняя панель'}</div>
-                                  <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 4 }}>{settings.appLanguage === 'en' ? 'Hide commands you do not use.' : 'Спрячь кнопки, которыми не пользуешься.'}</div>
-                              </div>
-                              <div style={{ display: 'flex', gap: 8 }}>
-                                  <button className="btn-primary" style={{ padding: '6px 10px' }} onClick={() => updateMultipleSettings({
-                                      topbarShowClipboard: false,
-                                      topbarShowWebSockets: false,
-                                      topbarShowSync: false,
-                                      topbarShowCapture: false,
-                                      topbarShowSearch: false,
-                                      topbarShowImport: false,
-                                      topbarShowExport: false,
-                                  })}>{settings.appLanguage === 'en' ? 'Minimal' : 'Минимум'}</button>
-                                  <button className="btn-primary" style={{ padding: '6px 10px' }} onClick={() => updateMultipleSettings({
-                                      topbarShowClipboard: true,
-                                      topbarShowWebSockets: true,
-                                      topbarShowSync: true,
-                                      topbarShowCapture: true,
-                                      topbarShowSearch: true,
-                                      topbarShowImport: true,
-                                      topbarShowExport: true,
-                                  })}>{settings.appLanguage === 'en' ? 'Show all' : 'Показать всё'}</button>
-                              </div>
-                          </div>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '8px 14px' }}>
-                              {([
-                                  ['topbarShowClipboard', settings.appLanguage === 'en' ? 'Clipboard' : 'Буфер'],
-                                  ['topbarShowWebSockets', 'WebSocket'],
-                                  ['topbarShowSync', 'Setsuna Sync'],
-                                  ['topbarShowCapture', settings.appLanguage === 'en' ? 'Screenshot pin' : 'Пин скрина'],
-                                  ['topbarShowSearch', settings.appLanguage === 'en' ? 'Search' : 'Поиск'],
-                                  ['topbarShowImport', settings.appLanguage === 'en' ? 'Import' : 'Импорт'],
-                                  ['topbarShowExport', settings.appLanguage === 'en' ? 'Export' : 'Экспорт'],
-                              ] as const).map(([key, label]) => (
-                                  <label key={key} className="checkbox-label">
-                                      <input type="checkbox" checked={(settings[key] as boolean | undefined) ?? true} onChange={(e) => updateSetting(key, e.target.checked as any)} />
-                                      {label}
-                                  </label>
-                              ))}
-                          </div>
                       </div>
                   </div>
 
@@ -1499,12 +1511,23 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 16px', marginBottom: 16 }}>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Font' : 'Шрифт'}
-                                <select className="modern-select" value={settings.jlModeFontFamily || settings.fontFamily} onChange={(e) => updateSetting('jlModeFontFamily', e.target.value)} style={{ marginTop: 6 }}>
-                                    <option value="'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif">{t('wizard.font.serif')}</option>
-                                    <option value="'Noto Sans JP', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'BIZ UDPGothic', sans-serif">{t('wizard.font.sans')}</option>
-                                    <option value="'Yu Gothic UI', 'Yu Gothic', 'Meiryo', sans-serif">{t('wizard.font.yu')}</option>
-                                    <option value="'Meiryo', 'Yu Gothic UI', sans-serif">{t('wizard.font.meiryo')}</option>
-                                </select>
+                                <div style={{ display: 'flex', marginTop: 6 }}>
+                                    <FontPicker
+                                        english={settings.appLanguage === 'en'}
+                                        title={settings.appLanguage === 'en' ? 'Setsuna Flow font' : 'Шрифт Setsuna Flow'}
+                                        value={settings.jlModeFontFamily || settings.fontFamily}
+                                        onChange={(value) => updateSetting('jlModeFontFamily', value)}
+                                        presets={[
+                                            { value: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif", label: t('wizard.font.serif') },
+                                            { value: "'Noto Sans JP', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'BIZ UDPGothic', sans-serif", label: t('wizard.font.sans') },
+                                            { value: "'Yu Gothic UI', 'Yu Gothic', 'Meiryo', sans-serif", label: t('wizard.font.yu') },
+                                            { value: "'Meiryo', 'Yu Gothic UI', sans-serif", label: t('wizard.font.meiryo') },
+                                        ]}
+                                        customFont={(settings.customFontData || settings.customFontPath) && settings.customFontFamily
+                                            ? { value: `'${settings.customFontFamily}', sans-serif`, label: settings.customFontName || (settings.appLanguage === 'en' ? 'Custom font' : 'Свой шрифт') }
+                                            : null}
+                                    />
+                                </div>
                             </label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Font size' : 'Размер шрифта'}
@@ -1532,16 +1555,15 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '12px 16px', marginBottom: 16 }}>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-                                {settings.appLanguage === 'en' ? 'Lookup trigger' : 'Как открывать лукап'}
-                                <select className="modern-select" value={settings.jlModeLookupTrigger || 'click'} onChange={(e) => updateSetting('jlModeLookupTrigger', e.target.value as 'hover' | 'click' | 'both')} style={{ marginTop: 6 }}>
-                                    <option value="hover">{settings.appLanguage === 'en' ? 'Hover' : 'Наведение'}</option>
-                                    <option value="click">{settings.appLanguage === 'en' ? 'Click' : 'Клик'}</option>
-                                    <option value="both">{settings.appLanguage === 'en' ? 'Hover and click' : 'Наведение и клик'}</option>
+                                {settings.appLanguage === 'en' ? 'Lookup' : 'Лукап'}
+                                <select className="modern-select" value={settings.jlModeLookupMode || 'scan'} onChange={(e) => updateSetting('jlModeLookupMode', e.target.value as 'scan' | 'click')} style={{ marginTop: 6 }}>
+                                    <option value="scan">{settings.appLanguage === 'en' ? 'Hover scan (like Shift)' : 'Наведение (как Shift-скан)'}</option>
+                                    <option value="click">{settings.appLanguage === 'en' ? 'Click on a word' : 'Клик по слову'}</option>
                                 </select>
                             </label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-                                {settings.appLanguage === 'en' ? 'Hover delay, ms' : 'Задержка наведения, мс'}
-                                <input type="number" min="0" max="1000" className="modern-input" value={settings.jlModeHoverDelay ?? 90} onChange={(e) => updateSetting('jlModeHoverDelay', Math.max(0, Math.min(1000, Number(e.target.value) || 0)))} style={{ marginTop: 6 }} />
+                                {settings.appLanguage === 'en' ? 'Scan delay, ms' : 'Задержка скана, мс'}
+                                <input type="number" min="0" max="1000" className="modern-input" value={settings.jlModeScanDelay ?? 200} onChange={(e) => updateSetting('jlModeScanDelay', Math.max(0, Math.min(1000, Number(e.target.value) || 0)))} style={{ marginTop: 6 }} />
                             </label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Backlog capacity' : 'Строк в истории'}
@@ -1726,19 +1748,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
               {activeTab === 'updates' && (
                 <div className="tab-content-anim">
                     <div id="updates-main" className={`modern-card ${highlightedSection === 'updates-main' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>
-                        <div className="card-label" style={{ color: 'var(--text-main)' }}>{settings.appLanguage === 'en' ? 'GitHub updates' : 'Обновления через GitHub'}</div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-                            <div style={{ background: 'var(--bg-side)', border: '1px solid var(--border-main)', borderRadius: 6, padding: 10 }}>
-                                <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>{settings.appLanguage === 'en' ? 'Current version' : 'Текущая версия'}</div>
-                                <div style={{ color: 'var(--text-main)', fontWeight: 800, marginTop: 4 }}>{releaseInfo.displayVersion}</div>
-                                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 3 }}>
-                                    {settings.appLanguage === 'en' ? 'Internal build' : 'Внутренняя сборка'} {releaseInfo.buildNumber}{appVersion ? ` (${appVersion})` : ''}
-                                </div>
-                            </div>
-                            <div style={{ background: 'var(--bg-side)', border: '1px solid var(--border-main)', borderRadius: 6, padding: 10 }}>
-                                <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>GitHub latest.json</div>
-                                <div style={{ color: 'var(--text-main)', fontSize: 12, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Lilislv/Setsuna/releases/latest</div>
-                            </div>
+                        <div className="card-label" style={{ color: 'var(--text-main)' }}>{settings.appLanguage === 'en' ? 'Updates' : 'Обновления'}</div>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 14 }}>
+                            <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{settings.appLanguage === 'en' ? 'Current version' : 'Текущая версия'}</span>
+                            <span style={{ color: 'var(--text-main)', fontWeight: 700 }}>{appVersionLabel()}</span>
                         </div>
                         <label className="checkbox-label" style={{ marginBottom: 14 }}>
                             <input type="checkbox" checked={settings.updateAutoCheck ?? true} onChange={(e) => updateSetting('updateAutoCheck', e.target.checked)} />
@@ -1749,11 +1762,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                 ? (settings.appLanguage === 'en' ? 'Checking...' : 'Проверяю...')
                                 : (settings.appLanguage === 'en' ? 'Check now' : 'Проверить сейчас')}
                         </button>
-                        <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: 1.5, marginTop: 14 }}>
-                            {settings.appLanguage === 'en'
-                                ? 'Release builds check the latest.json file attached to the newest GitHub release. Update packages are signature-verified before installation.'
-                                : 'Релизные сборки проверяют latest.json у последнего GitHub Release. Пакеты обновлений проверяются по подписи перед установкой.'}
-                        </div>
                     </div>
                 </div>
               )}

@@ -370,6 +370,32 @@ export const ensureSetsunaAnkiSetup = async (): Promise<AnkiSetup> => {
 };
 
 
+/**
+ * Makes sure Setsuna's own note type exists (creating it if needed) and
+ * returns its fields. Used by the first-run wizard, which always starts users
+ * on the default card format.
+ */
+export const ensureSetsunaNoteType = async (): Promise<{ model: string; fields: string[]; models: string[] }> => {
+    let models = await getModels(true);
+    if (!models.includes(SETSUNA_DEFAULT_MODEL) && !getAnkiDroidBridge()) {
+        try {
+            await invokeAnki("createModel", {
+                modelName: SETSUNA_DEFAULT_MODEL,
+                inOrderFields: SETSUNA_MODEL_FIELDS,
+                css: SETSUNA_MODEL_CSS,
+                cardTemplates: SETSUNA_CARD_TEMPLATES,
+            });
+        } catch (error) {
+            console.warn("Could not create the default Setsuna model", error);
+        }
+        clearAnkiMetaCache();
+        models = await getModels(true);
+    }
+    const model = models.includes(SETSUNA_DEFAULT_MODEL) ? SETSUNA_DEFAULT_MODEL : (models[0] || "");
+    const fields = model ? await getModelFields(model, true) : [];
+    return { model, fields, models };
+};
+
 const isKanjiChar = (char: string): boolean => {
     return /[\u3400-\u9fff\uf900-\ufaff]/.test(char);
 };
@@ -683,13 +709,38 @@ export const addNote = async (settings: any, noteData: any) => {
         }
     }
 
+    // Note IDs are creation timestamps in ms, so a note with an ID after this
+    // moment was created by this call.
+    const startedAt = Date.now() - 2000;
+    const findNoteAddedByThisCall = async (): Promise<number | null> => {
+        const wordField = settings.ankiFieldWord && settings.ankiFieldWord !== 'none' ? settings.ankiFieldWord : '';
+        if (!wordField || !rawWord) return null;
+        try {
+            const ids = await invokeAnki('findNotes', {
+                query: `deck:"${escapeAnkiQuery(note.deckName)}" "${escapeAnkiQuery(wordField)}:${escapeAnkiQuery(rawWord)}"`,
+            });
+            const fresh = (Array.isArray(ids) ? ids : []).filter((id: number) => Number(id) >= startedAt);
+            return fresh.length ? Number(fresh[fresh.length - 1]) : null;
+        } catch {
+            return null;
+        }
+    };
+
     try {
         const result = await invokeAnki('addNote', { note });
         wordStatusCache.clear();
         return { result, warning: audioWarning };
     } catch (error: any) {
-        if (note.audio?.length) {
-            const audioError = error?.message || String(error);
+        // A reply can fail (timeout while AnkiConnect downloads audio) after the
+        // note was already created. Retrying then produced duplicate cards.
+        const addedAnyway = await findNoteAddedByThisCall();
+        if (addedAnyway) {
+            wordStatusCache.clear();
+            return { result: addedAnyway, warning: audioWarning };
+        }
+        const message = error?.message || String(error);
+        if (note.audio?.length && !/timed out|timeout|unavailable/i.test(message)) {
+            const audioError = message;
             delete note.audio;
             try {
                 const result = await invokeAnki('addNote', { note });

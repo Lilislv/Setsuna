@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 
 pub fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder().connect_timeout(Duration::from_secs(20))
+    crate::http_client::builder().connect_timeout(Duration::from_secs(20))
         .read_timeout(Duration::from_secs(45)).build().map_err(|e| e.to_string())
 }
 

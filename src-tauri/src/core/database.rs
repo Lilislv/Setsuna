@@ -99,6 +99,45 @@ pub fn rebuild_indexes(conn: &Connection) -> Result<(), String> {
     .map_err(|error| format!("Failed to build dictionary indexes: {error}"))
 }
 
+/// Per-dictionary indexes. Without them, replacing or deleting one dictionary
+/// scans every row of every dictionary, which takes minutes on a phone.
+const DICTIONARY_NAME_INDEXES: &str =
+    "CREATE INDEX IF NOT EXISTS idx_entries_dict ON entries(dict_name);
+     CREATE INDEX IF NOT EXISTS idx_freq_dict ON frequencies(dict_name);
+     CREATE INDEX IF NOT EXISTS idx_pitch_dict ON pitches(dict_name);
+     CREATE INDEX IF NOT EXISTS idx_pron_dict ON pronunciations(dict_name);";
+
+pub fn has_dictionary_name_indexes(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
+         AND name IN ('idx_entries_dict', 'idx_freq_dict', 'idx_pitch_dict', 'idx_pron_dict')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count == 4)
+    .unwrap_or(false)
+}
+
+pub fn ensure_dictionary_name_indexes(conn: &Connection) -> Result<(), String> {
+    if has_dictionary_name_indexes(conn) {
+        return Ok(());
+    }
+    conn.execute_batch(DICTIONARY_NAME_INDEXES)
+        .map_err(|error| format!("Failed to build dictionary name indexes: {error}"))
+}
+
+/// Name indexes for the frequency, pitch and pronunciation tables only. They
+/// are much smaller than `entries`, so building them once on the spot is cheap,
+/// and they let the dictionary list find frequency-only dictionaries quickly.
+pub fn ensure_metadata_dictionary_name_indexes(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_freq_dict ON frequencies(dict_name);
+         CREATE INDEX IF NOT EXISTS idx_pitch_dict ON pitches(dict_name);
+         CREATE INDEX IF NOT EXISTS idx_pron_dict ON pronunciations(dict_name);",
+    )
+    .map_err(|error| format!("Failed to build dictionary name indexes: {error}"))
+}
+
 pub fn table_exists(conn: &Connection, name: &str) -> Result<bool, String> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",

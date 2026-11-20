@@ -142,10 +142,106 @@ pub fn segment_text(text: &str) -> Result<Vec<TextToken>, String> {
     }
 
     let words = group_ve_words(&morphemes);
-    Ok(words
+    let words: Vec<TextToken> = words
         .into_iter()
         .flat_map(split_non_japanese_token)
-        .collect())
+        .flat_map(split_reduplicated_kana)
+        .collect();
+    Ok(merge_speaker_name(words))
+}
+
+/// IPADIC reads reduplicated interjections such as いたいた or あったあった as an
+/// adjective plus た (痛い + た), which is not even grammatical. A kana-only word
+/// made of the same half twice is split back into its two halves.
+fn split_reduplicated_kana(token: TextToken) -> Vec<TextToken> {
+    let chars: Vec<char> = token.text.chars().collect();
+    let len = chars.len();
+    if len < 4 || len % 2 != 0 || !chars.iter().all(|c| is_kana(*c)) {
+        return vec![token];
+    }
+    let half = len / 2;
+    if chars[..half] != chars[half..] {
+        return vec![token];
+    }
+    let text: String = chars[..half].iter().collect();
+    // Analyse the half on its own so it gets a real lemma (いた -> いる).
+    let analysed = segment_text(&text).ok().filter(|tokens| !tokens.is_empty());
+    let piece = |start: usize| -> Vec<TextToken> {
+        match &analysed {
+            Some(tokens) => tokens
+                .iter()
+                .cloned()
+                .map(|mut part| {
+                    part.start += start;
+                    part.end += start;
+                    part
+                })
+                .collect(),
+            None => vec![TextToken {
+                lookup: true,
+                text: text.clone(),
+                reading: None,
+                lemma: None,
+                start,
+                end: start + half,
+                part_of_speech: token.part_of_speech.clone(),
+            }],
+        }
+    };
+    let mut output = piece(token.start);
+    output.extend(piece(token.start + half));
+    output
+}
+
+/// Visual-novel hooks prefix lines with the speaker: `朋也：「…」`. Names missing
+/// from IPADIC come out split per kanji, so everything before the leading colon
+/// (or inside a leading 【…】) is merged into one name token.
+fn merge_speaker_name(tokens: Vec<TextToken>) -> Vec<TextToken> {
+    const MAX_NAME_CHARS: usize = 12;
+    let is_colon = |text: &str| matches!(text, "：" | ":");
+    let (start, end) = if tokens.first().is_some_and(|token| token.text == "【") {
+        match tokens.iter().position(|token| token.text == "】") {
+            Some(close) => (1, close),
+            None => return tokens,
+        }
+    } else {
+        match tokens.iter().position(|token| is_colon(&token.text) || token.text.starts_with('：')) {
+            Some(colon) => (0, colon),
+            None => return tokens,
+        }
+    };
+    if end <= start + 1 {
+        return tokens;
+    }
+    let name = &tokens[start..end];
+    let chars: usize = name.iter().map(|token| token.end - token.start).sum();
+    let plausible = chars <= MAX_NAME_CHARS
+        && name.iter().all(|token| {
+            token.lookup
+                && !matches!(token.part_of_speech.as_str(), "助詞" | "助動詞" | "動詞" | "記号")
+        });
+    if !plausible {
+        return tokens;
+    }
+    let merged = TextToken {
+        lookup: true,
+        text: name.iter().map(|token| token.text.as_str()).collect(),
+        reading: None,
+        lemma: None,
+        start: name[0].start,
+        end: name[name.len() - 1].end,
+        part_of_speech: "固有名詞".to_string(),
+    };
+    let mut output = Vec::with_capacity(tokens.len() - (end - start) + 1);
+    let mut rest = tokens.into_iter();
+    output.extend(rest.by_ref().take(start));
+    output.push(merged);
+    output.extend(rest.skip(end - start));
+    output
+}
+
+fn is_kana(character: char) -> bool {
+    matches!(character, '\u{3041}'..='\u{309f}' | '\u{30a1}'..='\u{30fa}' | 'ー')
 }
 
 fn push_plain_gap(text: &str, byte_start: usize, byte_end: usize, output: &mut Vec<Morpheme>) {
@@ -199,6 +295,19 @@ fn group_ve_words(tokens: &[Morpheme]) -> Vec<TextToken> {
                         attach_to_previous = true;
                         append_lemma = true;
                     }
+                }
+                // Explanatory の/ん + copula (来るんだ, 行くのです) reads as one
+                // grammar unit; dictionaries list it as のだ / んだ.
+                "非自立"
+                    if matches!(current.surface.as_str(), "ん" | "の")
+                        && following.is_some_and(|next| {
+                            next.feature(POS1) == "助動詞"
+                                && matches!(next.feature(CTYPE), "特殊・ダ" | "特殊・デス")
+                        }) =>
+                {
+                    part_of_speech = "助動詞".to_string();
+                    eat_next = true;
+                    eat_next_lemma = false;
                 }
                 "副詞可能" | "サ変接続" | "形容動詞語幹" | "ナイ形容詞語幹" => {
                     if let Some(next) = following {
@@ -469,6 +578,23 @@ mod tests {
     }
 
     #[test]
+    fn handles_visual_novel_dialogue() {
+        assert_eq!(
+            surfaces("杏：「あ、いたいた」"),
+            vec!["杏", "：", "「", "あ", "、", "いた", "いた", "」"]
+        );
+        let itaita = segment_text("あ、いたいた").unwrap();
+        assert_eq!(itaita[2].lemma.as_deref(), Some("いる"));
+        assert_eq!((itaita[3].start, itaita[3].end), (4, 6));
+        assert_eq!(surfaces("朋也：「いやぁ」")[0], "朋也");
+        assert_eq!(surfaces("【朋也】「あ」")[1], "朋也");
+        assert!(surfaces("春原：「明日には妹が来るんだぞ」").contains(&"んだ".to_string()));
+        assert!(surfaces("行くのです").contains(&"のです".to_string()));
+        // Ordinary text without a speaker prefix is untouched.
+        assert_eq!(surfaces("離さないって決めたから")[0], "離さない");
+    }
+
+    #[test]
     fn preserves_spaces_and_newlines_exactly() {
         let text = "私は Setsuna を使う。\n次の行";
         let tokens = segment_text(text).unwrap();
@@ -481,3 +607,4 @@ mod tests {
         );
     }
 }
+

@@ -29,6 +29,75 @@ import {
 import type { AppSettings } from '../SettingsModal';
 import './SettingsCloud.css';
 
+type PickerTab = { id: string | number; name?: string; lines?: unknown[]; status?: string; archived?: boolean };
+
+const PICKER_STATUS_COLORS: Record<string, string> = {
+    reading: '#4CAF50',
+    paused: '#d6a84f',
+    completed: '#8bdeff',
+    planned: '#8b8f98',
+};
+
+/** Searchable list of tabs with select-all / none, used for backup and restore. */
+function DriveTabPicker({ title, tabs, selected, onChange, labels }: {
+    title: string;
+    tabs: PickerTab[];
+    selected: Record<string, boolean>;
+    onChange: (next: Record<string, boolean>) => void;
+    labels: { selectAll: string; selectNone: string; searchTabs: string; nothingFound: string; archived: string; lines: (count: number) => string; pickerCount: (selected: number, total: number) => string };
+}) {
+    const [query, setQuery] = useState('');
+    const normalized = query.trim().toLowerCase();
+    const visible = normalized ? tabs.filter((tab) => String(tab.name || `#${tab.id}`).toLowerCase().includes(normalized)) : tabs;
+    const selectedCount = tabs.filter((tab) => selected[String(tab.id)]).length;
+    const setMany = (value: boolean) => {
+        const next = { ...selected };
+        for (const tab of visible) next[String(tab.id)] = value;
+        onChange(next);
+    };
+
+    return (
+        <div className="drive-picker">
+            <div className="drive-picker-toolbar">
+                <div className="drive-picker-title">
+                    <span>{title}</span>
+                    <span className="drive-picker-count">{labels.pickerCount(selectedCount, tabs.length)}</span>
+                </div>
+                <div className="drive-picker-actions">
+                    {tabs.length > 8 && (
+                        <input
+                            className="drive-picker-search"
+                            value={query}
+                            onChange={(event) => setQuery(event.target.value)}
+                            placeholder={labels.searchTabs}
+                            aria-label={labels.searchTabs}
+                        />
+                    )}
+                    <button type="button" className="drive-chip-button" onClick={() => setMany(true)}>{labels.selectAll}</button>
+                    <button type="button" className="drive-chip-button" onClick={() => setMany(false)}>{labels.selectNone}</button>
+                </div>
+            </div>
+            <div className="drive-picker-list">
+                {visible.length === 0 && <div className="drive-picker-empty">{labels.nothingFound}</div>}
+                {visible.map((tab) => {
+                    const key = String(tab.id);
+                    const checked = Boolean(selected[key]);
+                    const lineCount = Array.isArray(tab.lines) ? tab.lines.length : null;
+                    return (
+                        <label key={key} className={`drive-pick-row${checked ? ' is-checked' : ''}`}>
+                            <input type="checkbox" checked={checked} onChange={(event) => onChange({ ...selected, [key]: event.target.checked })} />
+                            <span className="drive-pick-dot" style={{ background: PICKER_STATUS_COLORS[tab.status || 'planned'] || PICKER_STATUS_COLORS.planned }} aria-hidden="true" />
+                            <span className="drive-pick-name">{tab.name || `#${tab.id}`}</span>
+                            {tab.archived && <span className="drive-pick-badge">{labels.archived}</span>}
+                            {lineCount !== null && <span className="drive-pick-meta">{labels.lines(lineCount)}</span>}
+                        </label>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
 interface SettingsCloudProps {
     settings: AppSettings;
     updateSetting: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
@@ -99,6 +168,14 @@ const text = {
         restoreDictionary: 'Скачать и применить',
         notFound: 'не найдена',
         selectedTabs: (count: number) => `Выбрано вкладок: ${count}`,
+        selectAll: 'Все',
+        selectNone: 'Снять',
+        searchTabs: 'Найти вкладку',
+        lines: (count: number) => `${count} строк`,
+        archived: 'в архиве',
+        nothingFound: 'Ничего не найдено',
+        settingsHint: 'Тема, шрифты, источники, словари, Anki',
+        pickerCount: (selected: number, total: number) => `${selected} из ${total}`,
         statusReady: 'Данные Drive обновлены.',
         statusBackupCreated: 'Бэкап добавлен в архив.',
         statusRestored: 'Выбранные данные восстановлены.',
@@ -146,6 +223,14 @@ const text = {
         restoreDictionary: 'Download and apply',
         notFound: 'not found',
         selectedTabs: (count: number) => `${count} tabs selected`,
+        selectAll: 'All',
+        selectNone: 'None',
+        searchTabs: 'Find a tab',
+        lines: (count: number) => `${count} lines`,
+        archived: 'archived',
+        nothingFound: 'Nothing found',
+        settingsHint: 'Theme, fonts, sources, dictionaries, Anki',
+        pickerCount: (selected: number, total: number) => `${selected} of ${total}`,
         statusReady: 'Drive data refreshed.',
         statusBackupCreated: 'Backup added to the archive.',
         statusRestored: 'Selected data restored.',
@@ -587,14 +672,14 @@ export default function SettingsCloud({
 
                     <section className="drive-section">
                         <div className="drive-section-heading"><div><h3>{t.backupTitle}</h3><p>{t.backupHint}</p></div></div>
-                        <label className="drive-check-row"><input type="checkbox" checked={includeSettings} onChange={(event) => setIncludeSettings(event.target.checked)} /><span>{t.settings}</span></label>
-                        <div className="drive-tab-picker">
-                            <div className="drive-picker-heading"><span>{t.tabs}</span><small>{t.selectedTabs(selectedTabCount)}</small></div>
-                            {tabs.map((tab) => (
-                                <label key={tab.id}><input type="checkbox" checked={Boolean(selectedTabs[String(tab.id)])} onChange={(event) => setSelectedTabs((current) => ({ ...current, [String(tab.id)]: event.target.checked }))} /><span>{tab.name || `#${tab.id}`}</span></label>
-                            ))}
-                        </div>
-                        <button type="button" className="btn-primary drive-primary-action" disabled={busy || (!includeSettings && selectedTabCount === 0)} onClick={() => void createBackup()}>{t.createBackup}</button>
+                        <label className={`drive-settings-toggle${includeSettings ? ' is-checked' : ''}`}>
+                            <input type="checkbox" checked={includeSettings} onChange={(event) => setIncludeSettings(event.target.checked)} />
+                            <span><strong>{t.settings}</strong><small>{t.settingsHint}</small></span>
+                        </label>
+                        <DriveTabPicker title={t.tabs} tabs={tabs} selected={selectedTabs} onChange={setSelectedTabs} labels={{ selectAll: t.selectAll, selectNone: t.selectNone, searchTabs: t.searchTabs, nothingFound: t.nothingFound, archived: t.archived, lines: t.lines, pickerCount: t.pickerCount }} />
+                        <button type="button" className="btn-primary drive-primary-action" disabled={busy || (!includeSettings && selectedTabCount === 0)} onClick={() => void createBackup()}>
+                            {t.createBackup}{selectedTabCount > 0 ? ` (${selectedTabCount})` : ''}
+                        </button>
                     </section>
 
                     <section className="drive-section">
@@ -611,8 +696,15 @@ export default function SettingsCloud({
                         {openedBackup && (
                             <div className="drive-restore-panel">
                                 <div className="drive-restore-title"><strong>{openedBackupFile?.name}</strong><button type="button" onClick={() => setOpenedBackup(null)} aria-label={t.close}>×</button></div>
-                                {openedBackup.settings && <label className="drive-check-row"><input type="checkbox" checked={restoreSettings} onChange={(event) => setRestoreSettings(event.target.checked)} /><span>{t.settings}</span></label>}
-                                <div className="drive-restore-tabs">{(openedBackup.tabs || []).map((tab: any) => <label key={tab.id}><input type="checkbox" checked={Boolean(restoreTabs[String(tab.id)])} onChange={(event) => setRestoreTabs((current) => ({ ...current, [String(tab.id)]: event.target.checked }))} /><span>{tab.name || `#${tab.id}`}</span></label>)}</div>
+                                {openedBackup.settings && (
+                                    <label className={`drive-settings-toggle${restoreSettings ? ' is-checked' : ''}`}>
+                                        <input type="checkbox" checked={restoreSettings} onChange={(event) => setRestoreSettings(event.target.checked)} />
+                                        <span><strong>{t.settings}</strong><small>{t.settingsHint}</small></span>
+                                    </label>
+                                )}
+                                {(openedBackup.tabs || []).length > 0 && (
+                                    <DriveTabPicker title={t.tabs} tabs={openedBackup.tabs || []} selected={restoreTabs} onChange={setRestoreTabs} labels={{ selectAll: t.selectAll, selectNone: t.selectNone, searchTabs: t.searchTabs, nothingFound: t.nothingFound, archived: t.archived, lines: t.lines, pickerCount: t.pickerCount }} />
+                                )}
                                 <button type="button" className="btn-primary" disabled={busy} onClick={() => void restoreOpenedBackup()}>{t.restore}</button>
                             </div>
                         )}

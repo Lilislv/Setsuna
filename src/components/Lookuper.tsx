@@ -1,7 +1,7 @@
 import { createHoverScanQueue, findHoverTextPoint, sameHoverTextPoint, scanTextNodes, selectScanRange } from '../utils/hoverScan';
 ﻿import React, { useEffect, useState } from "react";
 import { invoke } from '@tauri-apps/api/core';
-import { useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { AppSettings } from "./SettingsModal";
 import { checkWordsStatusMulti, addNote, browseAnkiCards } from "../utils/anki";
 import { captureMobileScreen, hasMobileScreenCapture } from "../utils/mobileFiles";
@@ -9,6 +9,8 @@ import { getTranslator } from "../utils/i18n";
 import { CaptureSourceBinding, PlayerMiningClip } from "../utils/constants";
 import { selectActiveLookupResult } from '../utils/lookupResults';
 import { isMobilePlatform } from '../utils/platform';
+import { withReadableCyrillic } from '../utils/cyrillicFace';
+import { TokenizedLine } from './TextContainer';
 import { audioPreviewUrl, resolveDictionaryAudio } from '../utils/dictionaryAudio';
 
 
@@ -29,6 +31,8 @@ export interface LookupData {
     source?: 'internal' | 'external';
     screenPoint?: { x: number; y: number };
     externalScreenshot?: string | null;
+    /** Character range of the looked-up word inside `sentence` (phone sheet). */
+    match?: { start: number; length: number };
 }
 export type LookupScreenshotSource =
     | { kind: 'internal' }
@@ -48,6 +52,8 @@ export interface LookuperProps {
     screenshotSource?: LookupScreenshotSource;
     ankiDeck?: string;
     onClose?: () => void;
+    /** Phone sheet: tapping a word in the sentence card above the sheet. */
+    onSentenceLookup?: (word: string, sentence: string, cursor?: number, boundaries?: number[], lemma?: string) => unknown;
 }
 
 const normalizeCodeUnitOffset = (text: string, offset: number) => {
@@ -98,7 +104,18 @@ export const IconAudioOff = () => <svg width="18" height="18" viewBox="0 0 24 24
 export const IconCamera = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>;
 export const IconEye = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>;
 
-const LOOKUP_FONT_STACK = 'var(--txt-font-family, "Segoe UI", "Noto Sans JP", "Yu Gothic UI", "Yu Gothic", "Meiryo", "BIZ UDPGothic", Arial, sans-serif)';
+export const LOOKUP_DEFAULT_FONT_STACK = '"Segoe UI", "Noto Sans JP", "Yu Gothic UI", "Yu Gothic", "Meiryo", "BIZ UDPGothic", Arial, sans-serif';
+/** `lookupFontFamily` value that makes the lookup follow the reader text font. */
+export const LOOKUP_FONT_FOLLOW_TEXT = '__text__';
+const LOOKUP_FONT_STACK = `var(--lookup-font-family, ${LOOKUP_DEFAULT_FONT_STACK})`;
+
+/** Resolves the lookup popup font from settings; empty means the default sans stack. */
+export const resolveLookupFontFamily = (settings: Partial<AppSettings> | null | undefined): string => {
+    const choice = settings?.lookupFontFamily || '';
+    if (!choice) return LOOKUP_DEFAULT_FONT_STACK;
+    const family = choice === LOOKUP_FONT_FOLLOW_TEXT ? (settings?.fontFamily || '') : choice;
+    return family ? withReadableCyrillic(`${family}, ${LOOKUP_DEFAULT_FONT_STACK}`) : LOOKUP_DEFAULT_FONT_STACK;
+};
 
 const normalizeSpacedCyrillic = (value: string) => value
     .split('\n')
@@ -451,8 +468,13 @@ export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLoo
             return true;
         }
     };
+    // A kanji article is usable when its dictionary is enabled and it has either
+    // meanings or on/kun readings. KANJIDIC rows imported by old builds have empty
+    // meanings but valid readings, and must still open the kanji card.
     const kanjiArticles = allEntries.filter((entry: any) =>
-        String(entry?.dict_name || '').toUpperCase().includes('KANJI') && hasDefinition(entry),
+        String(entry?.dict_name || '').toUpperCase().includes('KANJI')
+        && isDictActive(entry?.dict_name, settings)
+        && (hasDefinition(entry) || String(entry?.reading || '').trim() !== ''),
     );
     // Some installations contain only term/frequency dictionaries. Keep a
     // useful ordinary article in that case instead of making a kanji click
@@ -577,6 +599,8 @@ export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLoo
 
 export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activeGrammarDesc, setActiveGrammarDesc, playAudio, audioFailed, playingAudio, isKanjidic, ankiStatus, onStatusChange, captureSource, playerClip, lookupData, screenshotSource }: any) => {
     const [isAdding, setIsAdding] = useState(false);
+    // Synchronous guard: two quick clicks can both run before `isAdding` disables the button.
+    const addingRef = useRef(false);
 
     const fSize = Math.max(settings?.lookupFontSize || 17, 16);
     const tagSize = Math.max(settings?.lookupTagFontSize || 12, 11);
@@ -639,6 +663,15 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
     };
 
     const handleAddToAnki = async (dictName: string, cleanDictionaries: any, withScreenshot: boolean = false) => {
+        if (addingRef.current) return;
+        addingRef.current = true;
+        try {
+            await addToAnki(dictName, cleanDictionaries, withScreenshot);
+        } finally {
+            addingRef.current = false;
+        }
+    };
+    const addToAnki = async (dictName: string, cleanDictionaries: any, withScreenshot: boolean = false) => {
         setIsAdding(true);
         let formattedMeaning = "";
         
@@ -963,7 +996,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                                                 const isKanji = /[\u4e00-\u9faf]/.test(c);
                                                 return isKanji ? <span key={j} onClick={(e) => onWordLookup(e, c, true)} style={{ cursor: 'pointer', borderBottom: '1px dashed var(--text-muted)', paddingBottom: '1px' }}>{c}</span> : <span key={j}>{c}</span>;
                                             })}
-                                            <rt style={{ fontSize: `${Math.max(10, fSize * 0.48)}px`, color: 'var(--text-muted)', fontWeight: 600, userSelect: 'none', letterSpacing: 0, lineHeight: 1, textAlign: 'center', fontFamily: LOOKUP_FONT_STACK }}>{chunk.reading}</rt>
+                                            <rt style={{ fontSize: `${Math.max(14, fSize)}px`, color: 'var(--text-main)', opacity: 0.88, fontWeight: 700, userSelect: 'none', letterSpacing: '0.04em', lineHeight: 1.1, paddingBottom: '2px', textAlign: 'center', fontFamily: LOOKUP_FONT_STACK }}>{chunk.reading}</rt>
                                         </ruby>
                                     );
                                 })}
@@ -1072,7 +1105,7 @@ function LookupPage({ entries, english, children }: { entries: any[]; english: b
     </>;
 }
 
-export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt, onSlice, settings: baseSettings, captureSource, playerClip, screenshotSource = { kind: 'internal' }, ankiDeck, onClose }: LookuperProps) {
+export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt, onSlice, settings: baseSettings, captureSource, playerClip, screenshotSource = { kind: 'internal' }, ankiDeck, onClose, onSentenceLookup }: LookuperProps) {
   const settings = useMemo(
       () => baseSettings ? { ...baseSettings, ankiDeck: ankiDeck || baseSettings.ankiDeck } : baseSettings,
       [baseSettings, ankiDeck],
@@ -1346,29 +1379,170 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
       }
   };
 
+  // Keep the last stack on screen for a moment after it is cleared so the
+  // popup can animate out instead of vanishing.
+  // This is decided during render: deciding it in an effect left one commit
+  // with nothing rendered, so every node was unmounted and remounted for the
+  // exit animation (the sheet jumped back up, the blur flickered).
+  const lastStackRef = useRef<LookupData[]>(stack || []);
+  if (stack && stack.length > 0) lastStackRef.current = stack;
+  const [finishedExit, setFinishedExit] = React.useState<LookupData[] | null>(null);
+  const reducedMotion = typeof window !== 'undefined'
+      && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+  const isLeaving = (!stack || stack.length === 0)
+      && lastStackRef.current.length > 0
+      && finishedExit !== lastStackRef.current
+      && !reducedMotion;
+  React.useEffect(() => {
+      if (!isLeaving) return;
+      const leaving = lastStackRef.current;
+      // The phone sheet, its sentence card and the blurred backdrop slide/fade
+      // out for 220ms; keep them mounted until that finishes.
+      const timer = window.setTimeout(() => setFinishedExit(leaving), (isMobilePlatform() || (!/(jl-popup|lookup-window)/.test(window.location.pathname) && (window.innerWidth < 640 || window.innerHeight < 480))) ? 260 : 170);
+      return () => window.clearTimeout(timer);
+  }, [isLeaving]);
+  const renderStack = isLeaving ? lastStackRef.current : (stack || []);
+
   const groupedStack = useMemo(() => {
-      return (stack || []).map((data) => {
+      return renderStack.map((data) => {
           const groupedEntries = groupDictionaryEntries(data.entries, settings, data.isKanjiLookup);
           return { data, groupedEntries };
       });
-  }, [stack, settings]);
+  }, [renderStack, settings]);
 
-  if (!stack || stack.length === 0) return null;
+  const sheetDrag = useRef<{ y: number; dy: number; at: number } | null>(null);
+  // The sentence card sits right above the phone sheet, so it needs the sheet height.
+  const [sheetHeight, setSheetHeight] = useState(0);
+  const sheetObserver = useRef<ResizeObserver | null>(null);
+  const sheetNodeRef = useRef<HTMLDivElement | null>(null);
+  const measureSheet = useCallback((node: HTMLDivElement | null) => {
+      sheetNodeRef.current = node;
+      sheetObserver.current?.disconnect();
+      sheetObserver.current = null;
+      if (!node) return;
+      setSheetHeight(node.offsetHeight);
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(() => setSheetHeight(node.offsetHeight));
+      observer.observe(node);
+      sheetObserver.current = observer;
+  }, []);
+  useEffect(() => () => sheetObserver.current?.disconnect(), []);
+  const contextCardRef = useRef<HTMLDivElement | null>(null);
+  // Article shown in each popup the last time its scroll was reset to the top.
+  const scrolledArticleRef = useRef<Record<number, string>>({});
+  // A lookup opened while the previous sheet is still leaving reuses its nodes;
+  // drop the offset a swipe left on them so the new sheet slides in normally.
+  useEffect(() => {
+      if (!stack?.length) return;
+      for (const node of [sheetNodeRef.current, contextCardRef.current]) {
+          if (!node) continue;
+          node.style.translate = '';
+          node.style.transition = '';
+          node.style.opacity = '';
+      }
+  }, [stack]);
+
+  if (renderStack.length === 0) return null;
 
   // On phones, render the lookup as a bottom sheet (leaves the tapped word visible above).
-  const isMobileSheet = isMobilePlatform();
+  // In a very small desktop window a floating popup covers most of it (and
+  // the text it was opened from); use the bottom sheet there as on phones.
+  const isLookupOnlyWindow = typeof window !== 'undefined' && /(jl-popup|lookup-window)/.test(window.location.pathname);
+  const isCompactWindow = typeof window !== 'undefined' && !isLookupOnlyWindow && (window.innerWidth < 640 || window.innerHeight < 480);
+  const isMobileSheet = isMobilePlatform() || isCompactWindow;
+
+  // Swipe-down-to-close for the phone sheet. Only starts when the sheet is
+  // scrolled to the top and follows the finger directly on the DOM nodes (no
+  // re-renders). The offset uses the separate `translate` property so it never
+  // fights the enter/leave keyframes, which animate `transform`.
+  const dragTargets = (sheet: HTMLElement) => [sheet, contextCardRef.current].filter(Boolean) as HTMLElement[];
+  const sheetTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+      const el = event.currentTarget;
+      if (el.scrollTop > 0 || event.touches.length !== 1 || isLeaving) {
+          sheetDrag.current = null;
+          return;
+      }
+      sheetDrag.current = { y: event.touches[0].clientY, dy: 0, at: performance.now() };
+  };
+  const sheetTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+      const drag = sheetDrag.current;
+      if (!drag) return;
+      const el = event.currentTarget;
+      const dy = event.touches[0].clientY - drag.y;
+      if (dy <= 0 || (drag.dy === 0 && el.scrollTop > 0)) {
+          if (drag.dy > 0) {
+              drag.dy = 0;
+              dragTargets(el).forEach((node) => { node.style.translate = ''; });
+          }
+          return;
+      }
+      drag.dy = dy;
+      dragTargets(el).forEach((node) => {
+          node.style.transition = 'none';
+          node.style.translate = `0 ${dy}px`;
+      });
+  };
+  const sheetTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+      const drag = sheetDrag.current;
+      sheetDrag.current = null;
+      if (!drag || drag.dy <= 0) return;
+      const el = event.currentTarget;
+      const velocity = drag.dy / Math.max(1, performance.now() - drag.at);
+      const targets = dragTargets(el);
+      if (drag.dy > Math.min(140, el.offsetHeight * 0.3) || velocity > 0.6) {
+          // Finish the throw from where the finger left it, then close.
+          const distance = el.offsetHeight + 24;
+          targets.forEach((node) => {
+              node.style.transition = 'translate 200ms cubic-bezier(0.4, 0, 1, 1), opacity 200ms ease';
+              node.style.translate = `0 ${distance}px`;
+          });
+          if (contextCardRef.current) contextCardRef.current.style.opacity = '0';
+          window.setTimeout(() => onClose?.(), 190);
+      } else {
+          targets.forEach((node) => {
+              node.style.transition = 'translate 420ms var(--ease-spring)';
+              node.style.translate = '';
+          });
+          window.setTimeout(() => targets.forEach((node) => { node.style.transition = ''; }), 440);
+      }
+  };
 
   return (
     <>
-        {isMobileSheet && <div className="dict-mobile-scrim" aria-hidden="true" />}
+        {isMobileSheet && <div className={`dict-mobile-scrim${onSentenceLookup ? '' : ' is-plain'}${isLeaving ? ' is-leaving' : ''}`} aria-hidden="true" />}
+        {isMobileSheet && (() => {
+            const top = renderStack[renderStack.length - 1];
+            if (!top?.sentence || !onSentenceLookup) return null;
+            return (
+                <div
+                    key={top.sentence}
+                    ref={contextCardRef}
+                    className={`dict-mobile-context${isLeaving ? ' is-leaving' : ''}${sheetHeight ? '' : ' is-measuring'}`}
+                    style={{ bottom: sheetHeight + 10 }}
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <TokenizedLine
+                        text={top.sentence}
+                        searchQuery=""
+                        furiganaMode={settings?.furiganaMode || 'none'}
+                        activeRange={top.match ?? null}
+                        onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => {
+                            void onSentenceLookup(token, sentence, cursor, boundaries, lemma);
+                        }}
+                    />
+                </div>
+            );
+        })()}
         {groupedStack.map(({ data, groupedEntries }, index) => {
             if (groupedEntries.length === 0) return null;
             if (isMobileSheet && index !== groupedStack.length - 1) return null;
 
             const scale = settings?.lookupScale || 1.0;
             const baseWidth = settings?.lookupWidth || 420;
-            const scaledWidth = baseWidth * scale;
             const margin = 10;
+            // CSS `zoom` scales every length on the popup, including left/top/width,
+            // so positions are computed in screen px and divided by the scale.
+            const scaledWidth = Math.min(baseWidth * scale, Math.max(160, window.innerWidth - margin * 2));
 
             const rightLimit = window.innerWidth - margin;
             let left = (data.rect?.left || 0) + (index * 15);
@@ -1377,15 +1551,20 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
             }
             left = Math.max(margin, Math.min(left, rightLimit - scaledWidth));
 
-            const spaceBelow = window.innerHeight - (data.rect?.bottom || 0);
-            const spaceAbove = data.rect?.top || 0;
+            // The anchor can lie outside the window (a selection scrolled away,
+            // an external screen point); clamp it so the popup stays on screen.
+            const anchorTop = Math.min(window.innerHeight, Math.max(0, data.rect?.top || 0));
+            const anchorBottom = Math.min(window.innerHeight, Math.max(0, data.rect?.bottom || 0));
+            const spaceBelow = window.innerHeight - anchorBottom;
+            const spaceAbove = anchorTop;
 
             let popupStyle: React.CSSProperties = {
                 position: 'fixed',
-                left,
+                left: left / scale,
                 zIndex: 10000 + index,
-                width: `${baseWidth}px`,
+                width: `${scaledWidth / scale}px`,
                 zoom: scale,
+                ['--lookup-font-family' as any]: resolveLookupFontFamily(settings),
                 fontFamily: LOOKUP_FONT_STACK,
                 fontSize: `${Math.max(settings?.lookupFontSize || 17, 16)}px`,
                 lineHeight: 1.55,
@@ -1394,12 +1573,13 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                 fontSynthesis: 'none',
             };
 
+            const maxViewportHeight = (window.innerHeight - margin * 2) / scale;
             if (spaceBelow >= 450 * scale || spaceBelow > spaceAbove) {
-                popupStyle.top = ((data.rect?.bottom || 0) + 5 + (index * 15)) / scale;
-                popupStyle.maxHeight = Math.max(160, (spaceBelow / scale) - 10);
+                popupStyle.top = Math.min(anchorBottom + 5 + (index * 15), window.innerHeight - 160 - margin) / scale;
+                popupStyle.maxHeight = Math.min(maxViewportHeight, Math.max(160, (spaceBelow - 5 - (index * 15) - margin) / scale));
             } else {
-                popupStyle.bottom = (window.innerHeight - (data.rect?.top || 0) + 5 - (index * 15)) / scale;
-                popupStyle.maxHeight = Math.max(160, (spaceAbove / scale) - 10);
+                popupStyle.bottom = Math.min(window.innerHeight - anchorTop + 5 - (index * 15), window.innerHeight - 160 - margin) / scale;
+                popupStyle.maxHeight = Math.min(maxViewportHeight, Math.max(160, (spaceAbove - 5 - margin) / scale));
             }
 
             if (isMobileSheet) {
@@ -1412,6 +1592,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                     width: '100%',
                     maxHeight: '80vh',
                     zIndex: 10000 + index,
+                    ['--lookup-font-family' as any]: resolveLookupFontFamily(settings),
                     fontFamily: LOOKUP_FONT_STACK,
                     fontSize: `${Math.max(settings?.lookupFontSize || 17, 16)}px`,
                     lineHeight: 1.55,
@@ -1422,7 +1603,12 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
             }
 
             return (
-                <div key={index} className={isMobileSheet ? "dict-popup dict-mobile-sheet" : "dict-popup"} data-popup-index={index} style={popupStyle} onClick={(e) => {
+                <div key={index} ref={isMobileSheet ? measureSheet : undefined} className={`${isMobileSheet ? "dict-popup dict-mobile-sheet" : "dict-popup"}${isLeaving ? " is-leaving" : ""}`} data-popup-index={index} style={popupStyle}
+                    onTouchStart={isMobileSheet ? sheetTouchStart : undefined}
+                    onTouchMove={isMobileSheet ? sheetTouchMove : undefined}
+                    onTouchEnd={isMobileSheet ? sheetTouchEnd : undefined}
+                    onTouchCancel={isMobileSheet ? sheetTouchEnd : undefined}
+                    onClick={(e) => {
                     e.stopPropagation();
                     if (onSlice && stack.length > index + 1) onSlice(index);
                 }}>
@@ -1439,6 +1625,20 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                             ×
                         </button>
                     )}
+                    {/* Keyed by the looked-up word: moving to another word swaps the
+                        article with a short cross-fade instead of an instant jump. */}
+                    <div
+                        key={`${data.word}|${data.isKanjiLookup ? 'k' : 'w'}|${data.entries.length}`}
+                        className="dict-popup-content"
+                        ref={(node) => {
+                            // An inline ref runs on every re-render (Anki status, audio…);
+                            // only a new article may reset the scroll, not any re-render.
+                            const articleKey = `${data.word}|${data.isKanjiLookup ? 'k' : 'w'}|${data.entries.length}`;
+                            if (!node?.parentElement || scrolledArticleRef.current[index] === articleKey) return;
+                            scrolledArticleRef.current[index] = articleKey;
+                            node.parentElement.scrollTop = 0;
+                        }}
+                    >
                     <LookupPage entries={groupedEntries} english={settings?.appLanguage === 'en'}>{(group, i) => (
                         <LookupEntryItem 
                             key={i} group={group} settings={settings} sentence={data.sentence} onWordLookup={handleWordLookup}
@@ -1452,6 +1652,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                             screenshotSource={screenshotSource}
                         />
                     )}</LookupPage>
+                    </div>
                 </div>
             );
         })}

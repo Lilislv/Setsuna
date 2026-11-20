@@ -1,6 +1,6 @@
 [package]
 name = "Setsuna"
-version = "0.2.0"
+version = "0.5.0"
 description = "Desktop app for reading Japanese text"
 authors = ["Seri418"]
 edition = "2021"
@@ -54,6 +54,8 @@ tauri-plugin-single-instance = "2"
 screenshots = "0.8.10"
 xcap = "0.9.4"
 discord-rich-presence = "1.1.0"
+fontdb = "0.23"
+ttf-parser = "0.25"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -75,5 +77,5 @@ jni = "0.21.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 webview2-com = "0.38.2"
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }
 winapi = { version = "0.3.9", features = ["shellapi", "winuser", "wingdi", "psapi", "processthreadsapi", "winbase", "memoryapi", "handleapi"] }

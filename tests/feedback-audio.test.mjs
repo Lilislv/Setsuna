@@ -58,6 +58,9 @@ function native(lookupResult = clip, storeError = null) {
     globalThis.window = { __TAURI_INTERNALS__: {} };
     const calls = [];
     globalThis.testInvoke = async (command, args) => {
+        // addNote first reads the note type's fields to fill a missing field
+        // mapping; that metadata read is not part of the audio/card flow.
+        if (command === 'anki_request' && args.action === 'modelFieldNames') return [];
         calls.push({ command, ...args });
         if (command === 'lookup_local_audio') { if (lookupResult instanceof Error) throw lookupResult; return lookupResult; }
         assert.equal(command, 'anki_request');

@@ -5,6 +5,10 @@ import { listen } from "@tauri-apps/api/event";
 import Lookuper, { type LookupData } from "./components/Lookuper";
 import type { AppSettings } from "./components/SettingsModal";
 import { loadCustomFont } from "./utils/customFonts";
+import "./styles/design.css";
+import { installAutoHideScrollbars } from "./utils/autoScrollbars";
+installAutoHideScrollbars();
+import "./styles/motion.css";
 import "./App.css";
 import "./jl-popup.css";
 
@@ -78,13 +82,50 @@ function JlPopup() {
         };
     }, []);
 
+    // The window is sized to the article: measure the rendered content and let
+    // the backend resize (and re-place) the window, up to its maximum height.
+    const rootRef = useRef<HTMLElement | null>(null);
+    useEffect(() => {
+        const root = rootRef.current;
+        if (!root || typeof ResizeObserver === "undefined") return;
+        let frame = 0;
+        let lastHeight = 0;
+        const report = () => {
+            window.cancelAnimationFrame(frame);
+            frame = window.requestAnimationFrame(() => {
+                const popup = root.querySelector<HTMLElement>(".dict-popup");
+                const content = root.querySelector<HTMLElement>(".dict-popup-content");
+                if (!popup || !content) return;
+                const styles = getComputedStyle(popup);
+                const padding = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+                const height = Math.ceil(content.scrollHeight + padding + 2);
+                if (Math.abs(height - lastHeight) < 4) return;
+                lastHeight = height;
+                void invoke("fit_jl_lookup_window", { height }).catch(() => {});
+            });
+        };
+        const observer = new ResizeObserver(report);
+        const mutation = new MutationObserver(() => {
+            const content = root.querySelector(".dict-popup-content");
+            if (content) observer.observe(content);
+            report();
+        });
+        mutation.observe(root, { childList: true, subtree: true });
+        report();
+        return () => {
+            window.cancelAnimationFrame(frame);
+            observer.disconnect();
+            mutation.disconnect();
+        };
+    }, []);
+
     const append = useCallback((data: LookupData) => setStack((previous) => [...previous, data]), []);
     const replace = useCallback((data: LookupData) => setStack([data]), []);
     const replaceAt = useCallback((index: number, data: LookupData) => setStack((previous) => [...previous.slice(0, index + 1), data]), []);
     const slice = useCallback((index: number) => setStack((previous) => previous.slice(0, index + 1)), []);
 
     return (
-        <main className="jl-popup-root">
+        <main className="jl-popup-root" ref={rootRef}>
             <button
                 type="button"
                 className="jl-popup-close"

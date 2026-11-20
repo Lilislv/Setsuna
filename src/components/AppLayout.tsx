@@ -1,22 +1,17 @@
 import SettingsLookup from "./Settings/SettingsLookup";
 import {
     IconSearch,
-    IconWifi,
     IconImport,
-    IconExport,
     IconClear,
     IconSettings,
-    IconPin,
-    IconHome,
-    IconTextTab,
-    IconBookTab,
-    IconPlayerTab,
     IconChevronUp,
     IconChevronDown,
     IconClose,
 } from './Icons';
 import { defaultStats, EMPTY_LINES, Tab } from '../utils/constants';
-import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { usePresence } from '../utils/presence';
+import './MobileShell.css';
 import { getTranslator } from '../utils/i18n';
 import TextContainer from './TextContainer';
 import StatsPanel from './StatsPanel';
@@ -43,7 +38,7 @@ import {
     type DriveQuotaInfo,
     type GooglePkceSession,
 } from '../utils/gdrive';
-import { GOOGLE_DRIVE_AVAILABLE, YATSU_READER_AVAILABLE } from '../utils/featureFlags';
+import { GOOGLE_DRIVE_AVAILABLE } from '../utils/featureFlags';
 import { tokenizeLookupText, normalizeWebSocketUrl } from '../utils/appRuntime';
 import {
     getMobileOverlayStatus,
@@ -69,7 +64,6 @@ import {
     requestAnkiDroidPermission,
 } from '../utils/anki';
 
-const TAB_WINDOW_START_STORAGE_KEY = 'txthk-tab-window-start';
 
 export const SearchBar = ({
     isOpen,
@@ -383,6 +377,26 @@ export const MobileLayout = ({
     const [ankiFields, setAnkiFields] = useState<string[]>([]);
     const [ankiBusy, setAnkiBusy] = useState(false);
     const [nativeCapture, setNativeCapture] = useState(() => getMobileTextCaptureStatus());
+    const [settingsHome, setSettingsHome] = useState(true);
+    const settingsPresence = usePresence(isMobileSettingsOpen, 260);
+    const inputPresence = usePresence(activeMobileView === 'lookup', 240);
+    const tabsPresence = usePresence(tabsOpen, 240);
+    const statsPresence = usePresence(isStatsOpen, 240);
+    // Android WebViews can deliver the tap that opened a sheet a second time to
+    // whatever the new sheet put under the finger (for example "new tab").
+    // Taps inside a layer during its first moments are ignored.
+    const layerOpenedAtRef = useRef(0);
+    useEffect(() => {
+        if (tabsOpen || isStatsOpen || isMobileSettingsOpen || activeMobileView === 'lookup') {
+            layerOpenedAtRef.current = performance.now();
+        }
+    }, [tabsOpen, isStatsOpen, isMobileSettingsOpen, activeMobileView]);
+    const swallowGhostTap = (event: { preventDefault(): void; stopPropagation(): void }) => {
+        if (performance.now() - layerOpenedAtRef.current < 380) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+    };
     const visibleTabs = (tabs || []).filter((tab: Tab) => !tab.archived);
     const stats = activeTab?.stats || defaultStats;
     const isEn = settings?.appLanguage === 'en';
@@ -423,6 +437,7 @@ export const MobileLayout = ({
     useEffect(() => {
         if (!settingsRequest?.id) return;
         if (settingsRequest.section) setMobileSettingsSection(settingsRequest.section);
+        setSettingsHome(!settingsRequest.section);
         setIsMobileSettingsOpen(true);
     }, [settingsRequest?.id, settingsRequest?.section]);
 
@@ -1174,71 +1189,85 @@ export const MobileLayout = ({
         ? (driveTransfer.total - driveTransfer.transferred) / transferSpeed
         : 0;
 
+    const tabStatusColor = (status?: string) => status === 'reading' ? '#4CAF50' : status === 'paused' ? '#d6a84f' : status === 'completed' ? '#8bdeff' : '#8b8f98';
+    const formatTimer = (seconds: number) => {
+        const total = Math.max(0, Math.floor(seconds || 0));
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+    };
+    const sourceState = wsConnected ? 'on' : wsIsConnecting || wsIntentOn ? 'pending' : 'off';
+    const openSettingsPage = (section: MobileSettingsSection | null) => {
+        if (section) setMobileSettingsSection(section);
+        setSettingsHome(!section);
+        setIsMobileSettingsOpen(true);
+    };
+    const settingsGroups: { id: MobileSettingsSection; label: string; hint: string; icon: string; tone: string }[][] = [
+        [
+            { id: 'source', label: isEn ? 'Text source' : 'Источник текста', hint: wsStatusLabel, icon: '◉', tone: sourceState === 'on' ? '#4caf50' : sourceState === 'pending' ? '#e5a957' : '#e05a5a' },
+            { id: 'data', label: isEn ? 'Dictionaries' : 'Словари', hint: `${(settings.dictionaries || []).length} ${isEn ? 'installed' : 'установлено'}`, icon: '字', tone: '#4fa6ff' },
+            {
+                id: 'drive',
+                label: 'Google Drive',
+                hint: driveBusy && driveTransfer
+                    ? `${driveTransfer.label} · ${Math.round(driveTransfer.percent)}%`
+                    : settings.gdriveRefreshToken ? (isEn ? 'Connected' : 'Подключён') : (isEn ? 'Not connected' : 'Не подключён'),
+                icon: '☁',
+                tone: '#e5a957',
+            },
+        ],
+        [
+            { id: 'flow', label: 'Setsuna Flow', hint: settings.mobileOverlayEnabled ? (isEn ? 'Shown over apps' : 'Поверх приложений') : (isEn ? 'Off' : 'Выключен'), icon: '▣', tone: '#8bdeff' },
+            { id: 'anki', label: 'AnkiDroid', hint: settings.ankiDeck || (isEn ? 'Not set up' : 'Не настроено'), icon: 'A', tone: '#d7b8ff' },
+            { id: 'reading', label: isEn ? 'Appearance' : 'Внешний вид', hint: `${settings.appLanguage === 'en' ? 'English' : 'Русский'} · ${settings.fontSize || 26}px`, icon: 'Aa', tone: '#c8ccd4' },
+        ],
+        [
+            { id: 'feedback', label: isEn ? 'Feedback' : 'Обратная связь', hint: isEn ? 'Bugs and ideas' : 'Ошибки и идеи', icon: '✉', tone: '#c8ccd4' },
+        ],
+    ];
+    const currentPage = settingsGroups.flat().find((item) => item.id === mobileSettingsSection);
+
     return (
-        <div className="mobile-shell" onClick={(e) => e.stopPropagation()}>
-            <header className="mobile-header">
-                <div className="mobile-topleft" onClick={() => (mobileWs || wsIntentOn) && setIsMobileSettingsOpen(true)}>
-                    <span
-                        className={`mobile-conn-dot ${wsConnected ? 'on' : wsIsConnecting || wsIntentOn ? 'pending' : 'off'}`}
-                        title={wsStatusLabel}
-                    />
-                    <span className="mobile-tabname">{activeTab?.name || t('tabs.defaultName')}</span>
-                </div>
-                <div className="mobile-topright">
-                    <button
-                        type="button"
-                        className="mobile-statpill"
-                        onClick={() => setIsStatsOpen(true)}
-                        aria-label={isEn ? 'Statistics' : 'Статистика'}
-                    >
-                        {(stats.chars || 0).toLocaleString(isEn ? 'en-US' : 'ru-RU')} <span>字</span>
-                    </button>
-                    <button className="mobile-gear" onClick={() => setIsMobileSettingsOpen(true)} aria-label={isEn ? 'Settings' : 'Настройки'}>
-                        <IconSettings />
-                    </button>
-                </div>
+        <div
+            className="mobile-shell m-shell"
+            onClick={(e) => {
+                // Word buttons stop propagation, so any other tap on the reader,
+                // island or dock dismisses an open lookup sheet.
+                e.stopPropagation();
+                if (lookupOpen) onCloseLookup?.();
+            }}
+        >
+            <header className="m-island-row">
+                <button type="button" className="m-island" onClick={() => setTabsOpen(true)} aria-label={isEn ? 'Tabs' : 'Вкладки'}>
+                    <span className="m-dot" style={{ ['--dot' as any]: tabStatusColor(activeTab?.status) }} aria-hidden="true" />
+                    <span key={activeTab?.id} className="m-island-name">{activeTab?.name || t('tabs.defaultName')}</span>
+                    <span className="m-island-meta">{(stats.chars || 0).toLocaleString('ru-RU')}</span>
+                </button>
+                <button
+                    type="button"
+                    className={`m-source m-source-${sourceState}`}
+                    onClick={() => openSettingsPage('source')}
+                    aria-label={wsStatusLabel}
+                    title={wsStatusLabel}
+                >
+                    <span className="m-source-dot" aria-hidden="true" />
+                </button>
             </header>
 
-            <main className="mobile-main">
-                {lookupNotice && <div className="mobile-lookup-notice" role="status">{lookupNotice}</div>}
-                {activeMobileView === 'lookup' ? (
-                    <div className="mobile-lookup-page">
-                        <div className="mobile-section-title">{isEn ? 'Lookup' : 'Лукап'}</div>
-                        <textarea
-                            value={lookupText}
-                            onChange={(e) => setLookupText(e.target.value)}
-                            className="mobile-lookup-input"
-                            placeholder={isEn ? 'Paste a sentence or type a word...' : 'Вставь предложение или введи слово...'}
-                            rows={4}
-                        />
-                        <div className="mobile-lookup-actions">
-                            <button type="button" className="mobile-action primary" onClick={() => lookupText.trim() && onLookupText(lookupText.trim())}>
-                                <IconSearch /> {isEn ? 'Lookup whole text' : 'Искать весь текст'}
-                            </button>
-                            <button type="button" className="mobile-action" onClick={submitDraft}>
-                                {isEn ? 'Send to text' : 'В текст'}
-                            </button>
-                            <button type="button" className="mobile-action" onClick={() => setLookupText('')}>
-                                {isEn ? 'Clear' : 'Очистить'}
-                            </button>
-                        </div>
-                        <div className="mobile-token-panel">
-                            <MobileSentenceTokens
-                                text={lookupText}
-                                onLookup={lookupTypedToken}
-                                placeholder={isEn ? 'Japanese and English words will become tappable here.' : 'Японские и английские слова тут станут кликабельными.'}
-                            />
-                        </div>
-                    </div>
-                ) : activeTab?.mode === 'player' ? (
-                    <div className="mobile-placeholder">
-                        <div className="mobile-placeholder-title">{isEn ? 'Player' : 'Плеер'}</div>
-                        <div>{isEn ? 'The mobile player will come after text, lookup, and Anki are stable.' : 'Мобильный плеер добавим после текста, lookup и Anki.'}</div>
+            <main className="m-main">
+                {lookupNotice && <div className="m-toast" role="status">{lookupNotice}</div>}
+                {activeTab?.mode === 'player' ? (
+                    <div className="m-empty">
+                        <div className="m-empty-icon">▶</div>
+                        <strong>{isEn ? 'Player' : 'Плеер'}</strong>
+                        <span>{isEn ? 'The mobile player will come after text, lookup, and Anki are stable.' : 'Мобильный плеер добавим после текста, лукапа и Anki.'}</span>
                     </div>
                 ) : activeTab?.mode === 'epub' ? (
-                    <div className="mobile-placeholder">
-                        <div className="mobile-placeholder-title">EPUB</div>
-                        <div>{isEn ? 'The reader will use the same dictionary and mining flow.' : 'Ридер будет использовать тот же словарь и майнинг.'}</div>
+                    <div className="m-empty">
+                        <div className="m-empty-icon">📖</div>
+                        <strong>EPUB</strong>
+                        <span>{isEn ? 'The reader will use the same dictionary and mining flow.' : 'Ридер будет использовать тот же словарь и майнинг.'}</span>
                     </div>
                 ) : activeTab?.lines?.length ? (
                     <TextContainer
@@ -1256,79 +1285,118 @@ export const MobileLayout = ({
                         language={settings.appLanguage}
                         textOrientation="horizontal"
                         lookupActive={lookupOpen}
-                        onLookupToken={(token: string, sentence: string, cursor: number) => onLookupSentenceToken?.(token, sentence, cursor)}
+                        onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
                     />
                 ) : (
-                    <div className="mobile-placeholder">
-                        <div className="mobile-placeholder-title">{isEn ? 'Text' : 'Текст'}</div>
-                        <div>{isEn ? 'Paste or share text to start reading.' : 'Вставь или отправь текст через Share, чтобы начать читать.'}</div>
+                    <div className="m-empty">
+                        <div className="m-empty-icon">刹</div>
+                        <strong>{isEn ? 'Waiting for text' : 'Ждём текст'}</strong>
+                        <span>{isEn ? 'Connect a source, share text to Setsuna or type it in.' : 'Подключи источник, отправь текст через «Поделиться» или введи его.'}</span>
+                        <div className="m-empty-actions">
+                            <button type="button" className="m-pill-button primary" onClick={() => openSettingsPage('source')}>{isEn ? 'Connect source' : 'Подключить источник'}</button>
+                            <button type="button" className="m-pill-button" onClick={() => setActiveMobileView('lookup')}>{isEn ? 'Type text' : 'Ввести текст'}</button>
+                        </div>
                     </div>
                 )}
             </main>
 
-            <footer className="mobile-dock">
-                <button type="button" className={`mobile-dock-btn timer ${isPaused ? '' : 'running'}`} aria-label={isPaused ? (isEn ? 'Start timer' : 'Запустить таймер') : (isEn ? 'Pause timer' : 'Пауза таймера')} onClick={() => setIsPaused(!isPaused)}>
-                    <span className="timer-icon" aria-hidden="true">{isPaused ? '▶' : 'Ⅱ'}</span>
-                    {isPaused ? (isEn ? 'Start' : 'Пуск') : (isEn ? 'Pause' : 'Пауза')}
-                </button>
+            <nav className="m-dock" aria-label={isEn ? 'Reader controls' : 'Управление чтением'}>
                 <button
                     type="button"
-                    className={`mobile-dock-btn primary ${activeMobileView === 'lookup' ? 'active' : ''}`}
-                    onClick={() => setActiveMobileView(activeMobileView === 'lookup' ? 'text' : 'lookup')}
+                    className={`m-dock-timer${isPaused ? '' : ' is-running'}`}
+                    onClick={() => setIsPaused(!isPaused)}
+                    aria-label={isPaused ? (isEn ? 'Start timer' : 'Запустить таймер') : (isEn ? 'Pause timer' : 'Пауза')}
                 >
-                    <IconSearch /> <span>{activeMobileView === 'lookup' ? (isEn ? 'Reading' : 'Чтение') : (isEn ? 'Lookup' : 'Лукап')}</span>
+                    <span aria-hidden="true">{isPaused ? '▶' : 'Ⅱ'}</span>
+                    {formatTimer(stats.time)}
                 </button>
-                <button
-                    type="button"
-                    className={`mobile-dock-btn flow ${settings.mobileOverlayEnabled ? 'active' : ''}`}
-                    onClick={toggleMobileFlow}
-                    aria-label={isEn ? 'Setsuna Flow overlay' : 'Окно Setsuna Flow'}
-                    title={isEn ? 'Setsuna Flow' : 'Setsuna Flow'}
-                >
-                    <IconPin /> <span>Flow</span>
+                <button type="button" className="m-dock-btn" onClick={() => setTabsOpen(true)} aria-label={isEn ? 'Tabs' : 'Вкладки'}>
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3" /><path d="M4 10h16" /></svg>
+                    {visibleTabs.length > 1 && <span className="m-badge">{visibleTabs.length}</span>}
                 </button>
-                <button type="button" className="mobile-dock-btn tabs" onClick={() => setTabsOpen(true)} aria-label={isEn ? 'Windows' : 'Окна'}>
-                    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="4" y="6" width="16" height="14" rx="2.5" /><path d="M4 10h16" /></svg>
-                    {visibleTabs.length > 1 && <span className="mobile-dock-badge">{visibleTabs.length}</span>}
+                <button type="button" className={`m-dock-btn${activeMobileView === 'lookup' ? ' is-active' : ''}`} onClick={() => setActiveMobileView(activeMobileView === 'lookup' ? 'text' : 'lookup')} aria-label={isEn ? 'Type or look up text' : 'Ввод и поиск'}>
+                    <IconSearch />
                 </button>
-            </footer>
+                <button type="button" className={`m-dock-btn${settings.mobileOverlayEnabled ? ' is-active' : ''}`} onClick={toggleMobileFlow} aria-label="Setsuna Flow">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="13" height="10" rx="2.5" /><rect x="8" y="10" width="13" height="10" rx="2.5" /></svg>
+                </button>
+                <button type="button" className="m-dock-btn" onClick={() => openSettingsPage(null)} aria-label={isEn ? 'Settings' : 'Настройки'}>
+                    <IconSettings />
+                </button>
+            </nav>
 
-            {tabsOpen && (
-                <div className="mobile-tabs-scrim" onClick={() => setTabsOpen(false)}>
-                    <section className="mobile-tabs-sheet" onClick={(e) => e.stopPropagation()}>
-                        <div className="mobile-shade-grabber" />
-                        <div className="mobile-tabs-head">{isEn ? 'Windows' : 'Окна'}</div>
-                        <div className="mobile-tabs-list">
-                            {visibleTabs.map((tab: Tab) => (
-                                <div key={tab.id} className={`mobile-tabs-row ${tab.id === activeTabId ? 'active' : ''}`}>
-                                    <button type="button" className="mobile-tabs-name" onClick={() => { switchTab(tab.id); setTabsOpen(false); }}>
-                                        <span className={`mobile-tabs-dot ${tab.id === activeTabId ? 'on' : ''}`} />
-                                        <span className="mobile-tabs-title">{tab.name || t('tabs.defaultName')}</span>
-                                        <span className="mobile-tabs-count">{(tab.stats?.chars || 0).toLocaleString(isEn ? 'en-US' : 'ru-RU')} 字</span>
+            {tabsPresence.mounted && (
+                <div className={`m-scrim${tabsPresence.closing ? ' is-closing' : ''}`} onClickCapture={swallowGhostTap} onClick={() => setTabsOpen(false)}>
+                    <section className="m-sheet" onClick={(e) => e.stopPropagation()} aria-label={isEn ? 'Tabs' : 'Вкладки'}>
+                        <div className="m-grabber" />
+                        <div className="m-sheet-head">
+                            <h2>{isEn ? 'Tabs' : 'Вкладки'}</h2>
+                            <button type="button" className="m-round-btn" onClick={() => setTabsOpen(false)} aria-label={isEn ? 'Close' : 'Закрыть'}>×</button>
+                        </div>
+                        <div className="m-tab-list">
+                            {visibleTabs.map((tab: Tab, index: number) => (
+                                <div key={tab.id} className={`m-tab-row${tab.id === activeTabId ? ' is-active' : ''}`} style={{ ['--i' as any]: Math.min(index, 10) }}>
+                                    <button type="button" className="m-tab-main" onClick={() => { switchTab(tab.id); setTabsOpen(false); }}>
+                                        <span className="m-dot" style={{ ['--dot' as any]: tabStatusColor(tab.status) }} aria-hidden="true" />
+                                        <span className="m-tab-name">{tab.name || t('tabs.defaultName')}</span>
+                                        <span className="m-tab-meta">{(tab.stats?.chars || 0).toLocaleString('ru-RU')}</span>
                                     </button>
                                     {visibleTabs.length > 1 && (
-                                        <button type="button" className="mobile-tabs-close" aria-label={isEn ? 'Close' : 'Закрыть'} onClick={() => closeTab(tab.id)}>×</button>
+                                        <button type="button" className="m-tab-close" aria-label={isEn ? 'Close' : 'Закрыть'} onClick={() => closeTab(tab.id)}>×</button>
                                     )}
                                 </div>
                             ))}
                         </div>
-                        <button type="button" className="mobile-tabs-new" onClick={() => { addNewTab(); setTabsOpen(false); }}>
-                            + {isEn ? 'New window' : 'Новое окно'}
-                        </button>
-                        <div className="mobile-tabs-actions">
-                            <button type="button" className="mobile-action" onClick={() => { openMobileDictionaryImport(); setTabsOpen(false); }}><IconImport /> {isEn ? 'Import dictionary' : 'Импорт словаря'}</button>
-                            <button type="button" className="mobile-action mobile-action-danger" onClick={() => { clearAll(); setTabsOpen(false); }}><IconClear /> {isEn ? 'Clear text' : 'Очистить'}</button>
+                        <div className="m-sheet-actions">
+                            <button type="button" className="m-pill-button primary m-wide" onClick={() => { addNewTab(); setTabsOpen(false); }}>＋ {isEn ? 'New tab' : 'Новая вкладка'}</button>
+                            <button type="button" className="m-pill-button" onClick={() => { setTabsOpen(false); setActiveMobileView('lookup'); }}>✎ {isEn ? 'Type text' : 'Ввести текст'}</button>
+                            <button type="button" className="m-pill-button" onClick={() => { setTabsOpen(false); setIsStatsOpen(true); }}>⏱ {isEn ? 'Statistics' : 'Статистика'}</button>
+                            <button type="button" className="m-pill-button danger" onClick={() => { clearAll(); setTabsOpen(false); }}>{isEn ? 'Clear tab' : 'Очистить вкладку'}</button>
                         </div>
                     </section>
                 </div>
             )}
 
-            {isStatsOpen && (
-                <div className="mobile-stats-scrim" onClick={() => setIsStatsOpen(false)}>
-                    <section className="mobile-stats-shade" onClick={(e) => e.stopPropagation()}>
-                        <div className="mobile-stats-shade-head">
-                            <span>{isEn ? 'Session' : 'Сессия'}</span>
-                            <button className="mobile-icon-btn tiny" onClick={() => setIsStatsOpen(false)} aria-label={isEn ? 'Close' : 'Закрыть'}>×</button>
+            {inputPresence.mounted && (
+                <div className={`m-scrim${inputPresence.closing ? ' is-closing' : ''}`} onClickCapture={swallowGhostTap} onClick={() => setActiveMobileView('text')}>
+                    <section className="m-sheet m-input-sheet" onClick={(e) => e.stopPropagation()} aria-label={isEn ? 'Type text' : 'Ввод текста'}>
+                        <div className="m-grabber" />
+                        <div className="m-sheet-head">
+                            <h2>{isEn ? 'Text and lookup' : 'Текст и лукап'}</h2>
+                            <button type="button" className="m-round-btn" onClick={() => setActiveMobileView('text')} aria-label={isEn ? 'Close' : 'Закрыть'}>×</button>
+                        </div>
+                        <textarea
+                            value={lookupText}
+                            onChange={(e) => setLookupText(e.target.value)}
+                            className="m-textarea"
+                            placeholder={isEn ? 'Paste a sentence or type a word…' : 'Вставь предложение или введи слово…'}
+                            rows={3}
+                        />
+                        <div className="m-token-panel">
+                            <MobileSentenceTokens
+                                text={lookupText}
+                                onLookup={lookupTypedToken}
+                                placeholder={isEn ? 'Words become tappable here.' : 'Здесь слова станут кликабельными.'}
+                            />
+                        </div>
+                        <div className="m-sheet-actions">
+                            <button type="button" className="m-pill-button primary" onClick={() => lookupText.trim() && onLookupText(lookupText.trim())}>
+                                <IconSearch /> {isEn ? 'Look up' : 'Найти'}
+                            </button>
+                            <button type="button" className="m-pill-button" onClick={() => { submitDraft(); setActiveMobileView('text'); }}>{isEn ? 'Add to tab' : 'В текст вкладки'}</button>
+                            <button type="button" className="m-pill-button" onClick={() => setLookupText('')}>{isEn ? 'Clear' : 'Очистить'}</button>
+                        </div>
+                    </section>
+                </div>
+            )}
+
+            {statsPresence.mounted && (
+                <div className={`m-scrim${statsPresence.closing ? ' is-closing' : ''}`} onClickCapture={swallowGhostTap} onClick={() => setIsStatsOpen(false)}>
+                    <section className="m-sheet" onClick={(e) => e.stopPropagation()} aria-label={isEn ? 'Statistics' : 'Статистика'}>
+                        <div className="m-grabber" />
+                        <div className="m-sheet-head">
+                            <h2>{isEn ? 'Session' : 'Сессия'}</h2>
+                            <button type="button" className="m-round-btn" onClick={() => setIsStatsOpen(false)} aria-label={isEn ? 'Close' : 'Закрыть'}>×</button>
                         </div>
                         <StatsPanel
                             isPaused={isPaused}
@@ -1340,46 +1408,56 @@ export const MobileLayout = ({
                             speedTimeframe={settings.speedTimeframe}
                             language={settings.appLanguage}
                             textOrientation="horizontal"
+                            tabId={activeTab?.id ?? null}
+                            tabName={activeTab?.name || ''}
                         />
-                        <div className="mobile-shade-grabber" />
                     </section>
                 </div>
             )}
 
-            {isMobileSettingsOpen && (
-                <div className="mobile-settings-backdrop" onClick={() => setIsMobileSettingsOpen(false)}>
-                    <div className="mobile-settings-sheet" onClick={(e) => e.stopPropagation()}>
-                        <div className="mobile-settings-header">
-                            <div>
-                                <div className="mobile-kicker">Setsuna</div>
-                                <div className="mobile-settings-title">{isEn ? 'Settings' : 'Настройки'}</div>
-                            </div>
-                            <button className="mobile-icon-btn" onClick={() => setIsMobileSettingsOpen(false)} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}><IconClose /></button>
-                        </div>
-
-                        <div ref={mobileSettingsNavRef} className="mobile-settings-nav" role="tablist" aria-label={isEn ? 'Settings sections' : 'Разделы настроек'}>
-                            {([
-                                ['reading', isEn ? 'Reading' : 'Чтение'],
-                                ['flow', 'Flow'],
-                                ['source', isEn ? 'Source' : 'Источник'],
-                                ['anki', 'Anki'],
-                                ['drive', 'Drive'],
-                                ['data', isEn ? 'Data' : 'Данные'],
-                                ['feedback', isEn ? 'Feedback' : 'Обратная связь'],
-                            ] as [MobileSettingsSection, string][]).map(([id, label]) => (
-                                <button
-                                    key={id}
-                                    type="button"
-                                    role="tab"
-                                    aria-selected={mobileSettingsSection === id}
-                                    className={mobileSettingsSection === id ? 'active' : ''}
-                                    onClick={() => setMobileSettingsSection(id)}
-                                >
-                                    {label}
+            {settingsPresence.mounted && (
+                <div className={`m-page${settingsPresence.closing ? ' is-closing' : ''}`} onClickCapture={swallowGhostTap} onClick={(e) => e.stopPropagation()}>
+                    {settingsHome ? (
+                        <div className="m-page-inner" key="home">
+                            <header className="m-page-head">
+                                <div>
+                                    <p className="m-eyebrow">SETSUNA</p>
+                                    <h1>{isEn ? 'Settings' : 'Настройки'}</h1>
+                                </div>
+                                <button type="button" className="m-round-btn" onClick={() => setIsMobileSettingsOpen(false)} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                            </header>
+                            {driveBusy && driveTransfer && (
+                                <button type="button" className="m-card m-transfer-card" onClick={() => openSettingsPage('drive')}>
+                                    <span className="m-transfer-label">{driveTransfer.label}</span>
+                                    <span className="m-progress"><span style={{ width: `${Math.max(0, Math.min(100, driveTransfer.percent))}%` }} /></span>
+                                    <span className="m-transfer-meta">{Math.round(driveTransfer.percent)}% · {formatMobileBytes(driveTransfer.transferred)} / {driveTransfer.total ? formatMobileBytes(driveTransfer.total) : '—'}</span>
                                 </button>
+                            )}
+                            {settingsGroups.map((group, groupIndex) => (
+                                <div key={groupIndex} className="m-card m-list" style={{ ['--i' as any]: groupIndex }}>
+                                    {group.map((item) => (
+                                        <button key={item.id} type="button" className="m-list-row" onClick={() => openSettingsPage(item.id)}>
+                                            <span className="m-list-icon" style={{ ['--tone' as any]: item.tone }} aria-hidden="true">{item.icon}</span>
+                                            <span className="m-list-text">
+                                                <strong>{item.label}</strong>
+                                                <small>{item.hint}</small>
+                                            </span>
+                                            <span className="m-chevron" aria-hidden="true">›</span>
+                                        </button>
+                                    ))}
+                                </div>
                             ))}
                         </div>
-
+                    ) : (
+                        <div className="m-page-inner m-subpage" key={mobileSettingsSection}>
+                            <header className="m-page-head">
+                                <button type="button" className="m-back" onClick={() => setSettingsHome(true)}>
+                                    <span aria-hidden="true">‹</span> {isEn ? 'Settings' : 'Настройки'}
+                                </button>
+                                <button type="button" className="m-round-btn" onClick={() => setIsMobileSettingsOpen(false)} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                            </header>
+                            <h1 className="m-page-title">{currentPage?.label || (isEn ? 'Settings' : 'Настройки')}</h1>
+                            <div className="mobile-settings-sheet m-section">
                         {mobileSettingsSection === 'reading' && <div className="mobile-settings-section">
                             <div className="mobile-section-title">{isEn ? 'Interface' : 'Интерфейс'}</div>
                             <label className="mobile-setting-row">
@@ -1820,713 +1898,12 @@ export const MobileLayout = ({
                                 <button className="mobile-action danger" onClick={clearAll}><IconClear /> {isEn ? 'Clear current text' : 'Очистить текст'}</button>
                             </div>
                         </div>}
-                    </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>
     );
 };
 
-export const TopBar = ({
-    openEpubWorkspace,
-    tabs,
-    activeTabId,
-    switchTab,
-    editingTabId,
-    setEditingTabId,
-    setTabs,
-    closeTab,
-    archiveTab,
-    openArchiveSettings,
-    cycleTabStatus,
-    addNewTab,
-    settings,
-    wsStatuses,
-    wsIntents,
-    toggleWs,
-    textSyncServerEnabled,
-    textSyncRemoteEnabled,
-    textSyncCloudEnabled,
-    toggleTextSyncRemote,
-    openTextSyncSettings,
-    useClipboard,
-    toggleClipboard,
-    openSearch,
-    openImport,
-    openExport,
-    activeTab,
-    openCaptureSourcePicker,
-    openJlModeWindow,
-    clearAll,
-    openHome,
-    openSettings,
-}: any) => {
-    const t = getTranslator(settings?.appLanguage || 'ru');
-    const [draggedTabId, setDraggedTabId] = useState<number | null>(null);
-    const [dragOverTabId, setDragOverTabId] = useState<number | null>(null);
-    const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: number } | null>(null);
-    const [tabDecks, setTabDecks] = useState<string[]>([]);
-    const tabStripRef = useRef<HTMLDivElement>(null);
-    const [isTopbarCollapsed, setIsTopbarCollapsed] = useState(true);
-    const topbarRef = useRef<HTMLDivElement>(null);
-    const pointerDragRef = useRef<{ id: number; startX: number; dragging: boolean; lastOverId: number | null } | null>(null);
-    const suppressTabClickRef = useRef(false);
-    const visibleTabs = tabs.filter((tab: Tab) => !tab.archived);
-    const [tabWindowStart, setTabWindowStart] = useState(() => {
-        const maxStart = Math.max(0, visibleTabs.length - 1);
-        try {
-            const raw = localStorage.getItem(TAB_WINDOW_START_STORAGE_KEY);
-            if (raw !== null) {
-                const saved = Number.parseInt(raw, 10);
-                if (Number.isFinite(saved)) return Math.max(0, Math.min(saved, maxStart));
-            }
-        } catch {}
-        const activeIndex = visibleTabs.findIndex((tab: Tab) => tab.id === activeTabId);
-        return Math.max(0, activeIndex);
-    });
-    const [visibleTabSlots, setVisibleTabSlots] = useState(1);
-    const [tabItemWidth, setTabItemWidth] = useState(180);
-    const visibleWindowTabs = visibleTabs.slice(tabWindowStart, tabWindowStart + visibleTabSlots);
-    const hasHiddenTabs = visibleTabs.length > visibleTabSlots;
-    const primaryWebSocketId = settings?.primaryWebSocketId || settings?.websockets?.[0]?.id;
-    const statusMeta = (status?: Tab["status"]) => {
-        const isEn = settings?.appLanguage === 'en';
-        if (status === 'reading') return { label: isEn ? 'Reading' : 'Читаю', color: '#4CAF50', icon: '▶' };
-        if (status === 'paused') return { label: isEn ? 'Paused' : 'На паузе', color: '#d6a84f', icon: 'Ⅱ' };
-        if (status === 'completed') return { label: isEn ? 'Completed' : 'Прочитано', color: '#8bdeff', icon: '✓' };
-        return { label: isEn ? 'Planned' : 'В планах', color: '#8b8f98', icon: '○' };
-    };
-    const tabTypeIcon = (tab: Tab) => {
-        if (tab.mode === 'epub') return { icon: <IconBookTab />, title: 'EPUB', color: '#d6a84f' };
-        if (tab.mode === 'player') return { icon: <IconPlayerTab />, title: settings?.appLanguage === 'en' ? 'Player' : 'Плеер', color: '#ff6b6b' };
-        return { icon: <IconTextTab />, title: 'TextHooker', color: 'var(--accent-blue)' };
-    };
-    const moveTab = (fromId: number, toId: number) => {
-        if (fromId === toId) return;
-        setTabs((prev: Tab[]) => {
-            const fromIndex = prev.findIndex((tab) => tab.id === fromId);
-            const toIndex = prev.findIndex((tab) => tab.id === toId);
-            if (fromIndex < 0 || toIndex < 0) return prev;
-            const next = [...prev];
-            const [moved] = next.splice(fromIndex, 1);
-            next.splice(toIndex, 0, moved);
-            return next;
-        });
-    };
-    const startPointerTabDrag = (e: PointerEvent, id: number) => {
-        if (editingTabId === id) return;
-        const target = e.target as HTMLElement;
-        if (target.closest('button') || target.closest('input') || target.closest('.tab-close')) return;
-        pointerDragRef.current = { id, startX: e.clientX, dragging: false, lastOverId: null };
-        (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    };
-    const movePointerTabDrag = (e: PointerEvent) => {
-        const drag = pointerDragRef.current;
-        if (!drag) return;
-        if (!drag.dragging && Math.abs(e.clientX - drag.startX) > 8) {
-            drag.dragging = true;
-            suppressTabClickRef.current = true;
-            setDraggedTabId(drag.id);
-        }
-        if (!drag.dragging) return;
-        const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-        const tabEl = target?.closest('[data-tab-id]') as HTMLElement | null;
-        const overId = Number(tabEl?.dataset.tabId || 0);
-        if (overId && overId !== drag.id && overId !== drag.lastOverId) {
-            drag.lastOverId = overId;
-            moveTab(drag.id, overId);
-            setDragOverTabId(overId);
-        }
-    };
-    const endPointerTabDrag = (e: PointerEvent) => {
-        const drag = pointerDragRef.current;
-        pointerDragRef.current = null;
-        setDraggedTabId(null);
-        setDragOverTabId(null);
-        try { (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId); } catch {}
-        if (drag?.dragging) {
-            window.setTimeout(() => { suppressTabClickRef.current = false; }, 0);
-        }
-    };
-    const shiftTabWindow = (direction: -1 | 1) => {
-        setTabWindowStart((start) => {
-            const maxStart = Math.max(0, visibleTabs.length - visibleTabSlots);
-            return Math.max(0, Math.min(maxStart, start + direction));
-        });
-    };
-    const getTabById = (id: number) => tabs.find((tab: Tab) => tab.id === id);
-    const setTabStatus = (id: number, status: NonNullable<Tab["status"]>) => {
-        setTabs((prev: Tab[]) => prev.map((tab) => tab.id === id ? { ...tab, status } : tab));
-        setTabMenu(null);
-    };
-    const setTabDeck = (id: number, deck: string) => {
-        setTabs((prev: Tab[]) => prev.map((tab) => tab.id === id ? { ...tab, ankiDeck: deck || null } : tab));
-    };
-    const renameTab = (id: number) => {
-        setEditingTabId(id);
-        switchTab(id);
-        setTabMenu(null);
-    };
-    const duplicateTab = (id: number) => {
-        const source = getTabById(id);
-        if (!source) return;
-        const copy: Tab = {
-            ...source,
-            id: Date.now(),
-            name: `${source.name} copy`,
-            stats: { ...source.stats },
-            lines: [...source.lines],
-            speedSamples: source.speedSamples ? [...source.speedSamples] : undefined,
-            archived: false,
-        };
-        setTabs((prev: Tab[]) => {
-            const index = prev.findIndex((tab) => tab.id === id);
-            const next = [...prev];
-            next.splice(index + 1, 0, copy);
-            return next;
-        });
-        switchTab(copy.id);
-        setTabMenu(null);
-    };
-    const archiveTabFromMenu = (id: number) => {
-        const visible = tabs.filter((tab: Tab) => !tab.archived);
-        if (visible.length <= 1) return;
-        setTabs((prev: Tab[]) => prev.map((tab) => tab.id === id ? { ...tab, archived: true } : tab));
-        if (activeTabId === id) {
-            const next = visible.find((tab: Tab) => tab.id !== id);
-            if (next) switchTab(next.id);
-        }
-        setTabMenu(null);
-    };
-    const deleteTabFromMenu = (id: number) => {
-        if (visibleTabs.length <= 1) return;
-        const next = tabs.filter((tab: Tab) => tab.id !== id);
-        setTabs(next);
-        if (activeTabId === id) {
-            const nextVisible = next.find((tab: Tab) => !tab.archived);
-            if (nextVisible) switchTab(nextVisible.id);
-        }
-        setTabMenu(null);
-    };
-    useEffect(() => {
-        if (!tabMenu) return;
-        if (settings?.ankiDeckMode === 'contextual') {
-            getDecks().then(setTabDecks).catch(() => setTabDecks(settings?.ankiDeck ? [settings.ankiDeck] : []));
-        }
-        const close = () => setTabMenu(null);
-        window.addEventListener('click', close);
-        window.addEventListener('keydown', close);
-        window.addEventListener('resize', close);
-        return () => {
-            window.removeEventListener('click', close);
-            window.removeEventListener('keydown', close);
-            window.removeEventListener('resize', close);
-        };
-    }, [tabMenu]);
-    useEffect(() => {
-        const el = tabStripRef.current;
-        if (!el) return;
-        const updateSlots = () => {
-            const addButtonWidth = 36;
-            const arrowWidth = 64;
-            const maxTabWidth = 210;
-            const minTabWidth = 148;
-            const width = Math.max(0, el.clientWidth);
-            const tabAreaWithoutArrows = Math.max(0, width - addButtonWidth);
-            const allFitAtMax = visibleTabs.length * maxTabWidth <= tabAreaWithoutArrows;
-            const allFitAtMin = visibleTabs.length * minTabWidth <= tabAreaWithoutArrows;
-            const tabAreaWithArrows = Math.max(0, width - addButtonWidth - arrowWidth);
-            const slots = allFitAtMax || allFitAtMin
-                ? Math.max(1, visibleTabs.length)
-                : Math.max(1, Math.floor(tabAreaWithArrows / minTabWidth));
-            const availableForTabs = (slots >= visibleTabs.length) ? tabAreaWithoutArrows : tabAreaWithArrows;
-            const nextWidth = Math.max(minTabWidth, Math.min(maxTabWidth, Math.floor(availableForTabs / Math.max(1, slots))));
-            setVisibleTabSlots((prev) => (prev === slots ? prev : slots));
-            setTabItemWidth((prev) => (prev === nextWidth ? prev : nextWidth));
-        };
-        updateSlots();
-        const observer = new ResizeObserver(updateSlots);
-        observer.observe(el);
-        return () => observer.disconnect();
-    }, [visibleTabs.length]);
-
-    useEffect(() => {
-        setTabWindowStart((start) => Math.max(0, Math.min(start, Math.max(0, visibleTabs.length - visibleTabSlots))));
-    }, [visibleTabs.length, visibleTabSlots]);
-    useEffect(() => {
-        try {
-            localStorage.setItem(TAB_WINDOW_START_STORAGE_KEY, String(tabWindowStart));
-        } catch {}
-    }, [tabWindowStart]);
-
-    return (
-        <div
-            ref={topbarRef}
-            className={`top-bar${isTopbarCollapsed ? ' is-compact' : ''}`}
-            style={{
-                backgroundColor: 'var(--bg-topbar)',
-                borderBottom: '1px solid var(--border-subtle)',
-                minHeight: '40px',
-                gap: '8px',
-                overflow: 'hidden',
-            }}
-        >
-            <style>{`
-                @keyframes fast-blink {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.3; }
-                }
-            `}</style>
-
-            <button
-                type="button"
-                className="header-btn topbar-optional"
-                onClick={openHome}
-                title={settings?.appLanguage === 'en' ? 'Back to Hub' : 'Выйти в Hub'}
-                aria-label={settings?.appLanguage === 'en' ? 'Open home' : 'Открыть главное меню'}
-                style={{ width: 76, height: 33, flex: '0 0 76px', padding: '0 8px', alignSelf: 'flex-end', justifyContent: 'center', gap: 6, fontSize: 12 }}
-            >
-                <IconHome />
-                <span>{settings?.appLanguage === 'en' ? 'Hub' : 'В Hub'}</span>
-            </button>
-
-            <div ref={tabStripRef} style={{ minWidth: 0, flex: '1 1 auto', overflow: 'hidden', display: 'flex', alignItems: 'flex-end' }}>
-            <div className="tabs" style={{ minWidth: 0, width: '100%', flex: '1 1 auto', overflow: 'hidden', alignItems: 'flex-end' }}>
-                {hasHiddenTabs && (
-                    <button
-                        className="tab"
-                        onClick={() => shiftTabWindow(-1)}
-                        disabled={tabWindowStart <= 0}
-                        style={{ height: '33px', flex: '0 0 auto', width: 28, justifyContent: 'center', padding: 0, borderBottom: 'none', opacity: tabWindowStart <= 0 ? 0.35 : 1 }}
-                        title={settings?.appLanguage === 'en' ? 'Previous tab' : 'Предыдущая вкладка'}
-                    >
-                        ‹
-                    </button>
-                )}
-                {visibleWindowTabs.map((tab: Tab) => {
-                    const type = tabTypeIcon(tab);
-                    const status = statusMeta(tab.status);
-                    return (
-                        <div
-                            key={tab.id}
-                            data-tab-id={tab.id}
-                            className={`tab ${activeTabId === tab.id ? 'active' : ''}`}
-                            draggable={false}
-                            onPointerDown={(e) => startPointerTabDrag(e, tab.id)}
-                            onPointerMove={movePointerTabDrag}
-                            onPointerUp={endPointerTabDrag}
-                            onPointerCancel={endPointerTabDrag}
-                            onClick={() => {
-                                if (suppressTabClickRef.current) {
-                                    suppressTabClickRef.current = false;
-                                    return;
-                                }
-                                switchTab(tab.id);
-                            }}
-                            onContextMenu={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setTabMenu({ x: e.clientX, y: e.clientY, tabId: tab.id });
-                            }}
-                            title={tab.name || (settings?.appLanguage === 'en' ? 'Unnamed tab' : 'Без названия')}
-                            style={{
-                                opacity: draggedTabId === tab.id ? 0.55 : 1,
-                                outline: dragOverTabId === tab.id ? '1px solid var(--accent-blue)' : undefined,
-                                outlineOffset: dragOverTabId === tab.id ? '-2px' : undefined,
-                                height: '33px',
-                                width: `${tabItemWidth}px`,
-                                flex: `0 0 ${tabItemWidth}px`,
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                cursor: editingTabId === tab.id ? 'text' : 'grab',
-                                transition: 'transform 160ms ease, opacity 160ms ease, background-color 120ms ease, border-color 120ms ease',
-                                transform: dragOverTabId === tab.id ? 'translateY(-2px)' : 'translateY(0)',
-                            }}
-                        >
-                                    <button
-                                        onClick={(e) => cycleTabStatus?.(e, tab.id)}
-                                        title={status.label}
-                                        style={{
-                                            width: '18px',
-                                            height: '18px',
-                                            borderRadius: '5px',
-                                            background: 'var(--bg-side)',
-                                            border: `1px solid ${status.color}`,
-                                            color: status.color,
-                                            padding: 0,
-                                            flexShrink: 0,
-                                            cursor: 'pointer',
-                                            display: 'inline-flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            fontSize: '11px',
-                                            fontWeight: 800,
-                                            lineHeight: 1,
-                                        }}
-                                    >
-                                        {status.icon}
-                                    </button>
-                                    <span title={type.title} style={{ width: '18px', height: '18px', borderRadius: '5px', background: 'var(--bg-side)', border: `1px solid ${type.color}`, color: type.color, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                        {type.icon}
-                                    </span>
-                                    {editingTabId === tab.id ? (
-                                        <input
-                                            autoFocus
-                                            defaultValue={tab.name}
-                                            onBlur={(e) => {
-                                                const newName = e.target.value.trim() || tab.name;
-                                                setTabs((prev: Tab[]) =>
-                                                    prev.map((t) =>
-                                                        t.id === tab.id ? { ...t, name: newName } : t
-                                                    )
-                                                );
-                                                setEditingTabId(null);
-                                            }}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter') e.currentTarget.blur();
-                                                else if (e.code === 'Escape') setEditingTabId(null);
-                                            }}
-                                            onClick={(e) => e.stopPropagation()}
-                                            style={{
-                                                width: '80px',
-                                                background: 'transparent',
-                                                color: 'var(--text-main)',
-                                                border: 'none',
-                                                borderBottom: '1px solid var(--accent-blue)',
-                                                outline: 'none',
-                                                fontSize: '14px',
-                                            }}
-                                        />
-                                    ) : (
-                                        <span onDoubleClick={() => setEditingTabId(tab.id)} title={tab.name} style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto' }}>
-                                            {tab.name}
-                                        </span>
-                                    )}
-
-                                    {visibleTabs.length > 1 && (
-                                        <span
-                                            className="tab-close"
-                                            title={settings?.appLanguage === 'en' ? 'Archive tab' : 'В архив'}
-                                            onClick={(e) => archiveTab?.(e, tab.id)}
-                                            style={{ color: 'var(--text-muted)' }}
-                                        >
-                                            ↓
-                                        </span>
-                                    )}
-
-                                    {visibleTabs.length > 1 && (
-                                        <span
-                                            className="tab-close"
-                                            onClick={(e) => closeTab(e, tab.id)}
-                                        >
-                                            x
-                                        </span>
-                                    )}
-                        </div>
-                    );
-                })}
-
-                <button
-                    type="button"
-                    className="tab tab-add"
-                    onClick={addNewTab}
-                    title={settings?.appLanguage === 'en' ? 'New tab' : 'Новая вкладка'}
-                    aria-label={settings?.appLanguage === 'en' ? 'Create new tab' : 'Создать новую вкладку'}
-                >
-                    <span aria-hidden="true">+</span>
-                </button>
-                {hasHiddenTabs && (
-                    <button
-                        className="tab"
-                        onClick={() => shiftTabWindow(1)}
-                        disabled={tabWindowStart >= Math.max(0, visibleTabs.length - visibleTabSlots)}
-                        style={{ height: '33px', flex: '0 0 auto', width: 28, justifyContent: 'center', padding: 0, borderBottom: 'none', opacity: tabWindowStart >= Math.max(0, visibleTabs.length - visibleTabSlots) ? 0.35 : 1 }}
-                        title={settings?.appLanguage === 'en' ? 'Next tab' : 'Следующая вкладка'}
-                    >
-                        ›
-                    </button>
-                )}
-            </div>
-            </div>
-            {tabMenu && (() => {
-                const tab = getTabById(tabMenu.tabId);
-                if (!tab) return null;
-                const menuX = Math.min(tabMenu.x, window.innerWidth - 230);
-                const menuY = Math.min(tabMenu.y, window.innerHeight - 320);
-                const isEn = settings?.appLanguage === 'en';
-                const menuButtonStyle = {
-                    width: '100%',
-                    textAlign: 'left' as const,
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'var(--text-main)',
-                    padding: '8px 10px',
-                    borderRadius: 5,
-                    cursor: 'pointer',
-                    fontSize: 13,
-                };
-                return (
-                    <div
-                        onClick={(e) => e.stopPropagation()}
-                        style={{
-                            position: 'fixed',
-                            left: menuX,
-                            top: menuY,
-                            width: 220,
-                            zIndex: 2000,
-                            background: 'var(--bg-panel)',
-                            border: '1px solid var(--border-main)',
-                            borderRadius: 6,
-                            boxShadow: '0 10px 28px rgba(0,0,0,0.42)',
-                            padding: 6,
-                        }}
-                    >
-                        <div style={{ color: 'var(--text-muted)', fontSize: 11, padding: '5px 8px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {tab.name}
-                        </div>
-                        <button style={menuButtonStyle} onClick={() => renameTab(tab.id)}>{isEn ? 'Rename' : 'Переименовать'}</button>
-                        <button style={menuButtonStyle} onClick={() => duplicateTab(tab.id)}>{isEn ? 'Duplicate' : 'Дублировать'}</button>
-                        <button style={menuButtonStyle} onClick={() => { openArchiveSettings?.(); setTabMenu(null); }}>{isEn ? 'Open archive' : 'Открыть архив'}</button>
-                        {settings?.ankiDeckMode === 'contextual' && (
-                            <label style={{ display: 'block', padding: '5px 8px 8px' }}>
-                                <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: 11, marginBottom: 6 }}>
-                                    {isEn ? 'Anki deck' : 'Колода Anki'}
-                                </span>
-                                <select
-                                    value={tab.ankiDeck || ''}
-                                    onChange={(event) => setTabDeck(tab.id, event.target.value)}
-                                    onClick={(event) => event.stopPropagation()}
-                                    style={{ width: '100%', height: 30, border: '1px solid var(--border-main)', borderRadius: 5, background: 'var(--bg-main)', color: 'var(--text-main)', padding: '0 7px' }}
-                                >
-                                    <option value="">{isEn ? `Main: ${settings.ankiDeck || '-'}` : `Основная: ${settings.ankiDeck || '-'}`}</option>
-                                    {tabDecks.map((deck) => <option key={deck} value={deck}>{deck}</option>)}
-                                </select>
-                            </label>
-                        )}
-                        <div style={{ height: 1, background: 'var(--border-main)', margin: '5px 0' }} />
-                        <div style={{ color: 'var(--text-muted)', fontSize: 11, padding: '5px 8px' }}>{isEn ? 'Status' : 'Статус'}</div>
-                        {([
-                            ['planned', statusMeta('planned')],
-                            ['reading', statusMeta('reading')],
-                            ['paused', statusMeta('paused')],
-                            ['completed', statusMeta('completed')],
-                        ] as const).map(([value, meta]) => (
-                            <button key={value} style={{ ...menuButtonStyle, display: 'flex', alignItems: 'center', gap: 8 }} onClick={() => setTabStatus(tab.id, value)}>
-                                <span style={{ width: 18, height: 18, borderRadius: 5, border: `1px solid ${meta.color}`, color: meta.color, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800, flexShrink: 0 }}>{meta.icon}</span>
-                                <span style={{ flex: 1 }}>{meta.label}</span>
-                                {(tab.status || 'planned') === value && <span style={{ color: 'var(--accent-blue)' }}>✓</span>}
-                            </button>
-                        ))}
-                        <div style={{ height: 1, background: 'var(--border-main)', margin: '5px 0' }} />
-                        <button style={{ ...menuButtonStyle, opacity: visibleTabs.length <= 1 ? 0.45 : 1 }} disabled={visibleTabs.length <= 1} onClick={() => archiveTabFromMenu(tab.id)}>{isEn ? 'Archive tab' : 'В архив'}</button>
-                        <button style={{ ...menuButtonStyle, color: '#ff5555', opacity: visibleTabs.length <= 1 ? 0.45 : 1 }} disabled={visibleTabs.length <= 1} onClick={() => deleteTabFromMenu(tab.id)}>{isEn ? 'Delete tab' : 'Удалить вкладку'}</button>
-                    </div>
-                );
-            })()}
-
-            <button
-                type="button"
-                className="header-btn topbar-collapse-toggle"
-                onClick={() => setIsTopbarCollapsed((value) => !value)}
-                aria-expanded={!isTopbarCollapsed}
-                title={isTopbarCollapsed
-                    ? (settings?.appLanguage === 'en' ? 'Expand toolbar' : 'Развернуть панель')
-                    : (settings?.appLanguage === 'en' ? 'Collapse toolbar' : 'Свернуть панель')}
-                aria-label={isTopbarCollapsed ? 'Expand toolbar' : 'Collapse toolbar'}
-                style={{ width: 28, height: 33, flex: '0 0 28px', padding: 0, justifyContent: 'center', fontSize: 18 }}
-            >
-                {isTopbarCollapsed ? '›' : '‹'}
-            </button>
-
-            <div className="header-actions" style={{ display: 'flex', alignItems: 'center', flex: '0 0 auto', minWidth: 0, overflow: 'visible' }}>
-                {(settings.topbarShowClipboard ?? true) && <button
-                    onClick={toggleClipboard}
-                    className="header-btn topbar-optional"
-                    style={{
-                        color: useClipboard ? '#4CAF50' : '#ff4444',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                    }}
-                >
-                    <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <rect x="9" y="2" width="6" height="4" rx="1" ry="1"></rect>
-                        <path d="M19 6h-2M5 6h2M5 6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-2"></path>
-                    </svg>
-                    <span>{t('topbar.clipboard')}</span>
-                </button>}
-
-                {(settings.topbarShowWebSockets ?? true) && settings.websockets &&
-                    [...settings.websockets]
-                    .sort((a: any, b: any) => {
-                        if (a.id === settings.primaryWebSocketId) return -1;
-                        if (b.id === settings.primaryWebSocketId) return 1;
-                        return 0;
-                    })
-                    .map((ws: any) => {
-                        const isConnected = wsStatuses[ws.id];
-                        const isBlinking = wsIntents && wsIntents[ws.id] && !isConnected;
-                        const color = isConnected ? '#4CAF50' : '#ff4444';
-
-                        return (
-                            <button
-                                key={ws.id}
-                                onClick={() => toggleWs(ws.id)}
-                                className={`header-btn${ws.id === primaryWebSocketId ? '' : ' topbar-secondary-ws'}`}
-                                style={{
-                                    color,
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '6px',
-                                }}
-                            >
-                                <div
-                                    style={{
-                                        animation: isBlinking ? 'fast-blink 0.8s infinite' : 'none',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                    }}
-                                >
-                                    <IconWifi connected={isConnected} />
-                                </div>
-                                <span>{ws.id === settings.primaryWebSocketId ? `★ ${ws.name}` : ws.name}</span>
-                            </button>
-                        );
-                    })}
-
-                {(settings.topbarShowSync ?? true) && <button
-                    onClick={toggleTextSyncRemote}
-                    onContextMenu={(e) => {
-                        e.preventDefault();
-                        openTextSyncSettings?.();
-                    }}
-                    className="header-btn topbar-optional"
-                    title={
-                        settings?.appLanguage === 'en'
-                            ? 'Setsuna Sync. Click to toggle receiving when configured, right-click for settings.'
-                            : 'Setsuna Sync. Клик включает/выключает приём, ПКМ открывает настройки.'
-                    }
-                    style={{
-                        color: textSyncCloudEnabled ? '#4CAF50' : (textSyncRemoteEnabled ? '#4CAF50' : (textSyncServerEnabled ? 'var(--accent-blue)' : '#ff4444')),
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                    }}
-                >
-                    <IconWifi connected={Boolean(textSyncCloudEnabled || textSyncRemoteEnabled || textSyncServerEnabled)} />
-                    <span>
-                        {textSyncCloudEnabled
-                            ? 'Cloud'
-                            : textSyncRemoteEnabled
-                            ? 'Sync'
-                            : textSyncServerEnabled
-                                ? (settings?.appLanguage === 'en' ? 'Host' : 'Отдаю')
-                                : 'Sync'}
-                    </span>
-                </button>}
-
-                {(settings.topbarShowCapture ?? true) && <button
-                    onClick={openCaptureSourcePicker}
-                    className="header-btn topbar-optional"
-                    title={
-                        activeTab?.captureSource?.name
-                            ? t('capture.current', { source: activeTab.captureSource.name })
-                            : t('capture.notBound')
-                    }
-                    style={{
-                        color: activeTab?.captureSource?.name ? 'var(--accent-blue)' : 'var(--text-muted)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        maxWidth: '180px',
-                    }}
-                >
-                    <IconPin />
-                    <span
-                        style={{
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                        }}
-                    >
-                        {activeTab?.captureSource?.name || t('topbar.captureSource')}
-                    </span>
-                </button>}
-
-                <button
-                    onClick={openJlModeWindow}
-                    className="header-btn topbar-optional"
-                    style={{ color: 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '6px' }}
-                    title={settings?.appLanguage === 'en' ? 'Open Setsuna Flow' : 'Открыть Setsuna Flow'}
-                >
-                    <IconPin /> <span>Flow</span>
-                </button>
-
-                {YATSU_READER_AVAILABLE && <button
-                    onClick={openEpubWorkspace}
-                    className="header-btn topbar-optional"
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#a8caff' }}
-                    title={settings?.appLanguage === 'en' ? 'Yatsu Reader · EPUB + Setsuna dictionaries (preview)' : 'Yatsu Reader · EPUB и словари Setsuna (первая версия)'}
-                >
-                    <IconBookTab /> <span>Yatsu</span>
-                </button>}
-
-                {(settings.topbarShowSearch ?? true) && <button
-                    onClick={openSearch}
-                    className="header-btn topbar-optional"
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                    <IconSearch /> <span>{t('common.search')}</span>
-                </button>}
-
-                {(settings.topbarShowImport ?? true) && <button
-                    onClick={openImport}
-                    className="header-btn topbar-optional"
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                    <IconExport /> <span>{t('topbar.import')}</span>
-                </button>}
-
-                {(settings.topbarShowExport ?? true) && <button
-                    onClick={openExport}
-                    className="header-btn topbar-optional"
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                    <IconImport /> <span>{t('topbar.export')}</span>
-                </button>}
-
-
-
-                <button
-                    onClick={clearAll}
-                    className="header-btn topbar-optional"
-                    style={{
-                        color: '#ff4444',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                    }}
-                >
-                    <IconClear /> <span>{t('topbar.clear')}</span>
-                </button>
-
-                <button
-                    onClick={openSettings}
-                    className="header-btn"
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                    <IconSettings /> <span>{t('topbar.settings')}</span>
-                </button>
-            </div>
-        </div>
-    );
-};

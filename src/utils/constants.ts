@@ -55,6 +55,10 @@ export interface Tab {
     mode?: 'text' | 'epub' | 'player';
     readerProgress?: number;
     epub?: EpubBookData;
+    /** Total number of lines, including ones not loaded into memory yet. */
+    lineCount?: number;
+    /** True while `lines` holds only the cached tail and the full history is still on disk. */
+    historyTail?: boolean;
 }
 export interface PlayerMiningClip {
     path?: string;
@@ -125,6 +129,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     jlModeLookupOnClick: true,
     jlModeLookupTrigger: 'click',
     jlModeHoverDelay: 90,
+    jlModeLookupMode: 'scan',
+    jlModeScanDelay: 200,
     jlModeBacklogCapacity: 300,
     jlModeHideLookupOnNewText: true,
     mobileOverlayEnabled: false,
@@ -176,6 +182,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     discordShowProgress: true,
     discordShowPaused: true,
     discordShowTimer: true,
+    discordShowSpeed: true,
+    discordTitleInMemberList: true,
     discordShowButtons: false,
     discordTextActivityType: 'playing',
     discordTextStatus: 'reading',

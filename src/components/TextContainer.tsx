@@ -217,9 +217,11 @@ type LookupTokenHandler = (
     token: string,
     sentence: string,
     cursor: number,
+    boundaries?: number[],
+    lemma?: string,
 ) => LookupMatch | null | void | Promise<LookupMatch | null | void>;
 
-const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none', contextBefore = '', contextAfter = '', activeRange = null }: { text: string; searchQuery: string; onLookupToken?: LookupTokenHandler; furiganaMode?: string; contextBefore?: string; contextAfter?: string; activeRange?: LookupMatch | null }) => {
+export const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none', contextBefore = '', contextAfter = '', activeRange = null }: { text: string; searchQuery: string; onLookupToken?: LookupTokenHandler; furiganaMode?: string; contextBefore?: string; contextAfter?: string; activeRange?: LookupMatch | null }) => {
     const tokens = useFuriganaTokens(text, contextBefore, contextAfter);
 
     if (!onLookupToken) return <>{highlightText(text, searchQuery)}</>;
@@ -227,6 +229,11 @@ const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none'
     // Word-level: render each analyzer token as a highlighted, tappable chip.
     if (tokens && tokens.length) {
         const showRuby = furiganaMode === 'auto';
+        // Character offsets where analyzer words end; the lookup uses them to
+        // avoid matches that stop in the middle of the next word.
+        const boundaries = tokens
+            .map((tk) => Number(tk?.end))
+            .filter((value) => Number.isInteger(value) && value > 0);
         let searchFromCodeUnits = 0;
         const nodes: ReactNode[] = tokens.map((tk, index) => {
             const surface = typeof tk?.text === 'string' ? tk.text : String(tk?.text ?? '');
@@ -265,7 +272,7 @@ const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none'
                     aria-label={surface}
                     onClick={(e) => {
                         e.stopPropagation();
-                        onLookupToken(surface, text, cursor);
+                        onLookupToken(surface, text, cursor, boundaries, typeof tk?.lemma === 'string' ? tk.lemma : undefined);
                     }}
                 >
                     {inner}
@@ -365,7 +372,7 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
                         <TokenizedLine
                             text={line}
                             searchQuery={searchQuery}
-                            onLookupToken={onTokenTap ? (token: string, sentence: string, cursor: number) => onTokenTap(index, token, sentence, cursor) : onLookupToken}
+                            onLookupToken={onTokenTap ? (token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onTokenTap(index, token, sentence, cursor, boundaries, lemma) : onLookupToken}
                             furiganaMode={furiganaMode}
                             contextBefore={contextBefore}
                             contextAfter={contextAfter}
@@ -410,6 +417,39 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
   const lookupRequestRef = useRef(0);
   const lookupActiveRef = useRef(lookupActive);
   useEffect(() => { lookupActiveRef.current = lookupActive; }, [lookupActive]);
+  // Switching tabs cross-fades the text instead of swapping it abruptly.
+  const firstContentKeyRef = useRef(true);
+  useEffect(() => {
+    if (firstContentKeyRef.current) { firstContentKeyRef.current = false; return; }
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    parentRef.current?.animate(
+      [{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }],
+      { duration: 360, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+    );
+  }, [contentKey]);
+  // Freshly hooked lines rise in softly instead of popping into place.
+  const lineCountRef = useRef({ key: contentKey, count: lines.length });
+  useEffect(() => {
+    const previous = lineCountRef.current;
+    lineCountRef.current = { key: contentKey, count: lines.length };
+    if (previous.key !== contentKey) return;
+    const added = lines.length - previous.count;
+    if (added <= 0 || added > 5) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const frame = requestAnimationFrame(() => {
+      for (let index = previous.count; index < lines.length; index += 1) {
+        const line = parentRef.current?.querySelector<HTMLElement>(`[data-index="${index}"] .text-line, .text-line[data-index="${index}"]`);
+        line?.animate(
+          [
+            { opacity: 0, translate: '0 14px', filter: 'blur(3px)' },
+            { opacity: 1, translate: '0 0', filter: 'blur(0)' },
+          ],
+          { duration: 460, easing: 'cubic-bezier(0.3, 1.18, 0.5, 1)' },
+        );
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [lines.length, contentKey]);
   useEffect(() => { if (!lookupActive) setActiveToken(null); }, [lookupActive]);
   // If a tapped word finds no dictionary entry, don't leave it highlighted forever —
   // clear the highlight shortly after if no popup opened.
@@ -418,11 +458,11 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
       const timer = setTimeout(() => { if (!lookupActiveRef.current) setActiveToken(null); }, 750);
       return () => clearTimeout(timer);
   }, [activeToken]);
-  const handleTokenTap = useCallback(async (lineIndex: number, token: string, sentence: string, cursor: number) => {
+  const handleTokenTap = useCallback(async (lineIndex: number, token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => {
       const requestId = ++lookupRequestRef.current;
       setActiveToken({ line: lineIndex, start: cursor, length: Array.from(token).length });
       try {
-          const match = await onLookupToken?.(token, sentence, cursor);
+          const match = await onLookupToken?.(token, sentence, cursor, boundaries, lemma);
           if (requestId !== lookupRequestRef.current) return;
           if (!match || match.length <= 0) {
               if (!lookupActiveRef.current) setActiveToken(null);
@@ -545,6 +585,68 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
       return () => window.cancelAnimationFrame(frame);
   }, [contentKey, isVertical, lines.length]);
 
+  // Reading position anchor: the first visible line and how far into it the
+  // view is. Changing the text font or size re-measures every row; without the
+  // anchor the pixel offset stayed put and the view jumped to other lines.
+  const readingAnchorRef = useRef<{ index: number; ratio: number } | null>(null);
+  const restoringAnchorRef = useRef(false);
+  const captureReadingAnchor = (scrollTop: number) => {
+      if (restoringAnchorRef.current || isVertical) return;
+      const first = rowVirtualizer.getVirtualItems().find((item) => item.end > scrollTop);
+      readingAnchorRef.current = first
+          ? { index: first.index, ratio: Math.min(1, Math.max(0, (scrollTop - first.start) / Math.max(1, first.size))) }
+          : null;
+  };
+  // Puts the anchor line back at the top. Uses the measured row positions only:
+  // calling measure() here reset every row to its estimated height, which made
+  // the view jump (or go blank) on every step of the font-size slider.
+  const applyReadingAnchor = () => {
+      const anchor = readingAnchorRef.current;
+      const el = parentRef.current;
+      if (!anchor || !el || shouldFollowTailRef.current) return;
+      const item = rowVirtualizer.measurementsCache[anchor.index];
+      if (!item) return;
+      const target = item.start + anchor.ratio * item.size;
+      if (Math.abs(el.scrollTop - target) > 0.5) el.scrollTop = target;
+  };
+  // Rows re-measure themselves (ResizeObserver) when the text size changes and
+  // each re-measure re-renders; correcting before paint keeps the line still.
+  useLayoutEffect(() => {
+      if (restoringAnchorRef.current) applyReadingAnchor();
+  });
+  // While anchoring, the virtualizer must not shift the scroll on its own.
+  rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+      !restoringAnchorRef.current && item.start < (instance.scrollOffset ?? 0);
+  useEffect(() => {
+      if (isVertical) return;
+      const root = document.documentElement;
+      const readMetrics = () => `${root.style.getPropertyValue('--txt-font-family')}|${root.style.getPropertyValue('--txt-font-size')}`;
+      let metrics = readMetrics();
+      const timers: number[] = [];
+      const holdAnchor = (ms: number) => {
+          restoringAnchorRef.current = true;
+          timers.forEach((timer) => window.clearTimeout(timer));
+          timers.length = 0;
+          window.requestAnimationFrame(applyReadingAnchor);
+          timers.push(window.setTimeout(() => { restoringAnchorRef.current = false; }, ms));
+      };
+      const observer = new MutationObserver(() => {
+          const next = readMetrics();
+          if (next === metrics) return;
+          metrics = next;
+          if (shouldFollowTailRef.current || !readingAnchorRef.current) return;
+          holdAnchor(600);
+          // A newly chosen family may still be loading; hold again once it lands.
+          const fonts = (document as any).fonts;
+          fonts?.ready?.then(() => { if (readMetrics() === metrics) holdAnchor(400); }).catch(() => {});
+      });
+      observer.observe(root, { attributes: true, attributeFilter: ['style'] });
+      return () => {
+          observer.disconnect();
+          timers.forEach((timer) => window.clearTimeout(timer));
+      };
+  }, [isVertical, rowVirtualizer]);
+
   const updateShowScrollBottom = (value: boolean) => {
       if (lastShowScrollBottomRef.current === value) return;
       lastShowScrollBottomRef.current = value;
@@ -568,6 +670,8 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
           return;
       }
       const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 150;
+      captureReadingAnchor(target.scrollTop);
+      if (restoringAnchorRef.current) return;
       shouldFollowTailRef.current = isNearBottom;
       const max = Math.max(1, target.scrollHeight - target.clientHeight);
       emitProgress(Math.min(1, Math.max(0, target.scrollTop / max)));

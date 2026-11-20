@@ -13,9 +13,29 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing. key.properties (git-ignored, kept on the release machine)
+// points at the keystore and holds its passwords; without it release builds
+// stay unsigned as before.
+val releaseKeyProperties = Properties().apply {
+    val propFile = rootProject.file("key.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 36
     namespace = "com.serichka.setsuna"
+    signingConfigs {
+        if (releaseKeyProperties.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = file(releaseKeyProperties.getProperty("storeFile"))
+                storePassword = releaseKeyProperties.getProperty("storePassword")
+                keyAlias = releaseKeyProperties.getProperty("keyAlias")
+                keyPassword = releaseKeyProperties.getProperty("keyPassword")
+            }
+        }
+    }
     defaultConfig {
         // Text hookers normally expose a local ws:// endpoint. Keep it available
         // in release builds too; Setsuna only connects to an address explicitly
@@ -40,6 +60,7 @@ android {
             }
         }
         getByName("release") {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

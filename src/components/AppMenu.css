@@ -1,0 +1,609 @@
+.app-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+    overflow: hidden;
+    background: transparent;
+    backdrop-filter: blur(0);
+    transition: background-color var(--dur-fast) var(--ease-exit), backdrop-filter var(--dur-fast) var(--ease-exit);
+}
+
+.app-menu-backdrop.is-open {
+    background: color-mix(in srgb, var(--bg-main) 70%, transparent);
+    backdrop-filter: blur(16px) saturate(0.7);
+    transition-duration: var(--dur-base);
+    transition-timing-function: var(--ease-fluid);
+}
+
+.app-menu {
+    --menu-surface: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+    --menu-raised: color-mix(in srgb, var(--text-main) 5%, var(--bg-panel));
+    --menu-line: color-mix(in srgb, var(--text-main) 9%, transparent);
+    display: flex;
+    flex-direction: column;
+    width: min(940px, 100%);
+    max-height: 100%;
+    min-height: 0;
+    padding: 26px 28px 18px;
+    border: 1px solid var(--menu-line);
+    border-radius: 22px;
+    background: var(--menu-surface);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.2);
+    color: var(--text-main);
+    font-family: var(--font-stack);
+    outline: none;
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+    transition: opacity var(--dur-fast) var(--ease-exit), transform var(--dur-fast) var(--ease-exit);
+}
+
+.app-menu-backdrop.is-open .app-menu {
+    opacity: 1;
+    transform: none;
+    transition: opacity var(--dur-fast) var(--ease-fluid), transform var(--dur-slow) var(--ease-spring);
+}
+
+/* Content arrives in a short cascade once the panel opens. */
+/* Uses translate/scale (not transform) so drag offsets and jelly stay free,
+   and only runs while the menu is entering so reordering never replays it. */
+.app-menu-backdrop.is-entering .app-menu-tab,
+.app-menu-backdrop.is-entering .app-menu-source,
+.app-menu-backdrop.is-entering .app-menu-tile {
+    animation: motion-enter var(--dur-base) var(--ease-spring-soft) backwards;
+    animation-delay: calc(60ms + var(--i, 0) * 22ms);
+}
+
+.app-menu-backdrop.is-entering .app-menu-source { animation-delay: calc(90ms + var(--i, 0) * 30ms); }
+.app-menu-backdrop.is-entering .app-menu-tile { animation-delay: calc(140ms + var(--i, 0) * 35ms); }
+
+.app-menu button { font-family: var(--font-stack); }
+
+.app-menu-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 20px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--menu-line);
+}
+
+.app-menu-heading-text { min-width: 0; }
+
+.app-menu-brand {
+    margin: 0 0 6px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.28em;
+    color: var(--accent-blue);
+}
+
+.app-menu-heading h1 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.app-menu-subtitle {
+    margin: 4px 0 0;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.app-menu-close {
+    flex: 0 0 34px;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: scale var(--dur-press) var(--ease-spring), background-color 0.15s, color 0.15s;
+}
+
+.app-menu-close:hover { background: var(--menu-raised); color: var(--text-main); }
+
+.app-menu-body {
+    display: grid;
+    grid-template-columns: minmax(240px, 0.9fr) minmax(0, 1.4fr);
+    gap: 28px;
+    min-height: 0;
+    flex: 1 1 auto;
+}
+
+.app-menu-column {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+}
+
+.app-menu-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 26px;
+    margin-bottom: 10px;
+}
+
+.app-menu-section-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.app-menu-count {
+    margin-left: 4px;
+    font-weight: 500;
+    letter-spacing: 0;
+    opacity: 0.7;
+}
+
+.app-menu-section-actions { display: flex; gap: 4px; }
+
+.app-menu-icon-button {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 17px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.app-menu-icon-button:hover { background: var(--menu-raised); color: var(--text-main); }
+
+.app-menu-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 0;
+    max-height: min(46vh, 380px);
+    overflow-y: auto;
+    margin: 0 -6px;
+    padding: 0 6px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--menu-line) transparent;
+}
+
+.app-menu-tab {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 auto;
+    height: 38px;
+    padding: 0 6px 0 12px;
+    border-radius: 10px;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    user-select: none;
+    outline: none;
+    transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.22s var(--ease-fluid);
+}
+
+.app-menu-tab:hover { background: var(--menu-raised); color: var(--text-main); }
+.app-menu-tab:focus-visible { box-shadow: inset 0 0 0 1.5px var(--accent-blue); }
+.app-menu-tab.is-dragging {
+    position: relative;
+    z-index: 2;
+    background: var(--menu-raised);
+    color: var(--text-main);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+    cursor: grabbing;
+}
+
+.app-menu-tab.is-active {
+    background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    color: var(--text-main);
+}
+
+.app-menu-tab-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.app-menu-tab-type { display: inline-flex; }
+
+.app-menu-tab-meta {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    opacity: 0.75;
+}
+
+.app-menu-tab .tab-close { opacity: 0; }
+.app-menu-tab:hover .tab-close,
+.app-menu-tab .tab-close:focus-visible { opacity: 1; }
+
+.app-menu-tabs-hint {
+    margin: 10px 0 0;
+    font-size: 11px;
+    color: var(--text-muted);
+    opacity: 0.75;
+}
+
+.app-menu-source-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.app-menu-source {
+    --source-color: #e05a5a;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    padding: 0 14px 0 12px;
+    border: 1px solid var(--menu-line);
+    border-radius: 10px;
+    background: var(--menu-raised);
+    color: var(--text-main);
+    font-size: 13px;
+    cursor: pointer;
+    transition: scale var(--dur-press) var(--ease-spring), background-color 0.15s, border-color 0.15s;
+}
+
+.app-menu-source.is-active { --source-color: #4caf50; }
+.app-menu-source:hover { border-color: color-mix(in srgb, var(--source-color) 50%, var(--menu-line)); }
+.app-menu-source.is-pending .app-menu-source-dot { animation: fast-blink 0.8s infinite; }
+
+.app-menu-source-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--source-color);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--source-color) 22%, transparent);
+}
+
+.app-menu-source-badge {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.app-menu-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.app-menu-tile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    min-height: 60px;
+    padding: 10px 14px;
+    border: 1px solid var(--menu-line);
+    border-radius: 12px;
+    background: var(--menu-raised);
+    color: var(--text-main);
+    text-align: left;
+    cursor: pointer;
+    transition: scale var(--dur-press) var(--ease-spring), background-color 0.15s, border-color 0.15s;
+}
+
+.app-menu-tile:hover {
+    background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-panel));
+    border-color: color-mix(in srgb, var(--accent-blue) 45%, var(--menu-line));
+}
+
+.app-menu-tile-icon {
+    flex: 0 0 36px;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    color: var(--accent-blue);
+}
+
+.app-menu-tile-icon svg { width: 18px; height: 18px; }
+
+.app-menu-tile-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.app-menu-tile strong { font-size: 14px; font-weight: 500; }
+
+.app-menu-tile small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.app-menu-tile:focus-visible,
+.app-menu-source:focus-visible,
+.app-menu-footer button:focus-visible,
+.app-menu-close:focus-visible,
+.app-menu-icon-button:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
+}
+
+.app-menu-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid var(--menu-line);
+}
+
+.app-menu-footer-actions { display: flex; flex-wrap: wrap; gap: 2px; margin-left: -10px; }
+
+.app-menu-footer-actions button {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.app-menu-footer-actions button:hover { background: var(--menu-raised); color: var(--text-main); }
+.app-menu-footer-actions button.is-danger { color: #e05a5a; }
+.app-menu-footer-actions button.is-danger:hover { background: rgba(224, 90, 90, 0.12); }
+
+.app-menu-hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.app-menu-hint kbd {
+    padding: 1px 6px;
+    border: 1px solid var(--menu-line, var(--border-main));
+    border-radius: 5px;
+    font: 11px var(--font-stack);
+    color: var(--text-muted);
+}
+
+.tab-context-menu {
+    animation: motion-popover-in var(--dur-base) var(--ease-spring-soft) both;
+    transform-origin: top left;
+    position: fixed;
+    z-index: 9500;
+    width: 220px;
+    padding: 6px;
+    border: 1px solid var(--border-main);
+    border-radius: 10px;
+    background: var(--bg-panel);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
+}
+
+.tab-context-title {
+    padding: 5px 10px 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.tab-context-divider { height: 1px; margin: 5px 0; background: var(--border-main); }
+.tab-context-menu button:hover { background: var(--hover-bg) !important; }
+
+@keyframes fast-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+/* Small windows. A low but wide window keeps the two columns (tabs | actions)
+   and lets each column scroll on its own; a narrow window stacks them with the
+   actions first, so Settings and the other tiles never end up off-screen. */
+@media (max-width: 760px), (max-height: 560px) {
+    .app-menu-backdrop { padding: 10px; }
+    .app-menu { padding: 14px 16px 10px; border-radius: 18px; }
+    .app-menu-heading { padding-bottom: 10px; margin-bottom: 10px; }
+    .app-menu-subtitle, .app-menu-tabs-hint { display: none; }
+    .app-menu-body { gap: 16px; overflow: hidden; }
+    .app-menu-column { overflow-y: auto; }
+    .app-menu-tabs { max-height: none; }
+    .app-menu-grid { gap: 6px; }
+    .app-menu-tile { min-height: 46px; padding-top: 6px; padding-bottom: 6px; }
+    .app-menu-footer { padding-top: 8px; margin-top: 8px; }
+}
+
+@media (max-width: 640px) {
+    .app-menu-body { grid-template-columns: 1fr; overflow-y: auto; }
+    .app-menu-column { overflow: visible; }
+    .app-menu-column:last-child { order: -1; }
+    .app-menu-tabs { max-height: 40vh; }
+    .app-menu-hint { display: none; }
+    .app-menu-footer-actions { flex-wrap: wrap; row-gap: 4px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .app-menu-backdrop, .app-menu { transition: none; }
+    .app-menu-backdrop.is-entering .app-menu-tab,
+    .app-menu-backdrop.is-entering .app-menu-source,
+    .app-menu-backdrop.is-entering .app-menu-tile,
+    .tab-context-menu { animation: none; }
+}
+
+/* ---- Top island (auto-hiding reader header) ---- */
+.reader-island {
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    z-index: 950;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    max-width: min(620px, calc(100vw - 300px));
+    height: 42px;
+    padding: 0 5px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface-glass);
+    backdrop-filter: blur(18px) saturate(1.2);
+    box-shadow: 0 14px 36px -12px rgba(0, 0, 0, 0.45);
+    transform: translateX(-50%);
+    transition:
+        translate 520ms var(--ease-spring),
+        opacity 260ms var(--ease-fluid),
+        scale 520ms var(--ease-spring);
+}
+
+.reader-island.is-hidden {
+    translate: 0 -64px;
+    scale: 0.92;
+    opacity: 0;
+    pointer-events: none;
+    transition:
+        translate 260ms var(--ease-exit),
+        opacity 200ms var(--ease-exit),
+        scale 260ms var(--ease-exit);
+}
+
+.reader-island button {
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-main);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color 140ms ease, scale var(--dur-press) var(--ease-spring);
+}
+
+.reader-island button:hover { background: var(--surface-2); }
+.reader-island button:active { scale: 0.94; }
+.reader-island button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.reader-island-tab {
+    min-width: 0;
+    padding: 0 14px 0 12px;
+}
+
+.reader-island-name {
+    min-width: 0;
+    overflow: hidden;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    animation: motion-enter 320ms var(--ease-fluid) backwards;
+}
+
+.reader-island-meta {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.reader-island-divider {
+    flex: 0 0 1px;
+    width: 1px;
+    height: 18px;
+    background: var(--line-strong);
+}
+
+.reader-island-source {
+    --source-color: #e05a5a;
+    flex: 0 0 auto;
+    padding: 0 12px;
+    color: var(--text-muted) !important;
+    font-size: 12.5px !important;
+}
+
+.reader-island-source.is-active { --source-color: #4caf50; }
+.reader-island-source.is-pending .reader-island-dot { animation: fast-blink 0.8s infinite; }
+
+.reader-island-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--source-color);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--source-color) 22%, transparent);
+}
+
+.reader-island-menu {
+    flex: 0 0 auto;
+    padding: 0 8px 0 11px;
+    color: var(--text-muted) !important;
+}
+
+.reader-island-menu kbd {
+    padding: 1px 6px;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    font: 10.5px var(--font-stack);
+}
+
+/* Flow on/off: a pill that lights up while the Flow window is open. */
+.reader-island-flow {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 12px 0 10px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color 160ms ease, color 160ms ease, scale var(--dur-press) var(--ease-spring);
+}
+
+.reader-island-flow svg { width: 15px; height: 15px; }
+.reader-island-flow:hover { background: var(--surface-2); color: var(--text-main); }
+.reader-island-flow:active { scale: 0.94; }
+.reader-island-flow.is-active { background: var(--accent-soft); color: var(--accent-blue); }
+
+@media (max-width: 760px) {
+    .reader-island { max-width: calc(100vw - 32px); }
+    .reader-island-meta { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .reader-island, .reader-island.is-hidden { transition: opacity 120ms linear; }
+    .reader-island-name { animation: none; }
+}
+

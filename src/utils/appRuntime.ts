@@ -1,5 +1,5 @@
 import type { AppSettings } from "../components/SettingsModal";
-import { defaultStats, type Tab } from "./constants";
+import { type Tab } from "./constants";
 
 export const MAX_EPUB_LINES_PER_TAB = 8000;
 export const TAB_ORDER_STORAGE_KEY = "txthk-tab-order";
@@ -90,46 +90,70 @@ export const trimTabForRuntime = (tab: Tab): Tab => {
     };
 };
 
-export const formatDiscordMode = (mode: Tab["mode"] | undefined, settings: AppSettings) => {
-    const language = settings.appLanguage || "ru";
-    const isEn = language === "en";
-    if (mode === "epub") return isEn ? "Reading EPUB" : "\u0427\u0438\u0442\u0430\u0435\u0442 EPUB";
-    if (mode === "player") return isEn ? "Watching with subtitles" : "\u0421\u043c\u043e\u0442\u0440\u0438\u0442 \u0441 \u0441\u0443\u0431\u0442\u0438\u0442\u0440\u0430\u043c\u0438";
-    if (mode === "text") {
-        if (settings.discordTextStatus === "custom" && settings.discordCustomTextStatus?.trim()) {
-            return settings.discordCustomTextStatus.trim();
-        }
-        if (settings.discordTextStatus === "playing") return isEn ? "Playing a visual novel" : "\u0418\u0433\u0440\u0430\u0435\u0442 \u0432 \u0432\u0438\u0437\u0443\u0430\u043b\u044c\u043d\u0443\u044e \u043d\u043e\u0432\u0435\u043b\u043b\u0443";
-        if (settings.discordTextStatus === "watching") return isEn ? "Watching a visual novel" : "\u0421\u043c\u043e\u0442\u0440\u0438\u0442 \u0432\u0438\u0437\u0443\u0430\u043b\u044c\u043d\u0443\u044e \u043d\u043e\u0432\u0435\u043b\u043b\u0443";
-        if (settings.discordTextStatus === "mining") return isEn ? "Mining Japanese lines" : "\u041c\u0430\u0439\u043d\u0438\u0442 \u044f\u043f\u043e\u043d\u0441\u043a\u0438\u0435 \u0441\u0442\u0440\u043e\u043a\u0438";
-        return isEn ? "Reading hooked text" : "\u0427\u0438\u0442\u0430\u0435\u0442 \u0447\u0435\u0440\u0435\u0437 \u0445\u0443\u043a\u0435\u0440";
-    }
-    return isEn ? "Choosing a mode" : "\u0412\u044b\u0431\u0438\u0440\u0430\u0435\u0442 \u0440\u0435\u0436\u0438\u043c";
+export type DiscordActivityText = {
+    details: string;
+    state: string;
+    activityType: "playing" | "watching" | "listening" | "competing";
 };
 
-export const formatDiscordStats = (tab: Tab, settings: AppSettings) => {
-    const parts: string[] = [];
-    const stats = tab.stats || defaultStats;
+/** What the reader is doing, used when the title is hidden. */
+export const discordModePhrase = (mode: Tab["mode"] | undefined, settings: AppSettings) => {
     const isEn = (settings.appLanguage || "ru") === "en";
-    if (settings.discordShowStats) {
-        if ((settings.discordShowChars ?? true) && stats.chars > 0) parts.push(`${stats.chars} ${isEn ? "chars" : "симв."}`);
-        if ((settings.discordShowWords ?? true) && stats.words > 0) parts.push(`${stats.words} ${isEn ? "words" : "слов"}`);
-        if ((settings.discordShowSentences ?? true) && stats.sentences > 0) parts.push(`${stats.sentences} ${isEn ? "lines" : "строк"}`);
-    }
-    if (settings.discordShowProgress && tab.mode === "epub") {
-        parts.push(`${Math.round((tab.epub?.progress || tab.readerProgress || 0) * 100)}%`);
-    }
-    return parts.join(" / ") || "Setsuna";
+    const custom = settings.discordCustomTextStatus?.trim();
+    if (mode === "epub") return isEn ? "Reading a book" : "Читает книгу";
+    if (mode === "player") return isEn ? "Watching anime" : "Смотрит аниме";
+    if (custom) return custom;
+    return isEn ? "Reading a visual novel" : "Читает визуальную новеллу";
 };
 
-export const discordActivityTypeForMode = (mode: Tab["mode"] | undefined, settings: AppSettings) => {
-    if (mode === "player") return "watching";
-    if (mode === "text") {
-        if (settings.discordTextActivityType) return settings.discordTextActivityType;
-        if (settings.discordTextStatus === "watching") return "watching";
-        return "playing";
+/**
+ * The two lines shown in Discord. Line 1: the title (or what is being read);
+ * line 2: the same numbers as the stats panel — characters read in this tab
+ * and the reading speed in the units chosen for the panel — or the pause state.
+ */
+export const buildDiscordActivity = (
+    tab: Tab,
+    settings: AppSettings,
+    paused: boolean,
+): DiscordActivityText => {
+    const isEn = (settings.appLanguage || "ru") === "en";
+    const format = (value: number) => Math.round(value).toLocaleString(isEn ? "en-US" : "ru-RU");
+    const phrase = discordModePhrase(tab.mode, settings);
+    const title = settings.discordShowTab !== false && tab.name?.trim() ? tab.name.trim() : "";
+    const stats = tab.stats || { chars: 0, words: 0, sentences: 0, time: 0 };
+
+    const parts: string[] = [];
+    if (paused) parts.push(isEn ? "Paused" : "На паузе");
+    if (settings.discordShowStats !== false && stats.chars > 0) {
+        parts.push(isEn ? `${format(stats.chars)} chars` : `${format(stats.chars)} симв.`);
     }
-    return "playing";
+    if (tab.mode === "epub" && settings.discordShowStats !== false) {
+        const progress = tab.epub?.progress || tab.readerProgress || 0;
+        if (progress > 0) parts.push(isEn ? `${Math.round(progress * 100)}% of the book` : `${Math.round(progress * 100)}% книги`);
+    }
+    if (!paused && settings.discordShowSpeed !== false && stats.time >= 60) {
+        // Same formula and units as the stats panel.
+        const metric = settings.speedMetric || "chars";
+        const perMinute = settings.speedTimeframe === "minute";
+        const amount = metric === "words" ? stats.words : metric === "sentences" ? stats.sentences : stats.chars;
+        const speed = (amount / stats.time) * (perMinute ? 60 : 3600);
+        if (speed > 0) {
+            const unit = metric === "words"
+                ? (isEn ? "words" : "слов")
+                : metric === "sentences" ? (isEn ? "sent." : "предл.") : (isEn ? "chars" : "симв.");
+            parts.push(`${format(speed)} ${unit}/${perMinute ? (isEn ? "min" : "мин") : (isEn ? "h" : "ч")}`);
+        }
+    }
+
+    const details = title || phrase;
+    // Discord rejects one-letter fields; fall back to the reading phrase.
+    let state = parts.join(" · ");
+    if (state.length < 2) state = title ? phrase : "Setsuna";
+
+    const activityType = tab.mode === "player"
+        ? "watching"
+        : (settings.discordTextActivityType || "playing");
+    return { details, state, activityType };
 };
 
 export const normalizeWebSocketUrl = (value: string) => {
