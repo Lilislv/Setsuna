@@ -3,21 +3,19 @@ import type { AppSettings } from "../../components/SettingsModal";
 import type { Tab } from "../../utils/constants";
 import { getTranslator } from "../../utils/i18n";
 import WorkspaceShell from "../../components/WorkspaceShell";
-import StatsPanel from "../../components/StatsPanel";
 import { IconBookTab, IconHome, IconImport, IconSettings } from "../../components/Icons";
 import EpubLibrary from "./EpubLibrary";
 import EpubReader from "./EpubReader";
-import { loadEpubChapter, openEpubBook } from "./epubApi";
+import { loadEpubChapter, loadEpubCover, openEpubBook } from "./epubApi";
 import type {
     EpubBookMeta,
     EpubChapterContent,
     EpubOrientationSetting,
-    EpubParagraph,
 } from "./epubModel";
-import { resolveEpubOrientation } from "./epubModel";
 import "./epub.css";
 
 const MAX_CACHED_CHAPTERS = 12;
+const coverCache = new Map<string, string | null>();
 
 type LookupMatch = { start: number; length: number };
 type LookupTokenHandler = (
@@ -34,8 +32,6 @@ interface EpubWorkspaceProps {
     settings: AppSettings;
     isMobile: boolean;
     standaloneMobile?: boolean;
-    isPaused: boolean;
-    onTogglePause: () => void;
     onHome: () => void;
     onSettings: () => void;
     onOpenFile: () => void;
@@ -43,10 +39,8 @@ interface EpubWorkspaceProps {
     onRemoveBook: (tabId: number) => void;
     onUpdateBookMeta: (tabId: number, meta: EpubBookMeta) => void;
     onProgressChange: (tabId: number, chapterIndex: number, chapterOffset: number, bookProgress: number) => void;
-    onCountParagraphs: (tabId: number, chapterIndex: number, paragraphs: EpubParagraph[], upToIndex: number) => void;
     onChangeBookOrientation: (tabId: number, orientation: EpubOrientationSetting) => void;
     onUpdateSettings?: (patch: Partial<AppSettings>) => void;
-    onReadingActivity: () => void;
     onLookupToken?: LookupTokenHandler;
 }
 
@@ -56,8 +50,6 @@ export default function EpubWorkspace({
     settings,
     isMobile,
     standaloneMobile = true,
-    isPaused,
-    onTogglePause,
     onHome,
     onSettings,
     onOpenFile,
@@ -65,10 +57,8 @@ export default function EpubWorkspace({
     onRemoveBook,
     onUpdateBookMeta,
     onProgressChange,
-    onCountParagraphs,
     onChangeBookOrientation,
     onUpdateSettings,
-    onReadingActivity,
     onLookupToken,
 }: EpubWorkspaceProps) {
     const language = settings.appLanguage || "ru";
@@ -80,6 +70,13 @@ export default function EpubWorkspace({
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [pendingFragment, setPendingFragment] = useState<string | null>(null);
+    const [coversByPath, setCoversByPath] = useState<Record<string, string | null>>(() => {
+        const initial: Record<string, string | null> = {};
+        coverCache.forEach((value, key) => {
+            initial[key] = value;
+        });
+        return initial;
+    });
 
     const metaCacheRef = useRef<Map<string, EpubBookMeta>>(new Map());
     const chapterCacheRef = useRef<Map<string, EpubChapterContent>>(new Map());
@@ -98,6 +95,33 @@ export default function EpubWorkspace({
         }
         prevActiveTabIdRef.current = activeTabId;
     }, [activeTabId]);
+
+    // Lazily load cover thumbnails for library books (kept out of workspace-state.json)
+    useEffect(() => {
+        if (viewMode !== "library") return;
+        const missingPaths = books
+            .filter((tab) => !tab.archived && tab.epub?.path)
+            .map((tab) => tab.epub!.path!)
+            .filter((path, idx, arr) => arr.indexOf(path) === idx && !coverCache.has(path));
+
+        if (missingPaths.length === 0) return;
+        let cancelled = false;
+
+        void (async () => {
+            for (const path of missingPaths) {
+                if (cancelled) return;
+                const cover = await loadEpubCover(path).catch(() => null);
+                coverCache.set(path, cover);
+                if (!cancelled) {
+                    setCoversByPath((prev) => ({ ...prev, [path]: cover }));
+                }
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [viewMode, books]);
 
     const rememberChapter = useCallback((key: string, content: EpubChapterContent) => {
         const cache = chapterCacheRef.current;
@@ -157,6 +181,10 @@ export default function EpubWorkspace({
                     meta = await openEpubBook(bookPath);
                     if (loadGenerationRef.current !== generation) return;
                     metaCacheRef.current.set(bookPath, meta);
+                    if (meta.cover !== undefined) {
+                        coverCache.set(bookPath, meta.cover ?? null);
+                        setCoversByPath((prev) => ({ ...prev, [bookPath]: meta!.cover ?? null }));
+                    }
                     onUpdateBookMeta(activeBookTab.id, meta);
                 }
                 setBookMeta(meta);
@@ -177,75 +205,45 @@ export default function EpubWorkspace({
         const clamped = Math.min(Math.max(0, bookMeta.chapters.length - 1), Math.max(0, nextIndex));
         const generation = ++loadGenerationRef.current;
         setPendingFragment(fragment || null);
-        onReadingActivity();
         const bookProgress = bookMeta.chapters.length > 0 ? clamped / bookMeta.chapters.length : 0;
         onProgressChange(activeBookTab.id, clamped, 0, bookProgress);
         void fetchChapter(bookPath, clamped, generation);
-    }, [activeBookTab, bookPath, bookMeta, fetchChapter, onProgressChange, onReadingActivity]);
+    }, [activeBookTab, bookPath, bookMeta, fetchChapter, onProgressChange]);
 
     const handleSelectBook = useCallback((tabId: number) => {
         onSelectBook(tabId);
         setViewMode("reader");
     }, [onSelectBook]);
 
-    const resolvedOrientation = activeBookTab
-        ? resolveEpubOrientation(
-            activeBookTab.epub?.language || bookMeta?.language,
-            settings.epubTextOrientation,
-            activeBookTab.epub?.defaultVertical ?? bookMeta?.defaultVertical,
-            activeBookTab.epub?.orientation,
-        )
-        : "horizontal";
-
     const content = (
         <div className={`epub-workspace${isMobile ? " is-mobile" : ""}`}>
             {viewMode === "reader" && activeBookTab ? (
-                <>
-                    <EpubReader
-                        tab={activeBookTab}
-                        bookMeta={bookMeta}
-                        chapter={chapter}
-                        loading={loading}
-                        error={error}
-                        settings={settings}
-                        isMobile={isMobile}
-                        pendingFragment={pendingFragment}
-                        onFragmentHandled={() => setPendingFragment(null)}
-                        onSelectChapter={handleSelectChapter}
-                        onProgressChange={(chapterIdx, offset, progress) =>
-                            onProgressChange(activeBookTab.id, chapterIdx, offset, progress)
-                        }
-                        onCountParagraphs={(chapterIdx, paragraphs, upToIndex) =>
-                            onCountParagraphs(activeBookTab.id, chapterIdx, paragraphs, upToIndex)
-                        }
-                        onReadingActivity={onReadingActivity}
-                        onChangeBookOrientation={(orientation) =>
-                            onChangeBookOrientation(activeBookTab.id, orientation)
-                        }
-                        onUpdateSettings={onUpdateSettings}
-                        onLookupToken={onLookupToken}
-                        onBackToLibrary={() => setViewMode("library")}
-                        onOpenFile={onOpenFile}
-                    />
-                    {!isMobile && (
-                        <StatsPanel
-                            stats={activeBookTab.stats}
-                            speedSamples={activeBookTab.speedSamples}
-                            isPaused={isPaused}
-                            onTogglePause={onTogglePause}
-                            position={settings.panelPosition}
-                            speedMetric={settings.speedMetric}
-                            speedTimeframe={settings.speedTimeframe}
-                            language={language}
-                            textOrientation={resolvedOrientation}
-                            tabId={activeBookTab.id}
-                            tabName={activeBookTab.epub?.title || activeBookTab.name}
-                        />
-                    )}
-                </>
+                <EpubReader
+                    tab={activeBookTab}
+                    bookMeta={bookMeta}
+                    chapter={chapter}
+                    loading={loading}
+                    error={error}
+                    settings={settings}
+                    isMobile={isMobile}
+                    pendingFragment={pendingFragment}
+                    onFragmentHandled={() => setPendingFragment(null)}
+                    onSelectChapter={handleSelectChapter}
+                    onProgressChange={(chapterIdx, offset, progress) =>
+                        onProgressChange(activeBookTab.id, chapterIdx, offset, progress)
+                    }
+                    onChangeBookOrientation={(orientation) =>
+                        onChangeBookOrientation(activeBookTab.id, orientation)
+                    }
+                    onUpdateSettings={onUpdateSettings}
+                    onLookupToken={onLookupToken}
+                    onBackToLibrary={() => setViewMode("library")}
+                    onOpenFile={onOpenFile}
+                />
             ) : (
                 <EpubLibrary
                     books={books}
+                    coversByPath={coversByPath}
                     language={language}
                     isMobile={isMobile}
                     onOpenFile={onOpenFile}
@@ -260,10 +258,6 @@ export default function EpubWorkspace({
         if (!standaloneMobile) {
             return content;
         }
-        const totalSeconds = activeBookTab?.stats?.time || 0;
-        const mins = Math.floor(totalSeconds / 60);
-        const secs = totalSeconds % 60;
-        const timerLabel = `${mins}:${secs < 10 ? "0" : ""}${secs}`;
         const islandTitle = viewMode === "reader" && activeBookTab
             ? (activeBookTab.epub?.title || activeBookTab.name)
             : t("epub.title");
@@ -288,7 +282,7 @@ export default function EpubWorkspace({
                         className="m-island"
                         onClick={() => setViewMode((prev) => (prev === "reader" ? "library" : activeBookTab ? "reader" : "library"))}
                     >
-                        <span className="m-dot" style={{ ["--dot" as string]: "#d6a84f" }} aria-hidden="true" />
+                        <span className="m-dot" style={{ ["--dot" as string]: "#67c587" }} aria-hidden="true" />
                         <span className="m-island-name">{islandTitle}</span>
                         <span className="m-island-meta">{islandMeta}</span>
                     </button>
@@ -297,15 +291,6 @@ export default function EpubWorkspace({
                 <main className="m-main">{content}</main>
 
                 <nav className="m-dock" aria-label={t("epub.title")}>
-                    <button
-                        type="button"
-                        className={`m-dock-timer${isPaused ? "" : " is-running"}`}
-                        onClick={onTogglePause}
-                        aria-label={isPaused ? t("stats.start") : t("stats.pause")}
-                    >
-                        <span aria-hidden="true">{isPaused ? "▶" : "Ⅱ"}</span>
-                        {timerLabel}
-                    </button>
                     <button
                         type="button"
                         className={`m-dock-btn${viewMode === "library" ? " is-active" : ""}`}

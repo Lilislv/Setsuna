@@ -1246,6 +1246,7 @@ pub fn run() {
             epub_import::epub_store,
             epub_import::epub_prune,
             epub_import::epub_open,
+            epub_import::epub_cover,
             epub_import::epub_chapter,
             save_workspace_state,
             load_workspace_state,

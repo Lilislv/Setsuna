@@ -4,6 +4,7 @@ import { IconBookTab, IconClose, IconImport } from "../../components/Icons";
 
 interface EpubLibraryProps {
     books: Tab[];
+    coversByPath: Record<string, string | null>;
     language: AppLanguage;
     isMobile: boolean;
     onOpenFile: () => void;
@@ -13,6 +14,7 @@ interface EpubLibraryProps {
 
 export default function EpubLibrary({
     books,
+    coversByPath,
     language,
     isMobile,
     onOpenFile,
@@ -73,7 +75,8 @@ export default function EpubLibrary({
                     const progress = Math.round(Math.min(1, Math.max(0, book.epub?.progress || 0)) * 100);
                     const bookLang = book.epub?.language === "ja" ? "JA" : "EN";
                     const chaptersCount = book.epub?.chapterCount || 0;
-                    const charsRead = book.stats?.chars || 0;
+                    const title = book.epub?.title || book.name;
+                    const coverSrc = book.epub?.path ? coversByPath[book.epub.path] : null;
 
                     return (
                         <div
@@ -90,13 +93,25 @@ export default function EpubLibrary({
                                 }
                             }}
                         >
-                            <div className="epub-book-card-top">
-                                <div className="epub-book-card-title">{book.epub?.title || book.name}</div>
-                                <div className="epub-book-card-actions">
-                                    <span className="epub-badge">{bookLang}</span>
+                            <div className="epub-book-cover-wrap">
+                                {coverSrc ? (
+                                    <img
+                                        className="epub-book-cover-img"
+                                        src={coverSrc}
+                                        alt={title}
+                                        loading="lazy"
+                                    />
+                                ) : (
+                                    <div className="epub-book-cover-fallback" aria-hidden="true">
+                                        <span className="epub-cover-fallback-icon"><IconBookTab /></span>
+                                        <span className="epub-cover-fallback-title">{title}</span>
+                                    </div>
+                                )}
+                                <div className="epub-book-cover-overlay">
+                                    <span className="epub-badge epub-badge-glass">{bookLang}</span>
                                     <button
                                         type="button"
-                                        className="epub-icon-btn is-danger"
+                                        className="epub-cover-remove-btn"
                                         title={t("epub.removeBook")}
                                         aria-label={t("epub.removeBook")}
                                         onClick={(event) => {
@@ -109,20 +124,19 @@ export default function EpubLibrary({
                                 </div>
                             </div>
 
-                            <div className="epub-progress-track" aria-hidden="true">
-                                <div className="epub-progress-fill" style={{ width: `${progress}%` }} />
-                            </div>
+                            <div className="epub-book-card-body">
+                                <div className="epub-book-card-title" title={title}>{title}</div>
 
-                            <div className="epub-book-card-meta">
-                                <span>
-                                    {t("epub.progress", { percent: progress })}
-                                    {chaptersCount > 0 ? ` · ${t("epub.chaptersCount", { count: chaptersCount })}` : ""}
-                                </span>
-                                {charsRead > 0 && (
-                                    <span>
-                                        {charsRead.toLocaleString(language === "en" ? "en-US" : "ru-RU")}
-                                    </span>
-                                )}
+                                <div className="epub-progress-track" aria-hidden="true">
+                                    <div className="epub-progress-fill" style={{ width: `${progress}%` }} />
+                                </div>
+
+                                <div className="epub-book-card-meta">
+                                    <span>{t("epub.progress", { percent: progress })}</span>
+                                    {chaptersCount > 0 && (
+                                        <span>{t("epub.chaptersCount", { count: chaptersCount })}</span>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     );

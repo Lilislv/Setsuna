@@ -899,6 +899,7 @@ fn cover_path_from_opf(opf: &str, manifest: &HashMap<String, ManifestItem>) -> O
             .properties
             .split_whitespace()
             .any(|p| p.eq_ignore_ascii_case("cover-image"))
+            && safe_raster_mime_from_path(&item.path).is_some()
         {
             return Some(item.path.clone());
         }
@@ -909,10 +910,109 @@ fn cover_path_from_opf(opf: &str, manifest: &HashMap<String, ManifestItem>) -> O
                 let name = xml_attr(tag, "name").unwrap_or_default().to_lowercase();
                 if name == "cover" {
                     if let Some(cover_id) = xml_attr(tag, "content") {
-                        if let Some(item) = manifest.get(cover_id.trim()) {
-                            return Some(item.path.clone());
+                        let trimmed = cover_id.trim();
+                        if let Some(item) = manifest.get(trimmed) {
+                            if safe_raster_mime_from_path(&item.path).is_some() {
+                                return Some(item.path.clone());
+                            }
+                        }
+                        if safe_raster_mime_from_path(trimmed).is_some() {
+                            if let Some(item) = manifest
+                                .values()
+                                .find(|i| i.href.eq_ignore_ascii_case(trimmed) || i.path.ends_with(trimmed))
+                            {
+                                return Some(item.path.clone());
+                            }
                         }
                     }
+                }
+            }
+        }
+    }
+    for (id, item) in manifest {
+        if safe_raster_mime_from_path(&item.path).is_some()
+            && (id.to_ascii_lowercase().contains("cover")
+                || item.href.to_ascii_lowercase().contains("cover"))
+        {
+            return Some(item.path.clone());
+        }
+    }
+    None
+}
+
+fn first_image_path_in_html(html: &str, chapter_base: &str) -> Option<String> {
+    for token in tokenize_html(html) {
+        if let HtmlToken::Tag(tag) = token {
+            if is_closing_tag(tag) {
+                continue;
+            }
+            let name = normalize_tag_name(tag);
+            let raw_src = if name == "img" {
+                xml_attr(tag, "src")
+            } else if name == "image" {
+                xml_attr(tag, "href").or_else(|| xml_attr(tag, "xlink:href"))
+            } else {
+                None
+            };
+            if let Some(src) = raw_src {
+                let trimmed = src.trim();
+                if trimmed.is_empty() || trimmed.contains(':') {
+                    continue;
+                }
+                let clean = trimmed.split('#').next().unwrap_or(trimmed).split('?').next().unwrap_or(trimmed);
+                let resolved = epub_join_path(chapter_base, clean);
+                if safe_raster_mime_from_path(&resolved).is_some() {
+                    return Some(resolved);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn read_cover_thumbnail_data_url(zip: &mut ZipArchive<File>, path: &str) -> Option<String> {
+    let mime = safe_raster_mime_from_path(path)?;
+    let mut file = zip_open_entry(zip, path)?;
+    if file.size() > MAX_EPUB_IMAGE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(file.size() as usize);
+    file.read_to_end(&mut bytes).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    if let Ok(decoded) = image::load_from_memory(&bytes) {
+        let resized = if decoded.width() > 420 || decoded.height() > 630 {
+            decoded.thumbnail(420, 630)
+        } else {
+            decoded
+        };
+        let rgb = resized.to_rgb8();
+        let mut out = std::io::Cursor::new(Vec::new());
+        if image::DynamicImage::ImageRgb8(rgb)
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .is_ok()
+        {
+            let encoded = general_purpose::STANDARD.encode(out.into_inner());
+            return Some(format!("data:image/jpeg;base64,{}", encoded));
+        }
+    }
+    let encoded = general_purpose::STANDARD.encode(bytes);
+    Some(format!("data:{};base64,{}", mime, encoded))
+}
+
+fn extract_cover_data_url(pkg: &mut ParsedPackage) -> Option<String> {
+    if let Some(cover_path) = cover_path_from_opf(&pkg.opf, &pkg.manifest) {
+        if let Some(url) = read_cover_thumbnail_data_url(&mut pkg.zip, &cover_path) {
+            return Some(url);
+        }
+    }
+    for (_, item) in pkg.spine.iter().take(2) {
+        if let Ok(html) = zip_read_to_string(&mut pkg.zip, &item.path) {
+            let base = item.path.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
+            if let Some(img_path) = first_image_path_in_html(&html, base) {
+                if let Some(url) = read_cover_thumbnail_data_url(&mut pkg.zip, &img_path) {
+                    return Some(url);
                 }
             }
         }
@@ -1956,9 +2056,7 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
             .map_or(false, |mode| mode.contains("vertical"))
     };
 
-    let mut cover_cache = HashMap::new();
-    let cover = cover_path_from_opf(&pkg.opf, &pkg.manifest)
-        .and_then(|cover_path| zip_read_image_data_url(&mut pkg.zip, &cover_path, &mut cover_cache));
+    let cover = extract_cover_data_url(&mut pkg);
 
     Ok(EpubBookMeta {
         title: pkg.title,
@@ -2164,6 +2262,18 @@ pub async fn epub_prune(app: tauri::AppHandle, keep_ids: Vec<i64>) -> Result<usi
     tauri::async_runtime::spawn_blocking(move || prune_epub_files(&dir, &keep_ids))
         .await
         .map_err(|e| format!("EPUB prune task failed: {}", e))?
+}
+
+pub fn epub_cover_impl(path: String) -> Result<Option<String>, String> {
+    let mut pkg = open_epub_package(&path)?;
+    Ok(extract_cover_data_url(&mut pkg))
+}
+
+#[tauri::command]
+pub async fn epub_cover(path: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || epub_cover_impl(path))
+        .await
+        .map_err(|e| format!("EPUB cover task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -2436,5 +2546,43 @@ mod tests {
 
         std::fs::remove_file(src).ok();
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn extracts_cover_from_first_chapter_fallback() {
+        let opf = br#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Cover Test</dc:title>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="img1" href="images/front.png" media-type="image/png"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+  </spine>
+</package>"#;
+
+        // 1x1 PNG
+        let mut png_bytes = Vec::new();
+        let img = image::DynamicImage::new_rgb8(2, 3);
+        img.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+            .unwrap();
+
+        let ch1 = br#"<html><body><div><img src="images/front.png" alt="Cover"/></div><p>Hello world.</p></body></html>"#;
+
+        let path = build_test_epub(&[
+            ("META-INF/container.xml", CONTAINER_XML),
+            ("OEBPS/content.opf", opf),
+            ("OEBPS/ch1.xhtml", ch1),
+            ("OEBPS/images/front.png", &png_bytes),
+        ]);
+
+        let cover = epub_cover_impl(path.to_string_lossy().to_string()).unwrap();
+        assert!(cover.as_deref().is_some_and(|s| s.starts_with("data:image/jpeg;base64,")));
+
+        std::fs::remove_file(path).ok();
     }
 }

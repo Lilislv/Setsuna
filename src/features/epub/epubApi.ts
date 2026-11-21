@@ -13,6 +13,10 @@ export const openEpubBook = async (path: string): Promise<EpubBookMeta> => {
     return invoke<EpubBookMeta>("epub_open", { path });
 };
 
+export const loadEpubCover = async (path: string): Promise<string | null> => {
+    return invoke<string | null>("epub_cover", { path });
+};
+
 export const loadEpubChapter = async (path: string, index: number): Promise<EpubChapterContent> => {
     return invoke<EpubChapterContent>("epub_chapter", { path, index });
 };

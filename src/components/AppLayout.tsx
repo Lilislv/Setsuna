@@ -354,9 +354,7 @@ export const MobileLayout = ({
     onRemoveEpubBook,
     onUpdateEpubMeta,
     onEpubProgress,
-    onEpubCountParagraphs,
     onEpubOrientationChange,
-    onEpubReadingActivity,
 }: any) => {
     const t = getTranslator(settings?.appLanguage || 'ru');
     const [activeMobileView, setActiveMobileView] = useState<'text' | 'lookup'>('text');
@@ -1279,8 +1277,6 @@ export const MobileLayout = ({
                         settings={settings}
                         isMobile={true}
                         standaloneMobile={false}
-                        isPaused={isPaused}
-                        onTogglePause={() => setIsPaused(!isPaused)}
                         onHome={() => setActiveMobileView('text')}
                         onSettings={() => openSettingsPage('reading')}
                         onOpenFile={() => onOpenEpubFile?.()}
@@ -1288,10 +1284,8 @@ export const MobileLayout = ({
                         onRemoveBook={(tabId) => onRemoveEpubBook?.(tabId)}
                         onUpdateBookMeta={(tabId, meta) => onUpdateEpubMeta?.(tabId, meta)}
                         onProgressChange={(tabId, chIdx, offset, prog) => onEpubProgress?.(tabId, chIdx, offset, prog)}
-                        onCountParagraphs={(tabId, chIdx, paragraphs, upTo) => onEpubCountParagraphs?.(tabId, chIdx, paragraphs, upTo)}
                         onChangeBookOrientation={(tabId, orient) => onEpubOrientationChange?.(tabId, orient)}
                         onUpdateSettings={(patch) => updateSettings({ ...settings, ...patch })}
-                        onReadingActivity={() => onEpubReadingActivity?.()}
                         onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
                     />
                 ) : activeTab?.lines?.length ? (

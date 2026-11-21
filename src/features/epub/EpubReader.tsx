@@ -47,8 +47,6 @@ interface EpubReaderProps {
     onFragmentHandled: () => void;
     onSelectChapter: (chapterIndex: number, fragment?: string) => void;
     onProgressChange: (chapterIndex: number, chapterOffset: number, bookProgress: number) => void;
-    onCountParagraphs: (chapterIndex: number, paragraphs: EpubParagraph[], upToIndex: number) => void;
-    onReadingActivity: () => void;
     onChangeBookOrientation: (orientation: EpubOrientationSetting) => void;
     onUpdateSettings?: (patch: Partial<AppSettings>) => void;
     onLookupToken?: LookupTokenHandler;
@@ -64,7 +62,10 @@ const PROGRESS_THROTTLE_MS = 350;
 const WHEEL_PAGE_COOLDOWN_MS = 220;
 const SPREAD_STORAGE_KEY = "setsuna-epub-spread";
 const SPREAD_MIN_WIDTH = 1020;
-const SPREAD_GAP = 56;
+const SPREAD_GAP = 57;
+const CHROME_TOP_ZONE_PX = 76;
+const CHROME_BOTTOM_ZONE_PX = 70;
+const CHROME_HIDE_DELAY_MS = 320;
 
 type EpubQuickThemeLabelKey =
     | "epub.themeApp"
@@ -161,8 +162,6 @@ export default function EpubReader({
     onFragmentHandled,
     onSelectChapter,
     onProgressChange,
-    onCountParagraphs,
-    onReadingActivity,
     onChangeBookOrientation,
     onUpdateSettings,
     onLookupToken,
@@ -171,35 +170,94 @@ export default function EpubReader({
 }: EpubReaderProps) {
     const language = settings.appLanguage || "ru";
     const t = getTranslator(language);
+    const stageRef = useRef<HTMLDivElement>(null);
     const surfaceRef = useRef<HTMLDivElement>(null);
     const measurerRef = useRef<HTMLDivElement>(null);
     const lastProgressSentRef = useRef(0);
     const lastWheelPageRef = useRef(0);
     const restoringRef = useRef(false);
+    const topHideTimerRef = useRef<number | null>(null);
+    const bottomHideTimerRef = useRef<number | null>(null);
     const callbacksRef = useRef({
         onFragmentHandled,
         onSelectChapter,
         onProgressChange,
-        onCountParagraphs,
-        onReadingActivity,
         onLookupToken,
     });
     callbacksRef.current = {
         onFragmentHandled,
         onSelectChapter,
         onProgressChange,
-        onCountParagraphs,
-        onReadingActivity,
         onLookupToken,
     };
 
     const [tocOpen, setTocOpen] = useState(false);
     const [appearanceOpen, setAppearanceOpen] = useState(false);
+    const [topHover, setTopHover] = useState(false);
+    const [bottomHover, setBottomHover] = useState(false);
     const [spreadEnabled, setSpreadEnabled] = useState<boolean>(readStoredSpreadPreference);
     const [pageRanges, setPageRanges] = useState<PageRange[]>([{ start: 0, end: 0 }]);
     const [currentPageIdx, setCurrentPageIdx] = useState(0);
     const [verticalPageInfo, setVerticalPageInfo] = useState({ current: 1, total: 1 });
     const [surfaceSize, setSurfaceSize] = useState({ width: 800, height: 600 });
+
+    useEffect(() => () => {
+        if (topHideTimerRef.current !== null) window.clearTimeout(topHideTimerRef.current);
+        if (bottomHideTimerRef.current !== null) window.clearTimeout(bottomHideTimerRef.current);
+    }, []);
+
+    const handleStageMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+        if (isMobile) return;
+        const stage = stageRef.current;
+        if (!stage) return;
+        const rect = stage.getBoundingClientRect();
+        const relY = event.clientY - rect.top;
+        const nearTop = relY <= CHROME_TOP_ZONE_PX;
+        const nearBottom = relY >= rect.height - CHROME_BOTTOM_ZONE_PX;
+
+        if (nearTop) {
+            if (topHideTimerRef.current !== null) {
+                window.clearTimeout(topHideTimerRef.current);
+                topHideTimerRef.current = null;
+            }
+            setTopHover(true);
+        } else if (topHover && topHideTimerRef.current === null) {
+            topHideTimerRef.current = window.setTimeout(() => {
+                topHideTimerRef.current = null;
+                setTopHover(false);
+            }, CHROME_HIDE_DELAY_MS);
+        }
+
+        if (nearBottom) {
+            if (bottomHideTimerRef.current !== null) {
+                window.clearTimeout(bottomHideTimerRef.current);
+                bottomHideTimerRef.current = null;
+            }
+            setBottomHover(true);
+        } else if (bottomHover && bottomHideTimerRef.current === null) {
+            bottomHideTimerRef.current = window.setTimeout(() => {
+                bottomHideTimerRef.current = null;
+                setBottomHover(false);
+            }, CHROME_HIDE_DELAY_MS);
+        }
+    }, [isMobile, topHover, bottomHover]);
+
+    const handleStageMouseLeave = useCallback(() => {
+        if (isMobile) return;
+        if (topHideTimerRef.current !== null) window.clearTimeout(topHideTimerRef.current);
+        if (bottomHideTimerRef.current !== null) window.clearTimeout(bottomHideTimerRef.current);
+        topHideTimerRef.current = window.setTimeout(() => {
+            topHideTimerRef.current = null;
+            setTopHover(false);
+        }, CHROME_HIDE_DELAY_MS);
+        bottomHideTimerRef.current = window.setTimeout(() => {
+            bottomHideTimerRef.current = null;
+            setBottomHover(false);
+        }, CHROME_HIDE_DELAY_MS);
+    }, [isMobile]);
+
+    const topChromeVisible = isMobile || topHover || tocOpen || appearanceOpen;
+    const bottomChromeVisible = isMobile || bottomHover;
 
     const setSpreadPreference = useCallback((next: boolean) => {
         setSpreadEnabled(next);
@@ -237,8 +295,8 @@ export default function EpubReader({
         ? Math.min(18, settings.epubPagePadding ?? 18)
         : (settings.epubPagePadding ?? 24);
     const paragraphGap = settings.epubParagraphSpacing ?? 14;
-    const topClearance = isMobile ? 54 : 62;
-    const bottomClearance = isMobile ? 52 : 58;
+    const topClearance = isMobile ? 54 : 24;
+    const bottomClearance = isMobile ? 52 : 28;
 
     const useVirtualizedScroll = !isVertical && !isPaged && paragraphs.length > VIRTUALIZE_THRESHOLD;
 
@@ -278,7 +336,7 @@ export default function EpubReader({
             return;
         }
 
-        const usableHeight = Math.max(180, surfaceSize.height - topClearance - bottomClearance - 8);
+        const usableHeight = Math.max(180, surfaceSize.height - topClearance - bottomClearance - 20);
         const childNodes = measurer.querySelectorAll<HTMLElement>("[data-paragraph-index]");
         const heights = new Map<number, number>();
         childNodes.forEach((node) => {
@@ -348,24 +406,13 @@ export default function EpubReader({
         return paragraphs.slice(rightPageRange.start, rightPageRange.end);
     }, [isHorizontalPaged, paragraphs, rightPageRange?.start, rightPageRange?.end]);
 
-    // Count paragraphs reached on the current horizontal page / spread
+    // Reset scroll to top on page changes in horizontal paged mode
     useEffect(() => {
-        if (!isHorizontalPaged || !chapter || loading || paragraphs.length === 0) return;
-        const reachedEnd = rightPageRange ? rightPageRange.end : leftPageRange.end;
-        const lastVisibleIndex = Math.min(paragraphs.length - 1, Math.max(0, reachedEnd - 1));
-        callbacksRef.current.onCountParagraphs(chapter.index, paragraphs, lastVisibleIndex);
+        if (!isHorizontalPaged || !chapter || loading) return;
         if (surfaceRef.current) {
             surfaceRef.current.scrollTop = 0;
         }
-    }, [
-        isHorizontalPaged,
-        chapter,
-        loading,
-        paragraphs,
-        leftPageRange.start,
-        leftPageRange.end,
-        rightPageRange?.end,
-    ]);
+    }, [isHorizontalPaged, chapter, loading, leftPageRange.start, leftPageRange.end, rightPageRange?.end]);
 
     const getScrollMetrics = useCallback((el: HTMLDivElement) => {
         if (isVertical) {
@@ -382,27 +429,6 @@ export default function EpubReader({
         const fraction = max > 0 ? clamp01(current / max) : 1;
         return { fraction, currentPage: 1, totalPages: 1, max, step: Math.max(1, el.clientHeight) };
     }, [isVertical]);
-
-    const countVisibleScrollParagraphs = useCallback((el: HTMLDivElement) => {
-        if (!chapter || paragraphs.length === 0) return;
-        const rect = el.getBoundingClientRect();
-        const nodes = el.querySelectorAll<HTMLElement>("[data-paragraph-index]");
-        let maxPassed = -1;
-        nodes.forEach((node) => {
-            const idx = Number(node.dataset.paragraphIndex);
-            if (!Number.isInteger(idx)) return;
-            const box = node.getBoundingClientRect();
-            const isReached = isVertical
-                ? box.left <= rect.right && box.right >= rect.left - 40
-                : box.top <= rect.bottom + 20 && box.bottom >= rect.top - 20;
-            if (isReached && idx > maxPassed) {
-                maxPassed = idx;
-            }
-        });
-        if (maxPassed >= 0) {
-            callbacksRef.current.onCountParagraphs(chapter.index, paragraphs, maxPassed);
-        }
-    }, [chapter, paragraphs, isVertical]);
 
     // Restore chapter offset or jump to anchor fragment when chapter finishes loading
     const restoredChapterKeyRef = useRef<string>("");
@@ -463,7 +489,6 @@ export default function EpubReader({
                     ? prev
                     : { current: metrics.currentPage, total: metrics.totalPages },
             );
-            countVisibleScrollParagraphs(el);
             restoringRef.current = false;
         }, 40);
 
@@ -482,7 +507,6 @@ export default function EpubReader({
         pageRanges,
         paragraphs,
         getScrollMetrics,
-        countVisibleScrollParagraphs,
     ]);
 
     const handleScroll = useCallback(() => {
@@ -497,16 +521,13 @@ export default function EpubReader({
         );
         if (restoringRef.current) return;
 
-        callbacksRef.current.onReadingActivity();
-        countVisibleScrollParagraphs(el);
-
         const now = Date.now();
         if (now - lastProgressSentRef.current < PROGRESS_THROTTLE_MS) return;
         lastProgressSentRef.current = now;
 
         const bookProgress = computeBookProgress(chapter.index, chapterCount, metrics.fraction);
         callbacksRef.current.onProgressChange(chapter.index, metrics.fraction, bookProgress);
-    }, [isHorizontalPaged, chapter, chapterCount, getScrollMetrics, countVisibleScrollParagraphs]);
+    }, [isHorizontalPaged, chapter, chapterCount, getScrollMetrics]);
 
     const goToHorizontalPage = useCallback((nextIdx: number) => {
         if (!chapter) return;
@@ -521,7 +542,6 @@ export default function EpubReader({
 
     const turnPage = useCallback((direction: 1 | -1) => {
         if (!chapter) return;
-        callbacksRef.current.onReadingActivity();
 
         if (isHorizontalPaged) {
             const pageStep = useTwoPageSpread ? 2 : 1;
@@ -654,7 +674,6 @@ export default function EpubReader({
     const handleMobileTokenTap = useCallback(
         (paragraphIndex: number) =>
             (token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => {
-                callbacksRef.current.onReadingActivity();
                 const el = surfaceRef.current?.querySelector<HTMLElement>(
                     `[data-paragraph-index="${paragraphIndex}"]`,
                 );
@@ -771,8 +790,16 @@ export default function EpubReader({
 
     return (
         <div className="epub-reader-shell">
-            <div className="epub-reader-stage">
-                <div className={`epub-floating-top${isMobile ? " is-mobile" : ""}`}>
+            <div
+                ref={stageRef}
+                className="epub-reader-stage"
+                onMouseMove={handleStageMouseMove}
+                onMouseLeave={handleStageMouseLeave}
+            >
+                <div
+                    className={`epub-floating-top${isMobile ? " is-mobile" : ""}${topChromeVisible ? " is-visible" : " is-hidden"}`}
+                    onFocus={() => setTopHover(true)}
+                >
                     <div className="epub-glass-pill epub-glass-pill-main" onClick={(event) => event.stopPropagation()}>
                         <button
                             type="button"
@@ -1042,6 +1069,7 @@ export default function EpubReader({
                     <div
                         ref={surfaceRef}
                         className="epub-reader-surface"
+                        data-app-theme={settings.theme || "dark"}
                         data-epub-theme={epubTheme}
                         data-epub-orientation={resolvedOrientation}
                         data-epub-mode={isPaged ? "paged" : "scroll"}
@@ -1132,7 +1160,8 @@ export default function EpubReader({
                 )}
 
                 <div
-                    className={`epub-floating-bottom${isMobile ? " is-mobile" : ""}`}
+                    className={`epub-floating-bottom${isMobile ? " is-mobile" : ""}${bottomChromeVisible ? " is-visible" : " is-hidden"}`}
+                    onFocus={() => setBottomHover(true)}
                     onClick={(event) => event.stopPropagation()}
                 >
                     <div className="epub-glass-pill epub-nav-capsule">

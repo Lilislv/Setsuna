@@ -20,11 +20,8 @@ import LookupSurface from "./features/lookup/LookupSurface";
 import EpubWorkspace from "./features/epub/EpubWorkspace";
 import { openEpubBook, pruneEpubFiles, storeEpubFile } from "./features/epub/epubApi";
 import {
-    formatCountedThrough,
-    isParagraphAlreadyCounted,
     type EpubBookMeta,
     type EpubOrientationSetting,
-    type EpubParagraph,
 } from "./features/epub/epubModel";
 import "./App.css";
 
@@ -1576,53 +1573,6 @@ export default function App() {
         }));
     }, []);
 
-    const handleEpubCountParagraphs = useCallback((tabId: number, chapterIndex: number, paragraphs: EpubParagraph[], upToIndex: number) => {
-        const currentTab = tabsRef.current.find((tab) => tab.id === tabId && tab.mode === "epub");
-        if (!currentTab?.epub) return;
-
-        const existingMarker = currentTab.epub.countedThrough;
-        let addedChars = 0;
-        let addedWords = 0;
-        let addedSentences = 0;
-        let highestCounted = -1;
-
-        for (const paragraph of paragraphs) {
-            if (paragraph.index > upToIndex) break;
-            if (!paragraph.text.trim()) continue;
-            if (isParagraphAlreadyCounted(existingMarker, chapterIndex, paragraph.index)) continue;
-
-            const delta = calculateStats(paragraph.text, settings.appLanguage);
-            addedChars += delta.chars;
-            addedWords += delta.words;
-            addedSentences += delta.sentences;
-            highestCounted = paragraph.index;
-            if (delta.chars > 0) {
-                recordDailyLine(tabId, paragraph.text, delta.chars);
-            }
-        }
-
-        if (highestCounted < 0) return;
-
-        const nextMarker = formatCountedThrough(chapterIndex, highestCounted);
-        setTabs((prev) => prev.map((tab) => {
-            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
-            return {
-                ...tab,
-                stats: {
-                    ...tab.stats,
-                    chars: (tab.stats?.chars || 0) + addedChars,
-                    words: (tab.stats?.words || 0) + addedWords,
-                    sentences: (tab.stats?.sentences || 0) + addedSentences,
-                },
-                epub: {
-                    ...tab.epub,
-                    countedThrough: nextMarker,
-                    lines: [],
-                },
-            };
-        }));
-    }, [settings.appLanguage]);
-
     const handleEpubOrientationChange = useCallback((tabId: number, orientation: EpubOrientationSetting) => {
         setTabs((prev) => prev.map((tab) => {
             if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
@@ -1635,10 +1585,6 @@ export default function App() {
                 },
             };
         }));
-    }, []);
-
-    const handleEpubReadingActivity = useCallback(() => {
-        lastReadingActivityRef.current = Date.now();
     }, []);
 
     const handleRemoveEpubBook = useCallback((tabId: number) => {
@@ -1991,7 +1937,7 @@ export default function App() {
 
     useEffect(() => {
         const nativeTimer = getMobileFlowTimer();
-        if (isPaused && !nativeTimer) {
+        if (resolvedWorkspace === "epub" || activeTab?.mode === "epub" || (isPaused && !nativeTimer)) {
             setTimerDisplayOffset(0);
             return;
         }
@@ -2055,7 +2001,7 @@ export default function App() {
             commitElapsed(pendingSeconds);
             setTimerDisplayOffset(0);
         };
-    }, [isPaused, activeTabId, setTabs, settings.autoPauseOnIdle, settings.autoPauseIdleMinutes]);
+    }, [isPaused, activeTabId, resolvedWorkspace, activeTab?.mode, setTabs, settings.autoPauseOnIdle, settings.autoPauseIdleMinutes]);
 
     const triggerFlash = useCallback(() => {
         setIsFlashing(false);
@@ -3662,8 +3608,6 @@ export default function App() {
                         activeBookTab={activeTab?.mode === "epub" ? activeTab : null}
                         settings={settings}
                         isMobile={isMobileLayout}
-                        isPaused={isPaused}
-                        onTogglePause={() => setIsPaused((prev) => !prev)}
                         onHome={() => setActiveWorkspace("hub")}
                         onSettings={() => isMobileLayout ? openMobileSettingsPanel("reading") : openSettingsPanel("epub-reader")}
                         onOpenFile={openEpubFilePicker}
@@ -3674,10 +3618,8 @@ export default function App() {
                         onRemoveBook={handleRemoveEpubBook}
                         onUpdateBookMeta={handleEpubUpdateMeta}
                         onProgressChange={handleEpubProgress}
-                        onCountParagraphs={handleEpubCountParagraphs}
                         onChangeBookOrientation={handleEpubOrientationChange}
                         onUpdateSettings={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
-                        onReadingActivity={handleEpubReadingActivity}
                         onLookupToken={isMobileLayout ? runSentenceTokenLookup : undefined}
                     />
                 )) : resolvedWorkspace === "player" ? (
@@ -3737,9 +3679,7 @@ export default function App() {
                         onRemoveEpubBook={handleRemoveEpubBook}
                         onUpdateEpubMeta={handleEpubUpdateMeta}
                         onEpubProgress={handleEpubProgress}
-                        onEpubCountParagraphs={handleEpubCountParagraphs}
                         onEpubOrientationChange={handleEpubOrientationChange}
-                        onEpubReadingActivity={handleEpubReadingActivity}
                     />
                 ) : (
                 <>
