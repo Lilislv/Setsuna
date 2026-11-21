@@ -224,6 +224,7 @@ export default function EpubReader({
     const bottomHideTimerRef = useRef<number | null>(null);
     const highlightTimerRef = useRef<number | null>(null);
     const swipeStartRef = useRef<{ x: number; y: number; at: number } | null>(null);
+    const pageTurnDirRef = useRef<1 | -1 | 0>(0);
     const callbacksRef = useRef({
         onFragmentHandled,
         onSelectChapter,
@@ -816,6 +817,7 @@ export default function EpubReader({
 
     const turnPage = useCallback((direction: 1 | -1) => {
         if (!chapter) return;
+        pageTurnDirRef.current = direction;
 
         if (isHorizontalPaged) {
             const pageStep = useTwoPageSpread ? 2 : 1;
@@ -1660,7 +1662,10 @@ export default function EpubReader({
                                 })}
                             </div>
                         ) : useTwoPageSpread ? (
-                            <div className="epub-content-flow epub-spread-flow">
+                            <div
+                                key={`${chapter?.index ?? 0}:${spreadStartIdx}`}
+                                className={`epub-content-flow epub-spread-flow${pageTurnDirRef.current === 1 ? " is-turn-next" : pageTurnDirRef.current === -1 ? " is-turn-prev" : ""}`}
+                            >
                                 <div className="epub-spread-page">
                                     {visibleParagraphs.map((p) => renderParagraph(p))}
                                 </div>
@@ -1670,7 +1675,10 @@ export default function EpubReader({
                                 </div>
                             </div>
                         ) : (
-                            <div className="epub-content-flow">
+                            <div
+                                key={isHorizontalPaged ? `${chapter?.index ?? 0}:${spreadStartIdx}` : `scroll:${chapter?.index ?? 0}`}
+                                className={`epub-content-flow${isHorizontalPaged ? (pageTurnDirRef.current === 1 ? " is-turn-next" : pageTurnDirRef.current === -1 ? " is-turn-prev" : "") : ""}`}
+                            >
                                 {visibleParagraphs.map((p) => renderParagraph(p))}
                             </div>
                         )}
@@ -1830,7 +1838,10 @@ export default function EpubReader({
                             className="epub-glass-btn epub-glass-circle"
                             disabled={chapterIndex <= 0}
                             title={t("epub.prevChapter")}
-                            onClick={() => callbacksRef.current.onSelectChapter(Math.max(0, chapterIndex - 1))}
+                            onClick={() => {
+                                pageTurnDirRef.current = -1;
+                                callbacksRef.current.onSelectChapter(Math.max(0, chapterIndex - 1));
+                            }}
                         >
                             «
                         </button>
@@ -1873,7 +1884,10 @@ export default function EpubReader({
                             className="epub-glass-btn epub-glass-circle"
                             disabled={chapterIndex + 1 >= chapterCount}
                             title={t("epub.nextChapter")}
-                            onClick={() => callbacksRef.current.onSelectChapter(Math.min(chapterCount - 1, chapterIndex + 1))}
+                            onClick={() => {
+                                pageTurnDirRef.current = 1;
+                                callbacksRef.current.onSelectChapter(Math.min(chapterCount - 1, chapterIndex + 1));
+                            }}
                         >
                             »
                         </button>

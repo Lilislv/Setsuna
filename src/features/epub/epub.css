@@ -890,6 +890,36 @@
     box-sizing: border-box;
 }
 
+@keyframes epub-page-in-next {
+    from {
+        opacity: 0;
+        transform: translateX(18px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes epub-page-in-prev {
+    from {
+        opacity: 0;
+        transform: translateX(-18px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+.epub-content-flow.is-turn-next {
+    animation: epub-page-in-next 220ms var(--ease-fluid, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+
+.epub-content-flow.is-turn-prev {
+    animation: epub-page-in-prev 220ms var(--ease-fluid, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+
 .epub-reader-surface[data-epub-orientation="horizontal"][data-epub-mode="scroll"] .epub-content-flow {
     padding-bottom: 48px;
 }
@@ -1848,6 +1878,8 @@
     .epub-appearance-popover,
     .epub-search-popover,
     .epub-edge-hint,
+    .epub-content-flow.is-turn-next,
+    .epub-content-flow.is-turn-prev,
     .epub-toc-backdrop,
     .epub-toc-drawer,
     .epub-toc-item {
