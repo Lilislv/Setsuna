@@ -76,10 +76,30 @@ export default function EpubReader({
     const restoringRef = useRef(false);
     const pageStopsRef = useRef<number[]>([0]);
     const currentPageIndexRef = useRef(0);
+    const callbacksRef = useRef({
+        onFragmentHandled,
+        onSelectChapter,
+        onProgressChange,
+        onCountParagraphs,
+        onReadingActivity,
+        onLookupToken,
+    });
+    callbacksRef.current = {
+        onFragmentHandled,
+        onSelectChapter,
+        onProgressChange,
+        onCountParagraphs,
+        onReadingActivity,
+        onLookupToken,
+    };
     const [tocOpen, setTocOpen] = useState(false);
     const [pageInfo, setPageInfo] = useState({ current: 1, total: 1 });
     const [viewportHeight, setViewportHeight] = useState(640);
     const [pagedClipBottom, setPagedClipBottom] = useState(0);
+
+    const updatePageInfo = useCallback((current: number, total: number) => {
+        setPageInfo((prev) => (prev.current === current && prev.total === total ? prev : { current, total }));
+    }, []);
 
     const bookLanguage = tab.epub?.language || bookMeta?.language || "en";
     const bookDefaultVertical = tab.epub?.defaultVertical ?? bookMeta?.defaultVertical ?? false;
@@ -185,9 +205,9 @@ export default function EpubReader({
             }
         });
         if (maxPassed >= 0) {
-            onCountParagraphs(chapter.index, paragraphs, maxPassed);
+            callbacksRef.current.onCountParagraphs(chapter.index, paragraphs, maxPassed);
         }
-    }, [chapter, paragraphs, isVertical, onCountParagraphs]);
+    }, [chapter, paragraphs, isVertical]);
 
     const applyHorizontalPage = useCallback((el: HTMLDivElement, pageIdx: number, notify: boolean) => {
         const stops = pageStopsRef.current;
@@ -197,27 +217,25 @@ export default function EpubReader({
         const nextStop = clamped + 1 < stops.length ? stops[clamped + 1] : undefined;
         currentPageIndexRef.current = clamped;
         el.scrollTop = currentStop;
-        if (nextStop !== undefined) {
-            const visibleSpan = Math.max(80, nextStop - currentStop);
-            const bottomClip = Math.max(effectivePadding, el.clientHeight - effectivePadding - visibleSpan);
-            setPagedClipBottom(bottomClip);
-        } else {
-            setPagedClipBottom(effectivePadding);
-        }
-        setPageInfo({ current: clamped + 1, total });
+        const nextClip = nextStop !== undefined
+            ? Math.max(effectivePadding, el.clientHeight - effectivePadding - Math.max(80, nextStop - currentStop))
+            : effectivePadding;
+        setPagedClipBottom((prev) => (prev === nextClip ? prev : nextClip));
+        updatePageInfo(clamped + 1, total);
         countVisibleParagraphs(el);
         if (notify && chapter) {
             const fraction = total <= 1 ? 1 : clamp01(clamped / (total - 1));
             const bookProgress = computeBookProgress(chapter.index, chapterCount, fraction);
-            onProgressChange(chapter.index, fraction, bookProgress);
+            callbacksRef.current.onProgressChange(chapter.index, fraction, bookProgress);
         }
-    }, [chapter, chapterCount, effectivePadding, countVisibleParagraphs, onProgressChange]);
+    }, [chapter, chapterCount, effectivePadding, countVisibleParagraphs, updatePageInfo]);
 
     useEffect(() => {
         const el = surfaceRef.current;
         if (!el) return;
         const measure = () => {
-            setViewportHeight(Math.max(240, el.clientHeight));
+            const nextH = Math.max(240, el.clientHeight);
+            setViewportHeight((prev) => (prev === nextH ? prev : nextH));
             if (!isVertical && isPaged && chapter && !loading) {
                 const prevStops = pageStopsRef.current;
                 const prevFraction = prevStops.length <= 1
@@ -302,7 +320,7 @@ export default function EpubReader({
                 }
             }
             const metrics = getScrollMetrics(el);
-            setPageInfo({ current: metrics.currentPage, total: metrics.totalPages });
+            updatePageInfo(metrics.currentPage, metrics.totalPages);
             countVisibleParagraphs(el);
             restoringRef.current = false;
         }, 40);
@@ -318,10 +336,10 @@ export default function EpubReader({
         if (!el || !chapter) return;
         if (!isVertical && isPaged) return;
         const metrics = getScrollMetrics(el);
-        setPageInfo({ current: metrics.currentPage, total: metrics.totalPages });
+        updatePageInfo(metrics.currentPage, metrics.totalPages);
         if (restoringRef.current) return;
 
-        onReadingActivity();
+        callbacksRef.current.onReadingActivity();
         countVisibleParagraphs(el);
 
         const now = Date.now();
@@ -329,8 +347,8 @@ export default function EpubReader({
         lastProgressSentRef.current = now;
 
         const bookProgress = computeBookProgress(chapter.index, chapterCount, metrics.fraction);
-        onProgressChange(chapter.index, metrics.fraction, bookProgress);
-    }, [chapter, chapterCount, isVertical, isPaged, getScrollMetrics, onReadingActivity, countVisibleParagraphs, onProgressChange]);
+        callbacksRef.current.onProgressChange(chapter.index, metrics.fraction, bookProgress);
+    }, [chapter, chapterCount, isVertical, isPaged, getScrollMetrics, countVisibleParagraphs, updatePageInfo]);
 
     const turnPage = useCallback((direction: 1 | -1) => {
         const el = surfaceRef.current;
