@@ -1369,7 +1369,11 @@ fn build_sanitized_tag(
         out.push('"');
     }
     if is_void_tag(name) {
-        out.push_str(" />");
+        if name == "br" {
+            out.push_str(" />\n");
+        } else {
+            out.push_str(" />");
+        }
     } else if self_closing {
         out.push_str("></");
         out.push_str(name);
@@ -2301,6 +2305,9 @@ mod tests {
         assert!(clean.contains("data-epub-href=\"OEBPS/Text/ch2.xhtml#sec1\""));
         assert!(clean.contains("<ruby>猫<rt>ねこ</rt></ruby>"));
         assert!(clean.contains("id=\"p1\""));
+
+        let poem = sanitize_epub_html_without_zip("<p>to<br/>be</p>", "OEBPS", "OEBPS/ch1.xhtml");
+        assert!(poem.contains("<br />\nbe"));
     }
 
     #[test]

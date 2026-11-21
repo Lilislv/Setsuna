@@ -603,6 +603,9 @@ export default function App() {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
     const [lookupStack, setLookupStack] = useState<LookupData[]>([]);
+    useEffect(() => {
+        if (lookupStack.length > 0) setFloatingBtn(null);
+    }, [lookupStack.length]);
     const closeLookupStack = useCallback(() => setLookupStack([]), []);
     const sentenceLookupRequestRef = useRef(0);
     const [mobileLookupNotice, setMobileLookupNotice] = useState('');

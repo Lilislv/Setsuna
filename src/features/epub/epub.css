@@ -354,7 +354,7 @@
     --epub-muted: #9da4b0;
 }
 
-/* Horizontal Scroll */
+/* Horizontal Scroll & Horizontal Paged (single-column DOM — zero CSS multi-column hit-test bugs) */
 .epub-reader-surface[data-epub-orientation="horizontal"][data-epub-mode="scroll"] {
     writing-mode: horizontal-tb;
     direction: ltr;
@@ -363,27 +363,26 @@
     padding: var(--epub-page-padding);
 }
 
-.epub-reader-surface[data-epub-orientation="horizontal"][data-epub-mode="scroll"] .epub-content-flow {
-    max-width: var(--epub-max-width);
-    margin: 0 auto;
-    padding-bottom: 96px;
-}
-
-/* Horizontal Paged (CSS columns) */
 .epub-reader-surface[data-epub-orientation="horizontal"][data-epub-mode="paged"] {
     writing-mode: horizontal-tb;
     direction: ltr;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding: var(--epub-page-padding);
+    overflow: hidden;
+    padding: 0 var(--epub-page-padding);
+}
+
+.epub-reader-surface[data-epub-orientation="horizontal"] .epub-content-flow {
+    max-width: var(--epub-max-width);
+    margin: 0 auto;
+    box-sizing: border-box;
+}
+
+.epub-reader-surface[data-epub-orientation="horizontal"][data-epub-mode="scroll"] .epub-content-flow {
+    padding-bottom: 96px;
 }
 
 .epub-reader-surface[data-epub-orientation="horizontal"][data-epub-mode="paged"] .epub-content-flow {
-    height: 100%;
-    column-width: var(--epub-page-col-width, 760px);
-    column-gap: var(--epub-page-gap, 48px);
-    column-fill: auto;
-    box-sizing: border-box;
+    padding-top: var(--epub-page-padding);
+    padding-bottom: var(--epub-paged-tail, 100vh);
 }
 
 /* Vertical Tategaki (Japanese only: vertical-rl, right-to-left) */
@@ -400,6 +399,11 @@
     min-width: 100%;
     box-sizing: border-box;
     padding-inline-end: 96px;
+}
+
+.epub-reader-surface ::selection {
+    background: color-mix(in srgb, var(--accent-blue) 38%, transparent);
+    color: var(--epub-fg);
 }
 
 /* Paragraphs (.text-line contract: main document, selectable, hoverable) */
