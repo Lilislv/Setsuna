@@ -11,6 +11,8 @@ const MAX_EPUB_IMAGES_PER_CHAPTER: usize = 64;
 const MAX_EPUB_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 const LANGUAGE_SAMPLE_CHARS: usize = 5000;
 const MAX_CSS_INSPECT_CHAPTERS: usize = 5;
+const TXT_PARAGRAPHS_PER_CHAPTER: usize = 220;
+const MAX_SEARCH_HITS: usize = 120;
 
 #[derive(Clone)]
 struct ManifestItem {
@@ -33,6 +35,7 @@ pub struct EpubChapterMeta {
 #[serde(rename_all = "camelCase")]
 pub struct EpubBookMeta {
     pub title: String,
+    pub author: Option<String>,
     pub language: String,
     pub metadata_language: Option<String>,
     pub page_progression_direction: Option<String>,
@@ -41,6 +44,15 @@ pub struct EpubBookMeta {
     pub default_vertical: bool,
     pub chapters: Vec<EpubChapterMeta>,
     pub cover: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EpubSearchHit {
+    pub chapter_index: usize,
+    pub chapter_title: Option<String>,
+    pub paragraph_index: usize,
+    pub snippet: String,
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
@@ -828,6 +840,19 @@ fn title_from_opf(opf: &str, fallback_path: &str) -> String {
         })
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "EPUB".to_string())
+}
+
+fn author_from_opf(opf: &str) -> Option<String> {
+    let creators: Vec<String> = extract_tag_text_values(opf, "creator")
+        .into_iter()
+        .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|value| !value.is_empty())
+        .collect();
+    if creators.is_empty() {
+        None
+    } else {
+        Some(creators.join(", "))
+    }
 }
 
 fn languages_from_opf(opf: &str) -> Vec<String> {
@@ -1976,9 +2001,440 @@ fn open_epub_package(path: &str) -> Result<ParsedPackage, String> {
     })
 }
 
-pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BookFormat {
+    Epub,
+    Htmlz,
+    Txt,
+}
+
+fn detect_book_format(path: &str) -> BookFormat {
+    match Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("txt") => BookFormat::Txt,
+        Some("htmlz") => BookFormat::Htmlz,
+        _ => BookFormat::Epub,
+    }
+}
+
+fn escape_html_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn parse_txt_paragraphs(path: &str) -> Result<Vec<String>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read TXT: {}", e))?;
+    let raw = String::from_utf8_lossy(&bytes);
+    let cleaned = raw.trim_start_matches('\u{feff}').replace("\r\n", "\n").replace('\r', "\n");
+
+    let mut paragraphs = Vec::new();
+    let mut current = Vec::new();
+    for line in cleaned.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(current.join("\n"));
+                current.clear();
+            }
+        } else {
+            current.push(line.trim_end().to_string());
+        }
+    }
+    if !current.is_empty() {
+        paragraphs.push(current.join("\n"));
+    }
+
+    // If a file has no blank lines at all (common in Japanese webnovel .txt), split per non-empty line
+    if paragraphs.len() <= 2 && cleaned.lines().filter(|l| !l.trim().is_empty()).count() > 20 {
+        paragraphs = cleaned
+            .lines()
+            .map(|l| l.trim_end().to_string())
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+    }
+
+    Ok(paragraphs)
+}
+
+fn build_txt_chapter_content(title: String, index: usize, slice: &[String]) -> EpubChapterContent {
+    let mut paragraphs = Vec::with_capacity(slice.len());
+    let mut html_parts = Vec::with_capacity(slice.len());
+    let mut text_parts = Vec::with_capacity(slice.len());
+    for (p_idx, raw_p) in slice.iter().enumerate() {
+        let escaped = escape_html_text(raw_p).replace('\n', "<br />\n");
+        let html = format!("<p>{}</p>", escaped);
+        html_parts.push(html.clone());
+        text_parts.push(raw_p.clone());
+        paragraphs.push(EpubParagraph {
+            index: p_idx,
+            id: None,
+            anchor_ids: Vec::new(),
+            kind: "paragraph".to_string(),
+            html,
+            text: raw_p.clone(),
+            image_src: None,
+            image_alt: None,
+        });
+    }
+    EpubChapterContent {
+        index,
+        id: format!("txt-part-{}", index + 1),
+        href: format!("part-{}.txt", index + 1),
+        title: Some(title),
+        html: html_parts.join("\n"),
+        text: text_parts.join("\n"),
+        paragraphs,
+    }
+}
+
+fn open_txt_book(path: &str) -> Result<EpubBookMeta, String> {
+    let all_paragraphs = parse_txt_paragraphs(path)?;
+    if all_paragraphs.is_empty() {
+        return Err("TXT file is empty.".to_string());
+    }
+    let title = Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "Text".to_string());
+
+    let mut sample = String::new();
+    for p in &all_paragraphs {
+        if sample.chars().count() >= LANGUAGE_SAMPLE_CHARS {
+            break;
+        }
+        if !sample.is_empty() {
+            sample.push(' ');
+        }
+        sample.push_str(p);
+    }
+    let (language, metadata_language) = detect_book_language(&[], &sample);
+
+    let chunk_count = (all_paragraphs.len() + TXT_PARAGRAPHS_PER_CHAPTER - 1) / TXT_PARAGRAPHS_PER_CHAPTER;
+    let chapters = (0..chunk_count.min(MAX_EPUB_CHAPTERS))
+        .map(|idx| EpubChapterMeta {
+            index: idx,
+            id: format!("txt-part-{}", idx + 1),
+            href: format!("part-{}.txt", idx + 1),
+            title: Some(if chunk_count == 1 {
+                title.clone()
+            } else {
+                format!("Part {}", idx + 1)
+            }),
+        })
+        .collect();
+
+    Ok(EpubBookMeta {
+        title,
+        author: None,
+        language: language.to_string(),
+        metadata_language,
+        page_progression_direction: None,
+        primary_writing_mode: None,
+        css_writing_mode: None,
+        default_vertical: false,
+        chapters,
+        cover: None,
+    })
+}
+
+fn load_txt_chapter(path: &str, index: usize) -> Result<EpubChapterContent, String> {
+    let all_paragraphs = parse_txt_paragraphs(path)?;
+    let start = index.saturating_mul(TXT_PARAGRAPHS_PER_CHAPTER);
+    if start >= all_paragraphs.len() {
+        return Err(format!("TXT chapter index {} out of bounds", index));
+    }
+    let end = (start + TXT_PARAGRAPHS_PER_CHAPTER).min(all_paragraphs.len());
+    let chunk_count = (all_paragraphs.len() + TXT_PARAGRAPHS_PER_CHAPTER - 1) / TXT_PARAGRAPHS_PER_CHAPTER;
+    let title = if chunk_count == 1 {
+        Path::new(path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Text".to_string())
+    } else {
+        format!("Part {}", index + 1)
+    };
+    Ok(build_txt_chapter_content(title, index, &all_paragraphs[start..end]))
+}
+
+fn find_htmlz_entry(zip: &mut ZipArchive<File>, preferred: &[&str], exts: &[&str]) -> Option<String> {
+    for target in preferred {
+        for i in 0..zip.len() {
+            if let Ok(file) = zip.by_index(i) {
+                let name = file.name().replace('\\', "/");
+                if name.eq_ignore_ascii_case(target) {
+                    return Some(name);
+                }
+            }
+        }
+    }
+    for i in 0..zip.len() {
+        if let Ok(file) = zip.by_index(i) {
+            let name = file.name().replace('\\', "/");
+            let lower = name.to_ascii_lowercase();
+            if exts.iter().any(|ext| lower.ends_with(ext)) {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+fn extract_htmlz_cover(zip: &mut ZipArchive<File>, html_path: &str, html: &str) -> Option<String> {
+    if let Some(cover_path) = find_htmlz_entry(
+        zip,
+        &["cover.jpg", "cover.jpeg", "cover.png", "cover.webp"],
+        &[],
+    ) {
+        if let Some(url) = read_cover_thumbnail_data_url(zip, &cover_path) {
+            return Some(url);
+        }
+    }
+    let base = html_path.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
+    if let Some(img_path) = first_image_path_in_html(html, base) {
+        if let Some(url) = read_cover_thumbnail_data_url(zip, &img_path) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn open_htmlz_book(path: &str) -> Result<EpubBookMeta, String> {
+    let file = File::open(path).map_err(|e| format!("Failed to open HTMLZ: {}", e))?;
+    let mut zip = ZipArchive::new(file).map_err(|e| format!("HTMLZ zip error: {}", e))?;
+    let opf = find_htmlz_entry(&mut zip, &["metadata.opf"], &[".opf"])
+        .and_then(|opf_path| zip_read_to_string(&mut zip, &opf_path).ok())
+        .unwrap_or_default();
+    let html_path = find_htmlz_entry(&mut zip, &["index.html", "index.xhtml", "index.htm"], &[".html", ".xhtml", ".htm"])
+        .ok_or_else(|| "HTMLZ archive has no HTML file.".to_string())?;
+    let raw_html = zip_read_to_string(&mut zip, &html_path)?;
+    let title = if opf.is_empty() {
+        chapter_title_from_html(&raw_html, path).unwrap_or_else(|| "HTMLZ".to_string())
+    } else {
+        title_from_opf(&opf, path)
+    };
+    let author = if opf.is_empty() { None } else { author_from_opf(&opf) };
+    let metadata_languages = if opf.is_empty() { Vec::new() } else { languages_from_opf(&opf) };
+    let (body, _, _) = html_body_parts(&raw_html);
+    let plain = normalize_text(&body);
+    let (language, metadata_language) = detect_book_language(&metadata_languages, &plain);
+    let cover = extract_htmlz_cover(&mut zip, &html_path, &raw_html);
+
+    let sanitized_preview = sanitize_epub_html_inner(&raw_html, "", &html_path, None, None);
+    let total_paragraphs = extract_paragraphs(&sanitized_preview).len();
+    let chunk_count = ((total_paragraphs.max(1)) + TXT_PARAGRAPHS_PER_CHAPTER - 1) / TXT_PARAGRAPHS_PER_CHAPTER;
+    let chapters = (0..chunk_count.min(MAX_EPUB_CHAPTERS))
+        .map(|idx| EpubChapterMeta {
+            index: idx,
+            id: format!("htmlz-part-{}", idx + 1),
+            href: html_path.clone(),
+            title: Some(if chunk_count == 1 {
+                title.clone()
+            } else {
+                format!("Part {}", idx + 1)
+            }),
+        })
+        .collect();
+
+    Ok(EpubBookMeta {
+        title,
+        author,
+        language: language.to_string(),
+        metadata_language,
+        page_progression_direction: None,
+        primary_writing_mode: None,
+        css_writing_mode: None,
+        default_vertical: false,
+        chapters,
+        cover,
+    })
+}
+
+fn load_htmlz_chapter(path: &str, index: usize) -> Result<EpubChapterContent, String> {
+    let file = File::open(path).map_err(|e| format!("Failed to open HTMLZ: {}", e))?;
+    let mut zip = ZipArchive::new(file).map_err(|e| format!("HTMLZ zip error: {}", e))?;
+    let html_path = find_htmlz_entry(&mut zip, &["index.html", "index.xhtml", "index.htm"], &[".html", ".xhtml", ".htm"])
+        .ok_or_else(|| "HTMLZ archive has no HTML file.".to_string())?;
+    let raw_html = zip_read_to_string(&mut zip, &html_path)?;
+    let base = html_path.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
+    let mut image_cache = HashMap::new();
+    let sanitized_html = sanitize_epub_html_inner(
+        &raw_html,
+        base,
+        &html_path,
+        Some(&mut zip),
+        Some(&mut image_cache),
+    );
+    let all_paragraphs = extract_paragraphs(&sanitized_html);
+    let start = index.saturating_mul(TXT_PARAGRAPHS_PER_CHAPTER);
+    if start >= all_paragraphs.len() && !(index == 0 && all_paragraphs.is_empty()) {
+        return Err(format!("HTMLZ chapter index {} out of bounds", index));
+    }
+    let end = (start + TXT_PARAGRAPHS_PER_CHAPTER).min(all_paragraphs.len());
+    let mut paragraphs: Vec<EpubParagraph> = all_paragraphs[start..end].to_vec();
+    for (local_idx, p) in paragraphs.iter_mut().enumerate() {
+        p.index = local_idx;
+    }
+    let chunk_count = ((all_paragraphs.len().max(1)) + TXT_PARAGRAPHS_PER_CHAPTER - 1) / TXT_PARAGRAPHS_PER_CHAPTER;
+    let html = paragraphs.iter().map(|p| p.html.as_str()).collect::<Vec<_>>().join("\n");
+    let text = paragraphs
+        .iter()
+        .filter(|p| !p.text.is_empty())
+        .map(|p| p.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let title = if chunk_count == 1 {
+        chapter_title_from_html(&raw_html, path)
+    } else {
+        Some(format!("Part {}", index + 1))
+    };
+
+    Ok(EpubChapterContent {
+        index,
+        id: format!("htmlz-part-{}", index + 1),
+        href: html_path,
+        title,
+        html,
+        text,
+        paragraphs,
+    })
+}
+
+fn build_search_snippet(text: &str, needle_lower: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    let byte_pos = lower.find(needle_lower)?;
+    let char_pos = lower[..byte_pos].chars().count();
+    let chars: Vec<char> = text.chars().collect();
+    let start = char_pos.saturating_sub(36);
+    let end = (char_pos + needle_lower.chars().count() + 64).min(chars.len());
+    let mut snippet = String::new();
+    if start > 0 {
+        snippet.push('…');
+    }
+    snippet.extend(&chars[start..end]);
+    if end < chars.len() {
+        snippet.push('…');
+    }
+    Some(snippet)
+}
+
+pub fn epub_search_impl(path: String, query: String) -> Result<Vec<EpubSearchHit>, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needle_lower = trimmed.to_lowercase();
+    let mut hits = Vec::new();
+
+    match detect_book_format(&path) {
+        BookFormat::Txt => {
+            let all_paragraphs = parse_txt_paragraphs(&path)?;
+            let chunk_count = ((all_paragraphs.len().max(1)) + TXT_PARAGRAPHS_PER_CHAPTER - 1) / TXT_PARAGRAPHS_PER_CHAPTER;
+            for (global_idx, text) in all_paragraphs.iter().enumerate() {
+                if hits.len() >= MAX_SEARCH_HITS {
+                    break;
+                }
+                if let Some(snippet) = build_search_snippet(text, &needle_lower) {
+                    let chapter_index = global_idx / TXT_PARAGRAPHS_PER_CHAPTER;
+                    let paragraph_index = global_idx % TXT_PARAGRAPHS_PER_CHAPTER;
+                    hits.push(EpubSearchHit {
+                        chapter_index,
+                        chapter_title: if chunk_count == 1 { None } else { Some(format!("Part {}", chapter_index + 1)) },
+                        paragraph_index,
+                        snippet,
+                    });
+                }
+            }
+            return Ok(hits);
+        }
+        BookFormat::Htmlz => {
+            let file = File::open(&path).map_err(|e| format!("Failed to open HTMLZ: {}", e))?;
+            let mut zip = ZipArchive::new(file).map_err(|e| format!("HTMLZ zip error: {}", e))?;
+            let html_path = find_htmlz_entry(&mut zip, &["index.html", "index.xhtml", "index.htm"], &[".html", ".xhtml", ".htm"])
+                .ok_or_else(|| "HTMLZ archive has no HTML file.".to_string())?;
+            let raw_html = zip_read_to_string(&mut zip, &html_path)?;
+            let sanitized = sanitize_epub_html_inner(&raw_html, "", &html_path, None, None);
+            let all_paragraphs = extract_paragraphs(&sanitized);
+            let chunk_count = ((all_paragraphs.len().max(1)) + TXT_PARAGRAPHS_PER_CHAPTER - 1) / TXT_PARAGRAPHS_PER_CHAPTER;
+            for (global_idx, p) in all_paragraphs.iter().enumerate() {
+                if hits.len() >= MAX_SEARCH_HITS {
+                    break;
+                }
+                if p.text.is_empty() {
+                    continue;
+                }
+                if let Some(snippet) = build_search_snippet(&p.text, &needle_lower) {
+                    let chapter_index = global_idx / TXT_PARAGRAPHS_PER_CHAPTER;
+                    let paragraph_index = global_idx % TXT_PARAGRAPHS_PER_CHAPTER;
+                    hits.push(EpubSearchHit {
+                        chapter_index,
+                        chapter_title: if chunk_count == 1 { None } else { Some(format!("Part {}", chapter_index + 1)) },
+                        paragraph_index,
+                        snippet,
+                    });
+                }
+            }
+            return Ok(hits);
+        }
+        BookFormat::Epub => {}
+    }
+
     let mut pkg = open_epub_package(&path)?;
     let toc_titles = collect_toc_titles(&mut pkg.zip, &pkg.manifest);
+    for (chapter_index, (_id, item)) in pkg.spine.iter().enumerate() {
+        if hits.len() >= MAX_SEARCH_HITS {
+            break;
+        }
+        let Ok(chapter_html) = zip_read_to_string(&mut pkg.zip, &item.path) else {
+            continue;
+        };
+        let sanitized = sanitize_epub_html_inner(&chapter_html, "", &item.path, None, None);
+        let paragraphs = extract_paragraphs(&sanitized);
+        let chapter_title = toc_titles
+            .get(&item.path)
+            .cloned()
+            .or_else(|| chapter_title_from_html(&chapter_html, &item.href));
+        for p in &paragraphs {
+            if hits.len() >= MAX_SEARCH_HITS {
+                break;
+            }
+            if p.text.is_empty() {
+                continue;
+            }
+            if let Some(snippet) = build_search_snippet(&p.text, &needle_lower) {
+                hits.push(EpubSearchHit {
+                    chapter_index,
+                    chapter_title: chapter_title.clone(),
+                    paragraph_index: p.index,
+                    snippet,
+                });
+            }
+        }
+    }
+
+    Ok(hits)
+}
+
+pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
+    match detect_book_format(&path) {
+        BookFormat::Txt => return open_txt_book(&path),
+        BookFormat::Htmlz => return open_htmlz_book(&path),
+        BookFormat::Epub => {}
+    }
+    let mut pkg = open_epub_package(&path)?;
+    let toc_titles = collect_toc_titles(&mut pkg.zip, &pkg.manifest);
+    let author = author_from_opf(&pkg.opf);
     let metadata_languages = languages_from_opf(&pkg.opf);
     let page_progression_direction = page_progression_direction_from_opf(&pkg.opf);
     let primary_writing_mode = primary_writing_mode_from_opf(&pkg.opf);
@@ -2060,6 +2516,7 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
 
     Ok(EpubBookMeta {
         title: pkg.title,
+        author,
         language: language.to_string(),
         metadata_language,
         page_progression_direction,
@@ -2072,6 +2529,11 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
 }
 
 pub fn epub_chapter_impl(path: String, index: usize) -> Result<EpubChapterContent, String> {
+    match detect_book_format(&path) {
+        BookFormat::Txt => return load_txt_chapter(&path, index),
+        BookFormat::Htmlz => return load_htmlz_chapter(&path, index),
+        BookFormat::Epub => {}
+    }
     let mut pkg = open_epub_package(&path)?;
     let (id, item) = pkg
         .spine
@@ -2187,8 +2649,16 @@ fn import_epub_impl(path: String) -> Result<EpubImportResult, String> {
     })
 }
 
-fn stored_book_path(dir: &Path, tab_id: i64) -> PathBuf {
-    dir.join(format!("{tab_id}.epub"))
+fn stored_book_extension(source_path: &str) -> &'static str {
+    match detect_book_format(source_path) {
+        BookFormat::Txt => "txt",
+        BookFormat::Htmlz => "htmlz",
+        BookFormat::Epub => "epub",
+    }
+}
+
+fn stored_book_path(dir: &Path, tab_id: i64, ext: &str) -> PathBuf {
+    dir.join(format!("{tab_id}.{ext}"))
 }
 
 fn store_epub_file(dir: &Path, source_path: &str, tab_id: i64) -> Result<String, String> {
@@ -2196,23 +2666,24 @@ fn store_epub_file(dir: &Path, source_path: &str, tab_id: i64) -> Result<String,
         .map_err(|e| format!("Failed to create epub-books folder: {}", e))?;
     let src = Path::new(source_path);
     if !src.is_file() {
-        return Err(format!("EPUB file does not exist: {}", source_path));
+        return Err(format!("Book file does not exist: {}", source_path));
     }
-    let dest = stored_book_path(dir, tab_id);
+    let ext = stored_book_extension(source_path);
+    let dest = stored_book_path(dir, tab_id, ext);
     // Avoid self-copy if already stored at the target path
     if let (Ok(src_canon), Ok(dest_canon)) = (std::fs::canonicalize(src), std::fs::canonicalize(&dest)) {
         if src_canon == dest_canon {
             return Ok(dest.to_string_lossy().to_string());
         }
     }
-    let tmp = dest.with_extension("epub.tmp");
-    std::fs::copy(src, &tmp).map_err(|e| format!("Failed to copy EPUB: {}", e))?;
+    let tmp = dest.with_extension(format!("{}.tmp", ext));
+    std::fs::copy(src, &tmp).map_err(|e| format!("Failed to copy book file: {}", e))?;
     if dest.exists() {
         std::fs::remove_file(&dest).ok();
     }
     std::fs::rename(&tmp, &dest).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        format!("Failed to store EPUB: {}", e)
+        format!("Failed to store book file: {}", e)
     })?;
     Ok(dest.to_string_lossy().to_string())
 }
@@ -2224,7 +2695,8 @@ fn prune_epub_files(dir: &Path, keep: &[i64]) -> Result<usize, String> {
     let mut removed = 0usize;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("epub") {
+        let ext = path.extension().and_then(|ext| ext.to_str()).map(|s| s.to_ascii_lowercase());
+        if !matches!(ext.as_deref(), Some("epub" | "txt" | "htmlz")) {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -2265,6 +2737,22 @@ pub async fn epub_prune(app: tauri::AppHandle, keep_ids: Vec<i64>) -> Result<usi
 }
 
 pub fn epub_cover_impl(path: String) -> Result<Option<String>, String> {
+    match detect_book_format(&path) {
+        BookFormat::Txt => return Ok(None),
+        BookFormat::Htmlz => {
+            let file = File::open(&path).map_err(|e| format!("Failed to open HTMLZ: {}", e))?;
+            let mut zip = ZipArchive::new(file).map_err(|e| format!("HTMLZ zip error: {}", e))?;
+            let html_path = find_htmlz_entry(&mut zip, &["index.html", "index.xhtml", "index.htm"], &[".html", ".xhtml", ".htm"])
+                .unwrap_or_default();
+            let raw_html = if html_path.is_empty() {
+                String::new()
+            } else {
+                zip_read_to_string(&mut zip, &html_path).unwrap_or_default()
+            };
+            return Ok(extract_htmlz_cover(&mut zip, &html_path, &raw_html));
+        }
+        BookFormat::Epub => {}
+    }
     let mut pkg = open_epub_package(&path)?;
     Ok(extract_cover_data_url(&mut pkg))
 }
@@ -2274,6 +2762,13 @@ pub async fn epub_cover(path: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || epub_cover_impl(path))
         .await
         .map_err(|e| format!("EPUB cover task failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn epub_search(path: String, query: String) -> Result<Vec<EpubSearchHit>, String> {
+    tauri::async_runtime::spawn_blocking(move || epub_search_impl(path, query))
+        .await
+        .map_err(|e| format!("EPUB search task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -2584,5 +3079,79 @@ mod tests {
         assert!(cover.as_deref().is_some_and(|s| s.starts_with("data:image/jpeg;base64,")));
 
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn extracts_author_and_searches_across_chapters() {
+        let opf = br#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Wonderland</dc:title>
+    <dc:creator>Lewis Carroll</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+    <itemref idref="ch2"/>
+  </spine>
+</package>"#;
+        let ch1 = br#"<html><body><p>Down the rabbit hole went Alice.</p></body></html>"#;
+        let ch2 = br#"<html><body><p>A curious White Rabbit checked his pocket watch.</p></body></html>"#;
+
+        let path = build_test_epub(&[
+            ("META-INF/container.xml", CONTAINER_XML),
+            ("OEBPS/content.opf", opf),
+            ("OEBPS/ch1.xhtml", ch1),
+            ("OEBPS/ch2.xhtml", ch2),
+        ]);
+
+        let meta = epub_open_impl(path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(meta.author.as_deref(), Some("Lewis Carroll"));
+
+        let hits = epub_search_impl(path.to_string_lossy().to_string(), "rabbit".to_string()).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].chapter_index, 0);
+        assert_eq!(hits[1].chapter_index, 1);
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn opens_and_searches_txt_and_htmlz_books() {
+        let txt_path = temp_path("sample.txt");
+        std::fs::write(&txt_path, "\u{feff}吾輩は猫である。\n\n名前はまだ無い。").unwrap();
+        let txt_meta = epub_open_impl(txt_path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(txt_meta.language, "ja");
+        assert_eq!(txt_meta.chapters.len(), 1);
+        let txt_ch = epub_chapter_impl(txt_path.to_string_lossy().to_string(), 0).unwrap();
+        assert_eq!(txt_ch.paragraphs.len(), 2);
+        let txt_hits = epub_search_impl(txt_path.to_string_lossy().to_string(), "猫".to_string()).unwrap();
+        assert_eq!(txt_hits.len(), 1);
+        std::fs::remove_file(&txt_path).ok();
+
+        let htmlz_path = temp_path("sample.htmlz");
+        let opf = br#"<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>HTMLZ Story</dc:title><dc:creator>Natsume Soseki</dc:creator><dc:language>en</dc:language></metadata></package>"#;
+        let idx = br#"<html><body><h1>Chapter One</h1><p>An archived adventure begins here.</p></body></html>"#;
+        {
+            let file = File::create(&htmlz_path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::FileOptions::default();
+            zip.start_file("metadata.opf", options).unwrap();
+            std::io::Write::write_all(&mut zip, opf).unwrap();
+            zip.start_file("index.html", options).unwrap();
+            std::io::Write::write_all(&mut zip, idx).unwrap();
+            zip.finish().unwrap();
+        }
+        let hz_meta = epub_open_impl(htmlz_path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(hz_meta.title, "HTMLZ Story");
+        assert_eq!(hz_meta.author.as_deref(), Some("Natsume Soseki"));
+        assert_eq!(hz_meta.language, "en");
+        let hz_hits = epub_search_impl(htmlz_path.to_string_lossy().to_string(), "adventure".to_string()).unwrap();
+        assert_eq!(hz_hits.len(), 1);
+        std::fs::remove_file(&htmlz_path).ok();
     }
 }
