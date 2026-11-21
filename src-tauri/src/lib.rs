@@ -7,6 +7,7 @@ mod japanese_tokenizer;
 mod text_stats;
 mod http_client;
 mod tab_lines;
+mod epub_import;
 mod lookup_normalization;
 mod japanese_deinflector;
 mod local_audio;
@@ -1241,6 +1242,11 @@ pub fn run() {
             tab_lines::save_tab_lines,
             tab_lines::load_tab_lines,
             tab_lines::prune_tab_lines,
+            epub_import::import_epub,
+            epub_import::epub_store,
+            epub_import::epub_prune,
+            epub_import::epub_open,
+            epub_import::epub_chapter,
             save_workspace_state,
             load_workspace_state,
             stop_capture_agent_server,
