@@ -62,6 +62,8 @@ interface EpubReaderProps {
     onLookupToken?: LookupTokenHandler;
     onBackToLibrary: () => void;
     onOpenFile: () => void;
+    onOverlayStateChange?: (open: boolean) => void;
+    closeOverlaySignal?: number;
 }
 
 type PageRange = { start: number; end: number };
@@ -212,6 +214,8 @@ export default function EpubReader({
     onLookupToken,
     onBackToLibrary,
     onOpenFile,
+    onOverlayStateChange,
+    closeOverlaySignal = 0,
 }: EpubReaderProps) {
     const language = settings.appLanguage || "ru";
     const t = getTranslator(language);
@@ -449,12 +453,34 @@ export default function EpubReader({
 
     // When lookup mode ends, immediately restore chrome if pointer is resting in a trigger zone
     useEffect(() => {
-        if (isMobile || lookupActive || escMenuOpen) return;
+        if (isMobile) {
+            if (!lookupOpen) {
+                if (stageRef.current) stageRef.current.scrollTop = 0;
+                window.scrollTo(0, 0);
+                const active = document.activeElement as HTMLElement | null;
+                if (active && active.classList.contains("lookup-word")) {
+                    active.blur();
+                }
+            }
+            return;
+        }
+        if (lookupActive || escMenuOpen) return;
         const pos = lastPointerPosRef.current;
         if (pos) {
             evaluateHoverZones(pos.x, pos.y, false);
         }
-    }, [isMobile, lookupActive, escMenuOpen, evaluateHoverZones]);
+    }, [isMobile, lookupOpen, lookupActive, escMenuOpen, evaluateHoverZones]);
+
+    useEffect(() => {
+        onOverlayStateChange?.(tocOpen || searchOpen || appearanceOpen);
+    }, [tocOpen, searchOpen, appearanceOpen, onOverlayStateChange]);
+
+    useEffect(() => {
+        if (!closeOverlaySignal) return;
+        setTocOpen(false);
+        setSearchOpen(false);
+        setAppearanceOpen(false);
+    }, [closeOverlaySignal]);
 
     const handleStageMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
         if (isMobile) return;
@@ -1603,36 +1629,38 @@ export default function EpubReader({
                 )}
 
                 {isHorizontalPaged && chapter && !loading && (
-                    <div
-                        ref={measurerRef}
-                        aria-hidden="true"
-                        className="epub-page-measurer"
-                        style={{
-                            ...surfaceStyle,
-                            width: `${measurerWidth}px`,
-                        }}
-                    >
-                        {paragraphs.map((p) => {
-                            if (p.kind === "separator") {
-                                return <hr key={p.index} data-paragraph-index={p.index} className="epub-separator" />;
-                            }
-                            if (p.kind === "image") {
-                                if (!showImages || !p.imageSrc) return null;
+                    <div className="epub-measurer-host" aria-hidden="true">
+                        <div
+                            ref={measurerRef}
+                            aria-hidden="true"
+                            className="epub-page-measurer"
+                            style={{
+                                ...surfaceStyle,
+                                width: `${measurerWidth}px`,
+                            }}
+                        >
+                            {paragraphs.map((p) => {
+                                if (p.kind === "separator") {
+                                    return <hr key={p.index} data-paragraph-index={p.index} className="epub-separator" />;
+                                }
+                                if (p.kind === "image") {
+                                    if (!showImages || !p.imageSrc) return null;
+                                    return (
+                                        <figure key={p.index} data-paragraph-index={p.index} className="epub-image-block">
+                                            <img src={p.imageSrc} alt="" />
+                                        </figure>
+                                    );
+                                }
                                 return (
-                                    <figure key={p.index} data-paragraph-index={p.index} className="epub-image-block">
-                                        <img src={p.imageSrc} alt="" />
-                                    </figure>
+                                    <EpubHtmlParagraph
+                                        key={p.index}
+                                        index={p.index}
+                                        className={`epub-block epub-block-${p.kind}`}
+                                        html={p.html}
+                                    />
                                 );
-                            }
-                            return (
-                                <EpubHtmlParagraph
-                                    key={p.index}
-                                    index={p.index}
-                                    className={`epub-block epub-block-${p.kind}`}
-                                    html={p.html}
-                                />
-                            );
-                        })}
+                            })}
+                        </div>
                     </div>
                 )}
 

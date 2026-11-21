@@ -85,6 +85,8 @@ export default function EpubWorkspace({
 
     // Full-window Esc menu matching TextHooker's AppMenu behavior and animations
     const [escMenuOpen, setEscMenuOpen] = useState(false);
+    const [readerOverlayOpen, setReaderOverlayOpen] = useState(false);
+    const [closeOverlaySignal, setCloseOverlaySignal] = useState(0);
     const [escMenuMounted, setEscMenuMounted] = useState(false);
     const [escMenuVisible, setEscMenuVisible] = useState(false);
     const [escMenuEntering, setEscMenuEntering] = useState(false);
@@ -177,6 +179,55 @@ export default function EpubWorkspace({
         pendingMenuActionRef.current = action;
         setEscMenuOpen(false);
     }, []);
+
+    // Android hardware/gesture Back button: close active sheets/drawers first, then return to Home menu.
+    const mobileBackRef = useRef({
+        lookupOpen,
+        readerOverlayOpen,
+        onCloseLookup,
+        onHome,
+    });
+    mobileBackRef.current = {
+        lookupOpen,
+        readerOverlayOpen,
+        onCloseLookup,
+        onHome,
+    };
+
+    useEffect(() => {
+        if (!isMobile || !standaloneMobile) return;
+        const pushWorkspaceGuard = () => {
+            const state = window.history.state as Record<string, unknown> | null;
+            if (!state?.setsunaMobileWorkspace) {
+                window.history.pushState({ ...(state || {}), setsunaMobileWorkspace: "epub" }, "", window.location.href);
+            }
+        };
+        pushWorkspaceGuard();
+
+        const handlePopState = () => {
+            const current = mobileBackRef.current;
+            const fontPickerClose = document.querySelector<HTMLButtonElement>(".font-picker-overlay .font-picker-close");
+            if (fontPickerClose) {
+                fontPickerClose.click();
+                pushWorkspaceGuard();
+                return;
+            }
+            if (current.lookupOpen) {
+                current.onCloseLookup?.();
+                pushWorkspaceGuard();
+                return;
+            }
+            if (current.readerOverlayOpen) {
+                setCloseOverlaySignal((n) => n + 1);
+                pushWorkspaceGuard();
+                return;
+            }
+            current.onHome();
+        };
+
+        window.addEventListener("popstate", handlePopState);
+        return () => window.removeEventListener("popstate", handlePopState);
+    }, [isMobile, standaloneMobile]);
 
     // Lazily load cover thumbnails (and backfill author metadata if missing) for library books
     useEffect(() => {
@@ -509,6 +560,8 @@ export default function EpubWorkspace({
                     onLookupToken={onLookupToken}
                     onBackToLibrary={() => setViewMode("library")}
                     onOpenFile={onOpenFile}
+                    onOverlayStateChange={setReaderOverlayOpen}
+                    closeOverlaySignal={closeOverlaySignal}
                 />
             ) : (
                 <EpubLibrary

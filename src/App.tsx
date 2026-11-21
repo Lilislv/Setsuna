@@ -3712,6 +3712,7 @@ export default function App() {
                         onEpubProgress={handleEpubProgress}
                         onEpubOrientationChange={handleEpubOrientationChange}
                         onEpubBookmarksChange={handleEpubBookmarksChange}
+                        onHome={() => setActiveWorkspace("hub")}
                     />
                 ) : (
                 <>

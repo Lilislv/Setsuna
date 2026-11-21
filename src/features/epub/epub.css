@@ -21,6 +21,7 @@
     height: 100%;
     width: 100%;
     overflow: hidden;
+    overflow: clip;
     background: var(--bg-main);
     color: var(--text-main);
 }
@@ -397,6 +398,7 @@
     min-height: 0;
     height: 100%;
     overflow: hidden;
+    overflow: clip;
 }
 
 .epub-reader-stage {
@@ -405,6 +407,7 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
+    overflow: clip;
 }
 
 /* === Floating LiquidGlass Top Islands (auto-hide on desktop until hover) === */
@@ -965,6 +968,18 @@
     pointer-events: none;
 }
 
+.epub-measurer-host {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 0;
+    overflow: hidden;
+    pointer-events: none;
+    visibility: hidden;
+    z-index: -1;
+}
+
 .epub-page-measurer {
     position: absolute;
     top: 0;
@@ -1135,21 +1150,31 @@
     filter: invert(0.92);
 }
 
-/* Mobile tap lookup chips inside EPUB vertical-rl */
-.epub-reader-surface[data-epub-orientation="vertical"] .lookup-word {
+/* Mobile tap lookup tokens inside EPUB: keep book text clean (no distracting blue underlines) */
+.epub-reader-surface .lookup-word {
     color: var(--epub-fg);
-    padding: 2px 0;
-    margin: 1px 0;
-    box-shadow: inset -0.09em 0 0 color-mix(in srgb, var(--accent, var(--accent-blue)) 45%, transparent);
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+    border-radius: 4px;
+    background: transparent;
 }
 
-.epub-reader-surface[data-epub-orientation="horizontal"] .lookup-word {
+.epub-reader-surface[data-epub-orientation="vertical"] .lookup-word {
     color: var(--epub-fg);
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+}
+
+.epub-workspace.is-mobile .epub-reader-surface .lookup-word:hover {
+    background: transparent;
 }
 
 .epub-reader-surface .lookup-word.active,
 .epub-reader-surface .lookup-word:active {
-    color: #fff;
+    background: color-mix(in srgb, var(--epub-accent) 26%, transparent);
+    color: var(--epub-fg);
     box-shadow: none;
 }
 

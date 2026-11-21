@@ -356,6 +356,7 @@ export const MobileLayout = ({
     onEpubProgress,
     onEpubOrientationChange,
     onEpubBookmarksChange,
+    onHome,
 }: any) => {
     const t = getTranslator(settings?.appLanguage || 'ru');
     const [activeMobileView, setActiveMobileView] = useState<'text' | 'lookup'>('text');
@@ -495,6 +496,7 @@ export const MobileLayout = ({
         isStatsOpen,
         activeMobileView,
         onCloseLookup,
+        onHome,
     });
     mobileBackStateRef.current = {
         lookupOpen,
@@ -503,36 +505,43 @@ export const MobileLayout = ({
         isStatsOpen,
         activeMobileView,
         onCloseLookup,
+        onHome,
     };
 
-    const hasMobileBackLayer = Boolean(
-        lookupOpen
-        || isMobileSettingsOpen
-        || tabsOpen
-        || isStatsOpen
-        || activeMobileView === 'lookup'
-    );
-
     useEffect(() => {
-        if (!hasMobileBackLayer) return;
-        const state = window.history.state as Record<string, unknown> | null;
-        if (state?.setsunaMobileLayer) return;
-        window.history.pushState({ ...(state || {}), setsunaMobileLayer: true }, '', window.location.href);
-    }, [hasMobileBackLayer]);
+        const pushWorkspaceGuard = () => {
+            const state = window.history.state as Record<string, unknown> | null;
+            if (!state?.setsunaMobileWorkspace) {
+                window.history.pushState({ ...(state || {}), setsunaMobileWorkspace: 'texthooker' }, '', window.location.href);
+            }
+        };
+        pushWorkspaceGuard();
 
-    useEffect(() => {
         const handleMobileBack = () => {
             const current = mobileBackStateRef.current;
+            const fontPickerClose = document.querySelector<HTMLButtonElement>('.font-picker-overlay .font-picker-close');
+            if (fontPickerClose) {
+                fontPickerClose.click();
+                pushWorkspaceGuard();
+                return;
+            }
             if (current.lookupOpen) {
                 current.onCloseLookup?.();
+                pushWorkspaceGuard();
             } else if (current.isMobileSettingsOpen) {
                 setIsMobileSettingsOpen(false);
+                pushWorkspaceGuard();
             } else if (current.tabsOpen) {
                 setTabsOpen(false);
+                pushWorkspaceGuard();
             } else if (current.isStatsOpen) {
                 setIsStatsOpen(false);
+                pushWorkspaceGuard();
             } else if (current.activeMobileView === 'lookup') {
                 setActiveMobileView('text');
+                pushWorkspaceGuard();
+            } else {
+                current.onHome?.();
             }
         };
         window.addEventListener('popstate', handleMobileBack);

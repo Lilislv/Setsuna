@@ -12,6 +12,7 @@
     width: 100%;
     height: 100dvh;
     overflow: hidden;
+    overflow: clip;
     background: var(--bg-main);
     color: var(--text-main);
     font-family: var(--font-stack);
