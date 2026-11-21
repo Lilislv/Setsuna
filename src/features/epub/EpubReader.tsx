@@ -115,10 +115,10 @@ export default function EpubReader({
     const isPaged = readingMode === "paged";
     const epubTheme = settings.epubTheme || "app";
     const showImages = settings.epubShowImages ?? true;
-    const chapters = bookMeta?.chapters || [];
+    const chapters = useMemo(() => bookMeta?.chapters || [], [bookMeta?.chapters]);
     const chapterIndex = chapter?.index ?? tab.epub?.chapterIndex ?? 0;
     const chapterCount = chapters.length || tab.epub?.chapterCount || 1;
-    const paragraphs = chapter?.paragraphs || [];
+    const paragraphs = useMemo(() => chapter?.paragraphs || [], [chapter?.paragraphs]);
 
     const useVirtualizedScroll = !isVertical && !isPaged && paragraphs.length > VIRTUALIZE_THRESHOLD;
 
@@ -134,8 +134,12 @@ export default function EpubReader({
         : (settings.epubPagePadding ?? 34);
 
     const computeHorizontalPageStops = useCallback((el: HTMLDivElement): number[] => {
+        const rawFontSize = Number(settings.epubFontSize);
+        const rawLineHeight = Number(settings.epubLineHeight);
+        const fontSize = Number.isFinite(rawFontSize) && rawFontSize > 0 ? rawFontSize : 26;
+        const lineHeight = Number.isFinite(rawLineHeight) && rawLineHeight > 0 ? rawLineHeight : 2.05;
         const usableHeight = Math.max(120, el.clientHeight - effectivePadding * 2);
-        const linePx = Math.max(20, Math.round((settings.epubFontSize ?? 26) * (settings.epubLineHeight ?? 2.05)));
+        const linePx = Math.max(20, Math.round(fontSize * lineHeight));
         const lineStep = Math.max(linePx, Math.floor(usableHeight / linePx) * linePx);
         const nodes = el.querySelectorAll<HTMLElement>("[data-paragraph-index]");
         if (nodes.length === 0) return [0];
@@ -146,17 +150,18 @@ export default function EpubReader({
         let pageStart = 0;
 
         nodes.forEach((node) => {
+            if (stops.length >= 2000) return;
             const box = node.getBoundingClientRect();
             const top = Math.max(0, Math.round(box.top - surfaceTop + baseScrollTop - effectivePadding));
             const bottom = Math.round(box.bottom - surfaceTop + baseScrollTop - effectivePadding);
-            if (bottom - pageStart <= usableHeight) {
+            if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom - pageStart <= usableHeight) {
                 return;
             }
             if (top > pageStart) {
                 pageStart = top;
                 stops.push(pageStart);
             }
-            while (bottom - pageStart > usableHeight) {
+            while (bottom - pageStart > usableHeight && stops.length < 2000) {
                 pageStart += lineStep;
                 stops.push(pageStart);
             }
