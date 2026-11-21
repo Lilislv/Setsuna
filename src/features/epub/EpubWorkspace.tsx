@@ -4,6 +4,7 @@ import type { EpubBookmark, Tab } from "../../utils/constants";
 import { getTranslator } from "../../utils/i18n";
 import WorkspaceShell from "../../components/WorkspaceShell";
 import { IconBookTab, IconHome, IconImport, IconSettings } from "../../components/Icons";
+import "../../components/AppMenu.css";
 import EpubLibrary from "./EpubLibrary";
 import EpubReader from "./EpubReader";
 import { loadEpubChapter, loadEpubCover, openEpubBook } from "./epubApi";
@@ -15,6 +16,7 @@ import type {
 import "./epub.css";
 
 const MAX_CACHED_CHAPTERS = 12;
+const ESC_MENU_CLOSE_MS = 180;
 const coverCache = new Map<string, string | null>();
 
 type LookupMatch = { start: number; length: number };
@@ -32,7 +34,11 @@ interface EpubWorkspaceProps {
     settings: AppSettings;
     isMobile: boolean;
     standaloneMobile?: boolean;
+    lookupOpen?: boolean;
+    onCloseLookup?: () => void;
+    escMenuBlocked?: boolean;
     onHome: () => void;
+    onOpenTextHooker?: () => void;
     onSettings: () => void;
     onOpenFile: () => void;
     onSelectBook: (tabId: number) => void;
@@ -45,13 +51,23 @@ interface EpubWorkspaceProps {
     onLookupToken?: LookupTokenHandler;
 }
 
+const IconTextHookerTile = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 6h16M4 12h16M4 18h10" />
+    </svg>
+);
+
 export default function EpubWorkspace({
     books,
     activeBookTab,
     settings,
     isMobile,
     standaloneMobile = true,
+    lookupOpen = false,
+    onCloseLookup,
+    escMenuBlocked = false,
     onHome,
+    onOpenTextHooker,
     onSettings,
     onOpenFile,
     onSelectBook,
@@ -64,6 +80,7 @@ export default function EpubWorkspace({
     onLookupToken,
 }: EpubWorkspaceProps) {
     const language = settings.appLanguage || "ru";
+    const isEn = language === "en";
     const t = getTranslator(language);
 
     const [viewMode, setViewMode] = useState<"library" | "reader">(activeBookTab ? "reader" : "library");
@@ -73,6 +90,15 @@ export default function EpubWorkspace({
     const [error, setError] = useState<string | null>(null);
     const [pendingFragment, setPendingFragment] = useState<string | null>(null);
     const [pendingParagraphIndex, setPendingParagraphIndex] = useState<number | null>(null);
+
+    // Full-window Esc menu matching TextHooker's AppMenu behavior and animations
+    const [escMenuOpen, setEscMenuOpen] = useState(false);
+    const [escMenuMounted, setEscMenuMounted] = useState(false);
+    const [escMenuVisible, setEscMenuVisible] = useState(false);
+    const [escMenuEntering, setEscMenuEntering] = useState(false);
+    const escMenuPanelRef = useRef<HTMLDivElement>(null);
+    const pendingMenuActionRef = useRef<(() => void) | null>(null);
+
     const [coversByPath, setCoversByPath] = useState<Record<string, string | null>>(() => {
         const initial: Record<string, string | null> = {};
         coverCache.forEach((value, key) => {
@@ -98,6 +124,67 @@ export default function EpubWorkspace({
         }
         prevActiveTabIdRef.current = activeTabId;
     }, [activeTabId]);
+
+    // Esc menu enter/exit animation lifecycle (identical to AppMenu.tsx)
+    useEffect(() => {
+        if (escMenuOpen) {
+            setEscMenuMounted(true);
+            setEscMenuEntering(true);
+            const frame = requestAnimationFrame(() => setEscMenuVisible(true));
+            const settle = window.setTimeout(() => setEscMenuEntering(false), 900);
+            return () => {
+                cancelAnimationFrame(frame);
+                window.clearTimeout(settle);
+            };
+        }
+        setEscMenuVisible(false);
+        const timer = window.setTimeout(() => {
+            setEscMenuMounted(false);
+            const action = pendingMenuActionRef.current;
+            pendingMenuActionRef.current = null;
+            action?.();
+        }, ESC_MENU_CLOSE_MS);
+        return () => window.clearTimeout(timer);
+    }, [escMenuOpen]);
+
+    useEffect(() => {
+        if (!escMenuVisible) return;
+        const panel = escMenuPanelRef.current;
+        (panel?.querySelector<HTMLElement>(".app-menu-tab.is-active") || panel)?.focus({ preventScroll: false });
+        panel?.querySelector(".app-menu-tab.is-active")?.scrollIntoView({ block: "nearest" });
+    }, [escMenuVisible]);
+
+    // Esc key handler matching ReaderChrome.tsx priority
+    useEffect(() => {
+        if (isMobile) return;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" || event.repeat || event.defaultPrevented) return;
+            const target = event.target;
+            const inField = target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"]');
+            if (escMenuOpen) {
+                if (inField) return;
+                event.preventDefault();
+                setEscMenuOpen(false);
+                return;
+            }
+            if (inField) return;
+            if (lookupOpen) {
+                event.preventDefault();
+                onCloseLookup?.();
+                return;
+            }
+            if (escMenuBlocked || document.querySelector(".modal-overlay, .settings-window")) return;
+            event.preventDefault();
+            setEscMenuOpen(true);
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [isMobile, escMenuOpen, lookupOpen, onCloseLookup, escMenuBlocked]);
+
+    const runEscMenuAction = useCallback((action: () => void) => {
+        pendingMenuActionRef.current = action;
+        setEscMenuOpen(false);
+    }, []);
 
     // Lazily load cover thumbnails (and backfill author metadata if missing) for library books
     useEffect(() => {
@@ -237,6 +324,181 @@ export default function EpubWorkspace({
         setViewMode("reader");
     }, [onSelectBook]);
 
+    const visibleBooks = books.filter((tab) => !tab.archived);
+    const activeBookTitle = viewMode === "reader" && activeBookTab
+        ? (activeBookTab.epub?.title || bookMeta?.title || activeBookTab.name)
+        : t("epub.library");
+    const activeBookSubtitle = viewMode === "reader" && activeBookTab
+        ? [
+            activeBookTab.epub?.author || bookMeta?.author,
+            chapter?.title || t("epub.chapterOf", {
+                current: (chapter?.index ?? activeBookTab.epub?.chapterIndex ?? 0) + 1,
+                total: bookMeta?.chapters.length || activeBookTab.epub?.chapterCount || 1,
+            }),
+            `${Math.round(Math.min(1, Math.max(0, activeBookTab.epub?.progress || 0)) * 100)}%`,
+        ].filter(Boolean).join(" · ")
+        : t("epub.booksCount", { count: visibleBooks.length });
+
+    const escMenuElement = !isMobile && escMenuMounted ? (
+        <div
+            className={`app-menu-backdrop${escMenuVisible ? " is-open" : ""}${escMenuVisible && escMenuEntering ? " is-entering" : ""}`}
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setEscMenuOpen(false);
+            }}
+            role="presentation"
+        >
+            <div
+                ref={escMenuPanelRef}
+                tabIndex={-1}
+                className="app-menu"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="epub-esc-menu-title"
+                onClick={(event) => event.stopPropagation()}
+            >
+                <header className="app-menu-heading">
+                    <div className="app-menu-heading-text">
+                        <p className="app-menu-brand">SETSUNA</p>
+                        <h1 id="epub-esc-menu-title">{activeBookTitle}</h1>
+                        {activeBookSubtitle && <p className="app-menu-subtitle">{activeBookSubtitle}</p>}
+                    </div>
+                    <button
+                        type="button"
+                        className="app-menu-close"
+                        onClick={() => setEscMenuOpen(false)}
+                        aria-label={isEn ? "Close menu" : "Закрыть меню"}
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+                            <path d="M6 6l12 12M18 6 6 18" />
+                        </svg>
+                    </button>
+                </header>
+
+                <div className="app-menu-body">
+                    <section className="app-menu-column app-menu-tabs-column" aria-label={t("epub.library")}>
+                        <div className="app-menu-section-head">
+                            <span className="app-menu-section-label">
+                                {t("epub.library")} <span className="app-menu-count">{visibleBooks.length}</span>
+                            </span>
+                            <div className="app-menu-section-actions">
+                                <button
+                                    type="button"
+                                    className="app-menu-icon-button"
+                                    onClick={() => runEscMenuAction(onOpenFile)}
+                                    title={t("epub.openFile")}
+                                    aria-label={t("epub.openFile")}
+                                >
+                                    +
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="app-menu-tabs" role="listbox" aria-label={t("epub.library")}>
+                            {visibleBooks.map((book, index) => {
+                                const isActive = viewMode === "reader" && book.id === activeTabId;
+                                const progress = Math.round(Math.min(1, Math.max(0, book.epub?.progress || 0)) * 100);
+                                const lang = book.epub?.language === "ja" ? "JA" : "EN";
+                                return (
+                                    <div
+                                        key={book.id}
+                                        role="option"
+                                        aria-selected={isActive}
+                                        tabIndex={0}
+                                        style={{ ["--i" as string]: index }}
+                                        className={`app-menu-tab${isActive ? " is-active" : ""}`}
+                                        onClick={() => runEscMenuAction(() => handleSelectBook(book.id))}
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                                event.preventDefault();
+                                                runEscMenuAction(() => handleSelectBook(book.id));
+                                            }
+                                        }}
+                                    >
+                                        <span className="epub-badge" style={{ height: 20, padding: "0 7px", fontSize: 10 }}>{lang}</span>
+                                        <span className="app-menu-tab-name">{book.epub?.title || book.name}</span>
+                                        <span className="app-menu-tab-meta">{progress}%</span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </section>
+
+                    <section className="app-menu-column">
+                        <div className="app-menu-section-head">
+                            <span className="app-menu-section-label">{isEn ? "Actions" : "Действия"}</span>
+                        </div>
+                        <div className="app-menu-grid">
+                            <button
+                                type="button"
+                                className="app-menu-tile"
+                                style={{ ["--i" as string]: 0 }}
+                                onClick={() => runEscMenuAction(() => setViewMode("library"))}
+                            >
+                                <span className="app-menu-tile-icon"><IconBookTab /></span>
+                                <span className="app-menu-tile-text">
+                                    <strong>{t("epub.library")}</strong>
+                                    <small>{t("epub.booksCount", { count: visibleBooks.length })}</small>
+                                </span>
+                            </button>
+
+                            <button
+                                type="button"
+                                className="app-menu-tile"
+                                style={{ ["--i" as string]: 1 }}
+                                onClick={() => runEscMenuAction(onOpenFile)}
+                            >
+                                <span className="app-menu-tile-icon"><IconImport /></span>
+                                <span className="app-menu-tile-text">
+                                    <strong>{t("epub.openFile")}</strong>
+                                    <small>.epub · .txt · .htmlz</small>
+                                </span>
+                            </button>
+
+                            <button
+                                type="button"
+                                className="app-menu-tile"
+                                style={{ ["--i" as string]: 2 }}
+                                onClick={() => runEscMenuAction(onSettings)}
+                            >
+                                <span className="app-menu-tile-icon"><IconSettings /></span>
+                                <span className="app-menu-tile-text">
+                                    <strong>{t("workspace.settings")}</strong>
+                                    <small>{t("epub.title")}</small>
+                                </span>
+                            </button>
+
+                            {onOpenTextHooker && (
+                                <button
+                                    type="button"
+                                    className="app-menu-tile"
+                                    style={{ ["--i" as string]: 3 }}
+                                    onClick={() => runEscMenuAction(onOpenTextHooker)}
+                                >
+                                    <span className="app-menu-tile-icon"><IconTextHookerTile /></span>
+                                    <span className="app-menu-tile-text">
+                                        <strong>TextHooker</strong>
+                                        <small>{isEn ? "Switch mode" : "Переключить режим"}</small>
+                                    </span>
+                                </button>
+                            )}
+                        </div>
+                    </section>
+                </div>
+
+                <footer className="app-menu-footer">
+                    <div className="app-menu-footer-actions">
+                        <button type="button" onClick={() => runEscMenuAction(onHome)}>
+                            <IconHome /> {isEn ? "Home screen" : "Главный экран"}
+                        </button>
+                    </div>
+                    <p className="app-menu-hint">
+                        <kbd>Esc</kbd> {isEn ? "back to reading" : "вернуться к чтению"}
+                    </p>
+                </footer>
+            </div>
+        </div>
+    ) : null;
+
     const content = (
         <div className={`epub-workspace${isMobile ? " is-mobile" : ""}`}>
             {viewMode === "reader" && activeBookTab ? (
@@ -248,6 +510,8 @@ export default function EpubWorkspace({
                     error={error}
                     settings={settings}
                     isMobile={isMobile}
+                    lookupOpen={lookupOpen}
+                    escMenuOpen={escMenuOpen}
                     pendingFragment={pendingFragment}
                     pendingParagraphIndex={pendingParagraphIndex}
                     onFragmentHandled={() => {
@@ -280,6 +544,7 @@ export default function EpubWorkspace({
                     onRemoveBook={onRemoveBook}
                 />
             )}
+            {escMenuElement}
         </div>
     );
 
@@ -292,7 +557,7 @@ export default function EpubWorkspace({
             : t("epub.title");
         const islandMeta = viewMode === "reader" && activeBookTab
             ? `${Math.round(Math.min(1, Math.max(0, activeBookTab.epub?.progress || 0)) * 100)}%`
-            : String(books.filter((tab) => !tab.archived).length);
+            : String(visibleBooks.length);
 
         return (
             <div className="m-shell">

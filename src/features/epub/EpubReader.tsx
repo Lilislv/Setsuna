@@ -17,6 +17,7 @@ import { getTranslator } from "../../utils/i18n";
 import { TokenizedLine } from "../../components/TextContainer";
 import { IconBookTab, IconClose, IconImport, IconSearch } from "../../components/Icons";
 import { searchEpubBook } from "./epubApi";
+import EpubGlassSelect from "./EpubGlassSelect";
 import {
     clamp01,
     computeBookProgress,
@@ -46,6 +47,8 @@ interface EpubReaderProps {
     error: string | null;
     settings: AppSettings;
     isMobile: boolean;
+    lookupOpen?: boolean;
+    escMenuOpen?: boolean;
     pendingFragment: string | null;
     pendingParagraphIndex: number | null;
     onFragmentHandled: () => void;
@@ -194,6 +197,8 @@ export default function EpubReader({
     error,
     settings,
     isMobile,
+    lookupOpen = false,
+    escMenuOpen = false,
     pendingFragment,
     pendingParagraphIndex,
     onFragmentHandled,
@@ -247,6 +252,8 @@ export default function EpubReader({
     const [topHover, setTopHover] = useState(false);
     const [bottomHover, setBottomHover] = useState(false);
     const [edgeHover, setEdgeHover] = useState<"left" | "right" | null>(null);
+    const [lookupKeyHeld, setLookupKeyHeld] = useState(false);
+    const lastPointerPosRef = useRef<{ x: number; y: number } | null>(null);
     const [spreadEnabled, setSpreadEnabled] = useState<boolean>(readStoredSpreadPreference);
     const [pageRanges, setPageRanges] = useState<PageRange[]>([{ start: 0, end: 0 }]);
     const [currentPageIdx, setCurrentPageIdx] = useState(0);
@@ -340,15 +347,62 @@ export default function EpubReader({
     const topClearance = isMobile ? 54 : 24;
     const bottomClearance = isMobile ? 52 : 28;
 
-    const handleStageMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    // Track lookup hotkey state (e.g. Shift) so floating bars stay completely hidden during lookup
+    useEffect(() => {
         if (isMobile) return;
+        const hotkey = String(settings.lookupHotkey || "Shift");
+        if (hotkey === "__disabled__") {
+            setLookupKeyHeld(false);
+            return;
+        }
+        const parts = hotkey.split("+").map((p) => p.trim()).filter(Boolean);
+        const needShift = parts.some((p) => /^shift$/i.test(p));
+        const needCtrl = parts.some((p) => /^(ctrl|control)$/i.test(p));
+        const needAlt = parts.some((p) => /^alt$/i.test(p));
+        const trigger = parts.find((p) => !/^(ctrl|control|alt|shift)$/i.test(p)) || "";
+        const norm = (c: string) => c.toLowerCase().replace(/^key/, "").replace(/^digit/, "");
+        let triggerDown = false;
+
+        const isActiveFor = (ev: KeyboardEvent) =>
+            ev.shiftKey === needShift
+            && ev.ctrlKey === needCtrl
+            && ev.altKey === needAlt
+            && (!trigger || triggerDown);
+
+        const onKeyDown = (ev: KeyboardEvent) => {
+            if (trigger && norm(ev.code) === norm(trigger)) triggerDown = true;
+            if (isActiveFor(ev)) setLookupKeyHeld(true);
+        };
+        const onKeyUp = (ev: KeyboardEvent) => {
+            if (trigger && norm(ev.code) === norm(trigger)) triggerDown = false;
+            if (!isActiveFor(ev)) setLookupKeyHeld(false);
+        };
+        const onBlur = () => {
+            triggerDown = false;
+            setLookupKeyHeld(false);
+        };
+
+        window.addEventListener("keydown", onKeyDown, { capture: true });
+        window.addEventListener("keyup", onKeyUp, { capture: true });
+        window.addEventListener("blur", onBlur);
+        return () => {
+            window.removeEventListener("keydown", onKeyDown, { capture: true });
+            window.removeEventListener("keyup", onKeyUp, { capture: true });
+            window.removeEventListener("blur", onBlur);
+        };
+    }, [isMobile, settings.lookupHotkey]);
+
+    const lookupActive = Boolean(lookupOpen) || lookupKeyHeld;
+
+    const evaluateHoverZones = useCallback((clientX: number, clientY: number, suppressChrome: boolean) => {
         const stage = stageRef.current;
         if (!stage) return;
         const rect = stage.getBoundingClientRect();
-        const relY = event.clientY - rect.top;
-        const relX = event.clientX - rect.left;
-        const nearTop = relY <= CHROME_TOP_ZONE_PX;
-        const nearBottom = relY >= rect.height - CHROME_BOTTOM_ZONE_PX;
+        const relY = clientY - rect.top;
+        const relX = clientX - rect.left;
+        const insideStage = relX >= 0 && relX <= rect.width && relY >= 0 && relY <= rect.height;
+        const nearTop = insideStage && relY <= CHROME_TOP_ZONE_PX;
+        const nearBottom = insideStage && relY >= rect.height - CHROME_BOTTOM_ZONE_PX;
 
         if (nearTop) {
             if (topHideTimerRef.current !== null) {
@@ -376,7 +430,7 @@ export default function EpubReader({
             }, CHROME_HIDE_DELAY_MS);
         }
 
-        if ((isPaged || isVertical) && !nearTop && !nearBottom && !tocOpen && !appearanceOpen && !searchOpen) {
+        if (!suppressChrome && insideStage && (isPaged || isVertical) && !nearTop && !nearBottom && !tocOpen && !appearanceOpen && !searchOpen) {
             const edgePx = Math.min(EDGE_CLICK_MAX_PX, rect.width * EDGE_CLICK_RATIO);
             if (relX <= edgePx) {
                 setEdgeHover((prev) => (prev === "left" ? prev : "left"));
@@ -388,10 +442,36 @@ export default function EpubReader({
         } else if (edgeHover !== null) {
             setEdgeHover(null);
         }
-    }, [isMobile, topHover, bottomHover, isPaged, isVertical, tocOpen, appearanceOpen, searchOpen, edgeHover]);
+    }, [topHover, bottomHover, isPaged, isVertical, tocOpen, appearanceOpen, searchOpen, edgeHover]);
+
+    // When lookup mode ends, immediately restore chrome if pointer is resting in a trigger zone
+    useEffect(() => {
+        if (isMobile || lookupActive || escMenuOpen) return;
+        const pos = lastPointerPosRef.current;
+        if (pos) {
+            evaluateHoverZones(pos.x, pos.y, false);
+        }
+    }, [isMobile, lookupActive, escMenuOpen, evaluateHoverZones]);
+
+    const handleStageMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+        if (isMobile) return;
+        lastPointerPosRef.current = { x: event.clientX, y: event.clientY };
+        const hotkey = String(settings.lookupHotkey || "Shift");
+        const parts = hotkey.split("+").map((p) => p.trim()).filter(Boolean);
+        const modLookup = hotkey !== "__disabled__"
+            && !parts.some((p) => !/^(ctrl|control|alt|shift)$/i.test(p))
+            && event.shiftKey === parts.some((p) => /^shift$/i.test(p))
+            && event.ctrlKey === parts.some((p) => /^(ctrl|control)$/i.test(p))
+            && event.altKey === parts.some((p) => /^alt$/i.test(p));
+        if (modLookup !== lookupKeyHeld && !parts.some((p) => !/^(ctrl|control|alt|shift)$/i.test(p))) {
+            setLookupKeyHeld(modLookup);
+        }
+        evaluateHoverZones(event.clientX, event.clientY, Boolean(lookupOpen) || modLookup || escMenuOpen);
+    }, [isMobile, settings.lookupHotkey, lookupKeyHeld, lookupOpen, escMenuOpen, evaluateHoverZones]);
 
     const handleStageMouseLeave = useCallback(() => {
         if (isMobile) return;
+        lastPointerPosRef.current = null;
         setEdgeHover(null);
         if (topHideTimerRef.current !== null) window.clearTimeout(topHideTimerRef.current);
         if (bottomHideTimerRef.current !== null) window.clearTimeout(bottomHideTimerRef.current);
@@ -405,8 +485,8 @@ export default function EpubReader({
         }, CHROME_HIDE_DELAY_MS);
     }, [isMobile]);
 
-    const topChromeVisible = isMobile || topHover || tocOpen || appearanceOpen || searchOpen;
-    const bottomChromeVisible = isMobile || bottomHover;
+    const topChromeVisible = !lookupActive && !escMenuOpen && (isMobile || topHover || tocOpen || appearanceOpen || searchOpen);
+    const bottomChromeVisible = !lookupActive && !escMenuOpen && (isMobile || bottomHover);
 
     const setSpreadPreference = useCallback((next: boolean) => {
         setSpreadEnabled(next);
@@ -901,7 +981,7 @@ export default function EpubReader({
                 return;
             }
             if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
-            if (tocOpen || appearanceOpen || searchOpen) return;
+            if (tocOpen || appearanceOpen || searchOpen || escMenuOpen) return;
 
             if (event.key === "ArrowLeft") {
                 event.preventDefault();
@@ -923,7 +1003,7 @@ export default function EpubReader({
         };
         window.addEventListener("keydown", onKeyDown, { capture: true });
         return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-    }, [isVertical, isPaged, tocOpen, appearanceOpen, searchOpen, turnPage]);
+    }, [isVertical, isPaged, tocOpen, appearanceOpen, searchOpen, escMenuOpen, turnPage]);
 
     // Internal EPUB link clicks + edge-click page turning (never interferes with text selection or lookup)
     const handleContentClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
@@ -1180,19 +1260,18 @@ export default function EpubReader({
                             {isJapaneseBook ? "JA" : "EN"}
                         </span>
                         {isJapaneseBook ? (
-                            <select
-                                className="epub-orientation-select"
-                                aria-label={t("epub.orientationAuto")}
+                            <EpubGlassSelect
+                                className="epub-orientation-glass-select"
+                                align="right"
+                                ariaLabel={t("epub.orientationAuto")}
                                 value={activeBookOrientationValue}
-                                onChange={(event) => {
-                                    onChangeBookOrientation(event.target.value as EpubOrientationSetting);
-                                    event.currentTarget.blur();
-                                }}
-                            >
-                                <option value="auto">{t("epub.orientationAuto")}</option>
-                                <option value="horizontal">{t("epub.orientationHorizontal")}</option>
-                                <option value="vertical">{t("epub.orientationVertical")}</option>
-                            </select>
+                                onChange={(next) => onChangeBookOrientation(next as EpubOrientationSetting)}
+                                options={[
+                                    { value: "auto", label: t("epub.orientationAuto") },
+                                    { value: "horizontal", label: t("epub.orientationHorizontal") },
+                                    { value: "vertical", label: t("epub.orientationVertical") },
+                                ]}
+                            />
                         ) : !isMobile ? (
                             <span className="epub-orientation-locked" title={t("epub.orientationLockedEn")}>
                                 {t("epub.orientationHorizontal")}
@@ -1478,11 +1557,15 @@ export default function EpubReader({
 
                 {!isMobile && (isPaged || isVertical) && (
                     <>
-                        <div className={`epub-edge-hint epub-edge-hint-left${edgeHover === "left" ? " is-visible" : ""}`} aria-hidden="true">
-                            ‹
+                        <div className={`epub-edge-hint epub-edge-hint-left${edgeHover === "left" && !lookupActive && !escMenuOpen ? " is-visible" : ""}`} aria-hidden="true">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="15 18 9 12 15 6" />
+                            </svg>
                         </div>
-                        <div className={`epub-edge-hint epub-edge-hint-right${edgeHover === "right" ? " is-visible" : ""}`} aria-hidden="true">
-                            ›
+                        <div className={`epub-edge-hint epub-edge-hint-right${edgeHover === "right" && !lookupActive && !escMenuOpen ? " is-visible" : ""}`} aria-hidden="true">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="9 18 15 12 9 6" />
+                            </svg>
                         </div>
                     </>
                 )}

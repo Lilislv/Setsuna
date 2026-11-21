@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { Tab } from "../../utils/constants";
 import { getTranslator, type AppLanguage } from "../../utils/i18n";
 import { IconBookTab, IconClose, IconImport, IconSearch } from "../../components/Icons";
+import EpubGlassSelect, { type EpubGlassOption } from "./EpubGlassSelect";
 
 type LibraryLangFilter = "all" | "ja" | "en";
 type LibrarySort = "recent" | "title" | "progress";
@@ -158,31 +159,30 @@ export default function EpubLibrary({
                         ))}
                     </div>
 
-                    <select
-                        className="epub-library-select"
-                        aria-label={t("epub.allAuthors")}
+                    <EpubGlassSelect
+                        ariaLabel={t("epub.allAuthors")}
                         value={authorFilter}
-                        onChange={(event) => setAuthorFilter(event.target.value)}
-                    >
-                        <option value="all">{t("epub.allAuthors")}</option>
-                        {authors.map((author) => (
-                            <option key={author} value={author}>{author}</option>
-                        ))}
-                        {hasUnknownAuthor && authors.length > 0 && (
-                            <option value={UNKNOWN_AUTHOR_KEY}>{t("epub.unknownAuthor")}</option>
-                        )}
-                    </select>
+                        onChange={(next) => setAuthorFilter(next)}
+                        options={[
+                            { value: "all", label: t("epub.allAuthors") },
+                            ...authors.map((author): EpubGlassOption => ({ value: author, label: author })),
+                            ...(hasUnknownAuthor && authors.length > 0
+                                ? [{ value: UNKNOWN_AUTHOR_KEY, label: t("epub.unknownAuthor") }]
+                                : []),
+                        ]}
+                    />
 
-                    <select
-                        className="epub-library-select"
-                        aria-label={t("epub.sortRecent")}
+                    <EpubGlassSelect
+                        ariaLabel={t("epub.sortRecent")}
+                        align="right"
                         value={sortBy}
-                        onChange={(event) => setSortBy(event.target.value as LibrarySort)}
-                    >
-                        <option value="recent">{t("epub.sortRecent")}</option>
-                        <option value="title">{t("epub.sortTitle")}</option>
-                        <option value="progress">{t("epub.sortProgress")}</option>
-                    </select>
+                        onChange={(next) => setSortBy(next as LibrarySort)}
+                        options={[
+                            { value: "recent", label: t("epub.sortRecent") },
+                            { value: "title", label: t("epub.sortTitle") },
+                            { value: "progress", label: t("epub.sortProgress") },
+                        ]}
+                    />
                 </div>
             </div>
 
