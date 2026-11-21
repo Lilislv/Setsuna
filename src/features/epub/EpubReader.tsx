@@ -1,4 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
+import {
+    memo,
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+    type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
+    type WheelEvent as ReactWheelEvent,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AppSettings } from "../../components/SettingsModal";
 import type { Tab } from "../../utils/constants";
@@ -45,9 +56,69 @@ interface EpubReaderProps {
     onOpenFile: () => void;
 }
 
+type PageRange = { start: number; end: number };
+
 const VIRTUALIZE_THRESHOLD = 160;
 const PROGRESS_THROTTLE_MS = 350;
-const WHEEL_PAGE_COOLDOWN_MS = 180;
+const WHEEL_PAGE_COOLDOWN_MS = 220;
+
+/**
+ * Memoized desktop paragraph block.
+ * React 19 unconditionally reassigns `domElement.innerHTML` whenever
+ * `dangerouslySetInnerHTML` receives a fresh `{ __html }` object, which wipes
+ * active text selections mid-drag and disconnects hover-scanned text nodes.
+ * Memoizing both the component and the `{ __html }` object keeps DOM text
+ * nodes completely untouched across parent re-renders.
+ */
+const EpubHtmlParagraph = memo(function EpubHtmlParagraph({
+    index,
+    id,
+    anchorIds,
+    className,
+    html,
+}: {
+    index: number;
+    id?: string;
+    anchorIds?: string;
+    className: string;
+    html: string;
+}) {
+    const markup = useMemo(() => ({ __html: html }), [html]);
+    return (
+        <div
+            id={id}
+            data-paragraph-index={index}
+            data-anchor-ids={anchorIds}
+            className={className}
+            dangerouslySetInnerHTML={markup}
+        />
+    );
+});
+
+const EpubImageBlock = memo(function EpubImageBlock({
+    index,
+    id,
+    anchorIds,
+    src,
+    alt,
+}: {
+    index: number;
+    id?: string;
+    anchorIds?: string;
+    src: string;
+    alt: string;
+}) {
+    return (
+        <figure
+            id={id}
+            data-paragraph-index={index}
+            data-anchor-ids={anchorIds}
+            className="epub-image-block"
+        >
+            <img src={src} alt={alt} loading="lazy" />
+        </figure>
+    );
+});
 
 export default function EpubReader({
     tab,
@@ -71,11 +142,10 @@ export default function EpubReader({
     const language = settings.appLanguage || "ru";
     const t = getTranslator(language);
     const surfaceRef = useRef<HTMLDivElement>(null);
+    const measurerRef = useRef<HTMLDivElement>(null);
     const lastProgressSentRef = useRef(0);
     const lastWheelPageRef = useRef(0);
     const restoringRef = useRef(false);
-    const pageStopsRef = useRef<number[]>([0]);
-    const currentPageIndexRef = useRef(0);
     const callbacksRef = useRef({
         onFragmentHandled,
         onSelectChapter,
@@ -92,14 +162,12 @@ export default function EpubReader({
         onReadingActivity,
         onLookupToken,
     };
-    const [tocOpen, setTocOpen] = useState(false);
-    const [pageInfo, setPageInfo] = useState({ current: 1, total: 1 });
-    const [viewportHeight, setViewportHeight] = useState(640);
-    const [pagedClipBottom, setPagedClipBottom] = useState(0);
 
-    const updatePageInfo = useCallback((current: number, total: number) => {
-        setPageInfo((prev) => (prev.current === current && prev.total === total ? prev : { current, total }));
-    }, []);
+    const [tocOpen, setTocOpen] = useState(false);
+    const [pageRanges, setPageRanges] = useState<PageRange[]>([{ start: 0, end: 0 }]);
+    const [currentPageIdx, setCurrentPageIdx] = useState(0);
+    const [verticalPageInfo, setVerticalPageInfo] = useState({ current: 1, total: 1 });
+    const [surfaceSize, setSurfaceSize] = useState({ width: 800, height: 600 });
 
     const bookLanguage = tab.epub?.language || bookMeta?.language || "en";
     const bookDefaultVertical = tab.epub?.defaultVertical ?? bookMeta?.defaultVertical ?? false;
@@ -113,6 +181,7 @@ export default function EpubReader({
     const isVertical = resolvedOrientation === "vertical";
     const readingMode = settings.epubReadingMode || "paged";
     const isPaged = readingMode === "paged";
+    const isHorizontalPaged = !isVertical && isPaged;
     const epubTheme = settings.epubTheme || "app";
     const showImages = settings.epubShowImages ?? true;
     const chapters = useMemo(() => bookMeta?.chapters || [], [bookMeta?.chapters]);
@@ -120,55 +189,119 @@ export default function EpubReader({
     const chapterCount = chapters.length || tab.epub?.chapterCount || 1;
     const paragraphs = useMemo(() => chapter?.paragraphs || [], [chapter?.paragraphs]);
 
+    const effectivePadding = isMobile
+        ? Math.min(20, settings.epubPagePadding ?? 20)
+        : (settings.epubPagePadding ?? 34);
+    const paragraphGap = settings.epubParagraphSpacing ?? 22;
+
     const useVirtualizedScroll = !isVertical && !isPaged && paragraphs.length > VIRTUALIZE_THRESHOLD;
 
     const rowVirtualizer = useVirtualizer({
         count: useVirtualizedScroll ? paragraphs.length : 0,
         getScrollElement: () => surfaceRef.current,
-        estimateSize: () => Math.max(48, (settings.epubFontSize ?? 26) * (settings.epubLineHeight ?? 2.05) + (settings.epubParagraphSpacing ?? 22)),
+        estimateSize: () => Math.max(48, (settings.epubFontSize ?? 26) * (settings.epubLineHeight ?? 2.05) + paragraphGap),
         overscan: 10,
     });
 
-    const effectivePadding = isMobile
-        ? Math.min(20, settings.epubPagePadding ?? 20)
-        : (settings.epubPagePadding ?? 34);
+    // Track surface dimensions via ResizeObserver
+    useEffect(() => {
+        const el = surfaceRef.current;
+        if (!el) return;
+        const measure = () => {
+            const width = Math.max(240, Math.round(el.clientWidth));
+            const height = Math.max(200, Math.round(el.clientHeight));
+            setSurfaceSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+        };
+        measure();
+        const observer = new ResizeObserver(measure);
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [chapter?.index, loading, isVertical, isPaged]);
 
-    const computeHorizontalPageStops = useCallback((el: HTMLDivElement): number[] => {
-        const rawFontSize = Number(settings.epubFontSize);
-        const rawLineHeight = Number(settings.epubLineHeight);
-        const fontSize = Number.isFinite(rawFontSize) && rawFontSize > 0 ? rawFontSize : 26;
-        const lineHeight = Number.isFinite(rawLineHeight) && rawLineHeight > 0 ? rawLineHeight : 2.05;
-        const usableHeight = Math.max(120, el.clientHeight - effectivePadding * 2);
-        const linePx = Math.max(20, Math.round(fontSize * lineHeight));
-        const lineStep = Math.max(linePx, Math.floor(usableHeight / linePx) * linePx);
-        const nodes = el.querySelectorAll<HTMLElement>("[data-paragraph-index]");
-        if (nodes.length === 0) return [0];
+    // Measure discrete horizontal pages in the hidden clone so visible DOM never clips or peeks
+    useLayoutEffect(() => {
+        if (!isHorizontalPaged || !chapter || loading) return;
+        if (paragraphs.length === 0) {
+            setPageRanges([{ start: 0, end: 0 }]);
+            setCurrentPageIdx(0);
+            return;
+        }
+        const measurer = measurerRef.current;
+        if (!measurer) {
+            setPageRanges([{ start: 0, end: paragraphs.length }]);
+            return;
+        }
 
-        const surfaceTop = el.getBoundingClientRect().top;
-        const baseScrollTop = el.scrollTop;
-        const stops: number[] = [0];
-        let pageStart = 0;
-
-        nodes.forEach((node) => {
-            if (stops.length >= 2000) return;
-            const box = node.getBoundingClientRect();
-            const top = Math.max(0, Math.round(box.top - surfaceTop + baseScrollTop - effectivePadding));
-            const bottom = Math.round(box.bottom - surfaceTop + baseScrollTop - effectivePadding);
-            if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom - pageStart <= usableHeight) {
-                return;
-            }
-            if (top > pageStart) {
-                pageStart = top;
-                stops.push(pageStart);
-            }
-            while (bottom - pageStart > usableHeight && stops.length < 2000) {
-                pageStart += lineStep;
-                stops.push(pageStart);
+        const usableHeight = Math.max(160, surfaceSize.height - effectivePadding * 2 - 12);
+        const childNodes = measurer.querySelectorAll<HTMLElement>("[data-paragraph-index]");
+        const heights = new Map<number, number>();
+        childNodes.forEach((node) => {
+            const idx = Number(node.dataset.paragraphIndex);
+            if (Number.isInteger(idx)) {
+                heights.set(idx, Math.ceil(node.getBoundingClientRect().height));
             }
         });
 
-        return stops;
-    }, [effectivePadding, settings.epubFontSize, settings.epubLineHeight]);
+        const nextRanges: PageRange[] = [];
+        let pageStart = 0;
+        let usedHeight = 0;
+
+        for (let i = 0; i < paragraphs.length; i += 1) {
+            const p = paragraphs[i];
+            if (p.kind === "image" && (!showImages || !p.imageSrc)) continue;
+            const blockH = heights.get(i) ?? Math.max(40, (settings.epubFontSize ?? 26) * (settings.epubLineHeight ?? 2.05));
+            const needed = usedHeight === 0 ? blockH : blockH + paragraphGap;
+
+            if (usedHeight > 0 && usedHeight + needed > usableHeight) {
+                nextRanges.push({ start: pageStart, end: i });
+                pageStart = i;
+                usedHeight = blockH;
+            } else {
+                usedHeight += needed;
+            }
+        }
+        if (pageStart < paragraphs.length) {
+            nextRanges.push({ start: pageStart, end: paragraphs.length });
+        }
+        if (nextRanges.length === 0) {
+            nextRanges.push({ start: 0, end: paragraphs.length });
+        }
+
+        setPageRanges(nextRanges);
+    }, [
+        isHorizontalPaged,
+        chapter,
+        loading,
+        paragraphs,
+        surfaceSize.width,
+        surfaceSize.height,
+        effectivePadding,
+        paragraphGap,
+        showImages,
+        settings.epubFontSize,
+        settings.epubFontFamily,
+        settings.fontFamily,
+        settings.epubLineHeight,
+        settings.epubMaxWidth,
+        settings.epubImageMaxWidth,
+    ]);
+
+    const activePageIdx = Math.min(Math.max(0, pageRanges.length - 1), Math.max(0, currentPageIdx));
+    const activePageRange = pageRanges[activePageIdx] || { start: 0, end: paragraphs.length };
+    const visibleParagraphs = useMemo(() => {
+        if (!isHorizontalPaged) return paragraphs;
+        return paragraphs.slice(activePageRange.start, activePageRange.end);
+    }, [isHorizontalPaged, paragraphs, activePageRange.start, activePageRange.end]);
+
+    // Count paragraphs reached on the current horizontal page
+    useEffect(() => {
+        if (!isHorizontalPaged || !chapter || loading || paragraphs.length === 0) return;
+        const lastVisibleIndex = Math.min(paragraphs.length - 1, Math.max(0, activePageRange.end - 1));
+        callbacksRef.current.onCountParagraphs(chapter.index, paragraphs, lastVisibleIndex);
+        if (surfaceRef.current) {
+            surfaceRef.current.scrollTop = 0;
+        }
+    }, [isHorizontalPaged, chapter, loading, paragraphs, activePageRange.start, activePageRange.end]);
 
     const getScrollMetrics = useCallback((el: HTMLDivElement) => {
         if (isVertical) {
@@ -180,20 +313,13 @@ export default function EpubReader({
             const currentPage = Math.min(totalPages, Math.max(1, Math.round(current / step) + 1));
             return { fraction, currentPage, totalPages, max, step };
         }
-        if (isPaged) {
-            const stops = pageStopsRef.current;
-            const totalPages = Math.max(1, stops.length);
-            const idx = Math.min(totalPages - 1, Math.max(0, currentPageIndexRef.current));
-            const fraction = totalPages <= 1 ? 1 : clamp01(idx / (totalPages - 1));
-            return { fraction, currentPage: idx + 1, totalPages, max: Math.max(0, totalPages - 1), step: 1 };
-        }
         const max = Math.max(0, el.scrollHeight - el.clientHeight);
         const current = Math.max(0, el.scrollTop);
         const fraction = max > 0 ? clamp01(current / max) : 1;
         return { fraction, currentPage: 1, totalPages: 1, max, step: Math.max(1, el.clientHeight) };
-    }, [isVertical, isPaged]);
+    }, [isVertical]);
 
-    const countVisibleParagraphs = useCallback((el: HTMLDivElement) => {
+    const countVisibleScrollParagraphs = useCallback((el: HTMLDivElement) => {
         if (!chapter || paragraphs.length === 0) return;
         const rect = el.getBoundingClientRect();
         const nodes = el.querySelectorAll<HTMLElement>("[data-paragraph-index]");
@@ -214,104 +340,47 @@ export default function EpubReader({
         }
     }, [chapter, paragraphs, isVertical]);
 
-    const applyHorizontalPage = useCallback((el: HTMLDivElement, pageIdx: number, notify: boolean) => {
-        const stops = pageStopsRef.current;
-        const total = Math.max(1, stops.length);
-        const clamped = Math.min(total - 1, Math.max(0, pageIdx));
-        const currentStop = stops[clamped] ?? 0;
-        const nextStop = clamped + 1 < stops.length ? stops[clamped + 1] : undefined;
-        currentPageIndexRef.current = clamped;
-        el.scrollTop = currentStop;
-        const nextClip = nextStop !== undefined
-            ? Math.max(effectivePadding, el.clientHeight - effectivePadding - Math.max(80, nextStop - currentStop))
-            : effectivePadding;
-        setPagedClipBottom((prev) => (prev === nextClip ? prev : nextClip));
-        updatePageInfo(clamped + 1, total);
-        countVisibleParagraphs(el);
-        if (notify && chapter) {
-            const fraction = total <= 1 ? 1 : clamp01(clamped / (total - 1));
-            const bookProgress = computeBookProgress(chapter.index, chapterCount, fraction);
-            callbacksRef.current.onProgressChange(chapter.index, fraction, bookProgress);
-        }
-    }, [chapter, chapterCount, effectivePadding, countVisibleParagraphs, updatePageInfo]);
-
-    useEffect(() => {
-        const el = surfaceRef.current;
-        if (!el) return;
-        const measure = () => {
-            const nextH = Math.max(240, el.clientHeight);
-            setViewportHeight((prev) => (prev === nextH ? prev : nextH));
-            if (!isVertical && isPaged && chapter && !loading) {
-                const prevStops = pageStopsRef.current;
-                const prevFraction = prevStops.length <= 1
-                    ? 0
-                    : clamp01(currentPageIndexRef.current / (prevStops.length - 1));
-                const nextStops = computeHorizontalPageStops(el);
-                pageStopsRef.current = nextStops;
-                const nextIdx = nextStops.length <= 1
-                    ? 0
-                    : Math.round(prevFraction * (nextStops.length - 1));
-                applyHorizontalPage(el, nextIdx, false);
-            }
-        };
-        measure();
-        const observer = new ResizeObserver(measure);
-        observer.observe(el);
-        return () => observer.disconnect();
-    }, [
-        isPaged,
-        isVertical,
-        chapter,
-        loading,
-        settings.epubFontSize,
-        settings.epubLineHeight,
-        settings.epubParagraphSpacing,
-        settings.epubMaxWidth,
-        effectivePadding,
-        computeHorizontalPageStops,
-        applyHorizontalPage,
-    ]);
-
     // Restore chapter offset or jump to anchor fragment when chapter finishes loading
-    useLayoutEffect(() => {
-        const el = surfaceRef.current;
-        if (!el || !chapter || loading) return;
+    const restoredChapterKeyRef = useRef<string>("");
+    useEffect(() => {
+        if (!chapter || loading) return;
 
-        restoringRef.current = true;
-        const timer = window.setTimeout(() => {
-            if (!isVertical && isPaged) {
-                const stops = computeHorizontalPageStops(el);
-                pageStopsRef.current = stops;
-                if (pendingFragment) {
-                    const safeId = pendingFragment.replace(/["\\]/g, "\\$&");
-                    const target = el.querySelector<HTMLElement>(`[id="${safeId}"], [data-anchor-ids~="${safeId}"]`);
-                    let targetPage = 0;
-                    if (target) {
-                        const targetTop = Math.max(0, target.offsetTop - effectivePadding);
-                        for (let i = 0; i < stops.length; i += 1) {
-                            if (stops[i] <= targetTop + 8) targetPage = i;
-                        }
-                    }
-                    applyHorizontalPage(el, targetPage, false);
-                    onFragmentHandled();
-                } else {
-                    const savedOffset = chapter.index === (tab.epub?.chapterIndex ?? 0)
-                        ? clamp01(tab.epub?.chapterOffset || 0)
-                        : 0;
-                    const targetPage = stops.length <= 1 ? 0 : Math.round(savedOffset * (stops.length - 1));
-                    applyHorizontalPage(el, targetPage, false);
+        if (isHorizontalPaged) {
+            if (pendingFragment) {
+                const targetParagraphIdx = paragraphs.findIndex(
+                    (p) => p.id === pendingFragment || p.anchorIds.includes(pendingFragment),
+                );
+                if (targetParagraphIdx >= 0) {
+                    const foundPage = pageRanges.findIndex(
+                        (r) => targetParagraphIdx >= r.start && targetParagraphIdx < r.end,
+                    );
+                    if (foundPage >= 0) setCurrentPageIdx(foundPage);
                 }
-                restoringRef.current = false;
+                callbacksRef.current.onFragmentHandled();
                 return;
             }
+            const chapterKey = `${tab.id}:${chapter.index}:${pageRanges.length}`;
+            if (restoredChapterKeyRef.current === chapterKey) return;
+            restoredChapterKeyRef.current = chapterKey;
+            const savedOffset = chapter.index === (tab.epub?.chapterIndex ?? 0)
+                ? clamp01(tab.epub?.chapterOffset || 0)
+                : 0;
+            const targetPage = pageRanges.length <= 1 ? 0 : Math.round(savedOffset * (pageRanges.length - 1));
+            setCurrentPageIdx(targetPage);
+            return;
+        }
 
+        const el = surfaceRef.current;
+        if (!el) return;
+        restoringRef.current = true;
+        const timer = window.setTimeout(() => {
             if (pendingFragment) {
                 const safeId = pendingFragment.replace(/["\\]/g, "\\$&");
                 const target = el.querySelector<HTMLElement>(`[id="${safeId}"], [data-anchor-ids~="${safeId}"]`);
                 if (target) {
                     target.scrollIntoView({ block: "start", inline: "nearest" });
                 }
-                onFragmentHandled();
+                callbacksRef.current.onFragmentHandled();
             } else {
                 const savedOffset = chapter.index === (tab.epub?.chapterIndex ?? 0)
                     ? clamp01(tab.epub?.chapterOffset || 0)
@@ -325,8 +394,12 @@ export default function EpubReader({
                 }
             }
             const metrics = getScrollMetrics(el);
-            updatePageInfo(metrics.currentPage, metrics.totalPages);
-            countVisibleParagraphs(el);
+            setVerticalPageInfo((prev) =>
+                prev.current === metrics.currentPage && prev.total === metrics.totalPages
+                    ? prev
+                    : { current: metrics.currentPage, total: metrics.totalPages },
+            );
+            countVisibleScrollParagraphs(el);
             restoringRef.current = false;
         }, 40);
 
@@ -334,18 +407,34 @@ export default function EpubReader({
             window.clearTimeout(timer);
             restoringRef.current = false;
         };
-    }, [chapter?.index, chapter?.href, loading, isVertical, isPaged, pendingFragment]);
+    }, [
+        tab.id,
+        chapter?.index,
+        chapter?.href,
+        loading,
+        isVertical,
+        isHorizontalPaged,
+        pendingFragment,
+        pageRanges,
+        paragraphs,
+        getScrollMetrics,
+        countVisibleScrollParagraphs,
+    ]);
 
     const handleScroll = useCallback(() => {
+        if (isHorizontalPaged) return;
         const el = surfaceRef.current;
         if (!el || !chapter) return;
-        if (!isVertical && isPaged) return;
         const metrics = getScrollMetrics(el);
-        updatePageInfo(metrics.currentPage, metrics.totalPages);
+        setVerticalPageInfo((prev) =>
+            prev.current === metrics.currentPage && prev.total === metrics.totalPages
+                ? prev
+                : { current: metrics.currentPage, total: metrics.totalPages },
+        );
         if (restoringRef.current) return;
 
         callbacksRef.current.onReadingActivity();
-        countVisibleParagraphs(el);
+        countVisibleScrollParagraphs(el);
 
         const now = Date.now();
         if (now - lastProgressSentRef.current < PROGRESS_THROTTLE_MS) return;
@@ -353,45 +442,55 @@ export default function EpubReader({
 
         const bookProgress = computeBookProgress(chapter.index, chapterCount, metrics.fraction);
         callbacksRef.current.onProgressChange(chapter.index, metrics.fraction, bookProgress);
-    }, [chapter, chapterCount, isVertical, isPaged, getScrollMetrics, countVisibleParagraphs, updatePageInfo]);
+    }, [isHorizontalPaged, chapter, chapterCount, getScrollMetrics, countVisibleScrollParagraphs]);
+
+    const goToHorizontalPage = useCallback((nextIdx: number) => {
+        if (!chapter) return;
+        const total = Math.max(1, pageRanges.length);
+        const clamped = Math.min(total - 1, Math.max(0, nextIdx));
+        setCurrentPageIdx(clamped);
+        const fraction = total <= 1 ? 1 : clamp01(clamped / (total - 1));
+        const bookProgress = computeBookProgress(chapter.index, chapterCount, fraction);
+        callbacksRef.current.onProgressChange(chapter.index, fraction, bookProgress);
+    }, [chapter, chapterCount, pageRanges.length]);
 
     const turnPage = useCallback((direction: 1 | -1) => {
-        const el = surfaceRef.current;
-        if (!el || !chapter) return;
-        onReadingActivity();
+        if (!chapter) return;
+        callbacksRef.current.onReadingActivity();
 
-        if (!isVertical && isPaged) {
-            const stops = pageStopsRef.current;
-            const nextIdx = currentPageIndexRef.current + direction;
-            if (nextIdx >= stops.length) {
+        if (isHorizontalPaged) {
+            const nextIdx = activePageIdx + direction;
+            if (nextIdx >= pageRanges.length) {
                 if (chapter.index + 1 < chapterCount) {
-                    onSelectChapter(chapter.index + 1);
+                    callbacksRef.current.onSelectChapter(chapter.index + 1);
                 }
                 return;
             }
             if (nextIdx < 0) {
                 if (chapter.index > 0) {
-                    onSelectChapter(chapter.index - 1);
+                    callbacksRef.current.onSelectChapter(chapter.index - 1);
                 }
                 return;
             }
-            applyHorizontalPage(el, nextIdx, true);
+            goToHorizontalPage(nextIdx);
             return;
         }
 
+        const el = surfaceRef.current;
+        if (!el) return;
         const metrics = getScrollMetrics(el);
         const atEnd = direction === 1 && metrics.fraction >= 0.99;
         const atStart = direction === -1 && metrics.fraction <= 0.01;
 
         if (atEnd) {
             if (chapter.index + 1 < chapterCount) {
-                onSelectChapter(chapter.index + 1);
+                callbacksRef.current.onSelectChapter(chapter.index + 1);
             }
             return;
         }
         if (atStart) {
             if (chapter.index > 0) {
-                onSelectChapter(chapter.index - 1);
+                callbacksRef.current.onSelectChapter(chapter.index - 1);
             }
             return;
         }
@@ -403,7 +502,7 @@ export default function EpubReader({
             const delta = Math.max(120, el.clientHeight * 0.85) * direction;
             el.scrollTo({ top: el.scrollTop + delta, behavior: "smooth" });
         }
-    }, [chapter, chapterCount, getScrollMetrics, isVertical, isPaged, onReadingActivity, onSelectChapter, applyHorizontalPage]);
+    }, [chapter, chapterCount, isHorizontalPaged, activePageIdx, pageRanges.length, goToHorizontalPage, getScrollMetrics, isVertical]);
 
     const handleWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
         const el = surfaceRef.current;
@@ -413,8 +512,16 @@ export default function EpubReader({
                 event.preventDefault();
                 el.scrollLeft -= event.deltaY;
             }
-        } else if (isPaged) {
-            if (Math.abs(event.deltaY) >= 4) {
+            return;
+        }
+        if (isHorizontalPaged) {
+            // If a single tall paragraph overflows vertically on this page, let native scroll reach its edge first
+            const canScrollDown = el.scrollTop + el.clientHeight < el.scrollHeight - 2;
+            const canScrollUp = el.scrollTop > 2;
+            if ((event.deltaY > 0 && canScrollDown) || (event.deltaY < 0 && canScrollUp)) {
+                return;
+            }
+            if (Math.abs(event.deltaY) >= 8) {
                 event.preventDefault();
                 const now = Date.now();
                 if (now - lastWheelPageRef.current < WHEEL_PAGE_COOLDOWN_MS) return;
@@ -422,7 +529,7 @@ export default function EpubReader({
                 turnPage(event.deltaY > 0 ? 1 : -1);
             }
         }
-    }, [isVertical, isPaged, turnPage]);
+    }, [isVertical, isHorizontalPaged, turnPage]);
 
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
@@ -438,7 +545,6 @@ export default function EpubReader({
 
             if (event.key === "ArrowLeft") {
                 event.preventDefault();
-                // Vertical-rl reads right-to-left: ArrowLeft advances forward
                 turnPage(isVertical ? 1 : -1);
             } else if (event.key === "ArrowRight") {
                 event.preventDefault();
@@ -468,28 +574,27 @@ export default function EpubReader({
         const rawHref = link.getAttribute("data-epub-href") || "";
         const resolved = resolveEpubHrefTarget(rawHref, chapters);
         if (resolved) {
-            onSelectChapter(resolved.chapterIndex, resolved.fragment);
+            callbacksRef.current.onSelectChapter(resolved.chapterIndex, resolved.fragment);
         }
-    }, [chapters, onSelectChapter]);
+    }, [chapters]);
 
     const handleMobileTokenTap = useCallback(
         (paragraphIndex: number) =>
             (token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => {
-                onReadingActivity();
+                callbacksRef.current.onReadingActivity();
                 const el = surfaceRef.current?.querySelector<HTMLElement>(
                     `[data-paragraph-index="${paragraphIndex}"]`,
                 );
                 if (el) {
-                    // Keep the tapped line/column visible above the 58vh mobile lookup sheet
                     el.scrollIntoView({
                         block: isVertical ? "nearest" : "start",
                         inline: isVertical ? "center" : "nearest",
                         behavior: "smooth",
                     });
                 }
-                return onLookupToken?.(token, sentence, cursor, boundaries, lemma);
+                return callbacksRef.current.onLookupToken?.(token, sentence, cursor, boundaries, lemma);
             },
-        [isVertical, onLookupToken, onReadingActivity],
+        [isVertical],
     );
 
     const surfaceStyle = useMemo<CSSProperties>(() => {
@@ -497,30 +602,27 @@ export default function EpubReader({
             "--epub-font-size": `${settings.epubFontSize ?? 26}px`,
             "--epub-font-family": settings.epubFontFamily || settings.fontFamily || "var(--txt-font-family)",
             "--epub-line-height": settings.epubLineHeight ?? 2.05,
-            "--epub-paragraph-gap": `${settings.epubParagraphSpacing ?? 22}px`,
+            "--epub-paragraph-gap": `${paragraphGap}px`,
             "--epub-page-padding": `${effectivePadding}px`,
             "--epub-max-width": `${settings.epubMaxWidth ?? 880}px`,
             "--epub-image-max-width": `${settings.epubImageMaxWidth ?? 720}px`,
-            "--epub-paged-tail": `${Math.max(240, viewportHeight)}px`,
         };
-        if (!isVertical && isPaged && pagedClipBottom > 0) {
-            style.clipPath = `inset(0 0 ${pagedClipBottom}px 0)`;
-        }
         return style as CSSProperties;
     }, [
         settings.epubFontSize,
         settings.epubFontFamily,
         settings.fontFamily,
         settings.epubLineHeight,
-        settings.epubParagraphSpacing,
+        paragraphGap,
         effectivePadding,
         settings.epubMaxWidth,
         settings.epubImageMaxWidth,
-        viewportHeight,
-        isVertical,
-        isPaged,
-        pagedClipBottom,
     ]);
+
+    const measurerWidth = Math.min(
+        Math.max(240, surfaceSize.width - effectivePadding * 2),
+        settings.epubMaxWidth ?? 880,
+    );
 
     const renderParagraph = useCallback((p: EpubParagraph) => {
         if (p.kind === "separator") {
@@ -530,15 +632,14 @@ export default function EpubReader({
         if (p.kind === "image") {
             if (!showImages || !p.imageSrc) return null;
             return (
-                <figure
+                <EpubImageBlock
                     key={p.index}
+                    index={p.index}
                     id={p.id || undefined}
-                    data-paragraph-index={p.index}
-                    data-anchor-ids={p.anchorIds.join(" ") || undefined}
-                    className="epub-image-block"
-                >
-                    <img src={p.imageSrc} alt={p.imageAlt || ""} loading="lazy" />
-                </figure>
+                    anchorIds={p.anchorIds.join(" ") || undefined}
+                    src={p.imageSrc}
+                    alt={p.imageAlt || ""}
+                />
             );
         }
 
@@ -563,16 +664,14 @@ export default function EpubReader({
             );
         }
 
-        // Desktop: render sanitized allow-list HTML directly inside `.text-line`
-        // so hoverScan.ts handles Shift+hover, ruby skipping, Selection highlight, and Anki sentence extraction.
         return (
-            <div
+            <EpubHtmlParagraph
                 key={p.index}
+                index={p.index}
                 id={p.id || undefined}
-                data-paragraph-index={p.index}
-                data-anchor-ids={p.anchorIds.join(" ") || undefined}
+                anchorIds={p.anchorIds.join(" ") || undefined}
                 className={blockClass}
-                dangerouslySetInnerHTML={{ __html: p.html }}
+                html={p.html}
             />
         );
     }, [showImages, isMobile, onLookupToken, settings.furiganaMode, handleMobileTokenTap]);
@@ -580,6 +679,9 @@ export default function EpubReader({
     const currentProgressPct = Math.round(clamp01(tab.epub?.progress || 0) * 100);
     const activeBookOrientationValue: EpubOrientationSetting =
         tab.epub?.orientation || settings.epubTextOrientation || "auto";
+    const displayedPageInfo = isHorizontalPaged
+        ? { current: activePageIdx + 1, total: Math.max(1, pageRanges.length) }
+        : verticalPageInfo;
 
     return (
         <div className="epub-reader-shell">
@@ -634,6 +736,40 @@ export default function EpubReader({
             </div>
 
             <div className="epub-reader-stage">
+                {isHorizontalPaged && chapter && !loading && (
+                    <div
+                        ref={measurerRef}
+                        aria-hidden="true"
+                        className="epub-page-measurer"
+                        style={{
+                            ...surfaceStyle,
+                            width: `${measurerWidth}px`,
+                        }}
+                    >
+                        {paragraphs.map((p) => {
+                            if (p.kind === "separator") {
+                                return <hr key={p.index} data-paragraph-index={p.index} className="epub-separator" />;
+                            }
+                            if (p.kind === "image") {
+                                if (!showImages || !p.imageSrc) return null;
+                                return (
+                                    <figure key={p.index} data-paragraph-index={p.index} className="epub-image-block">
+                                        <img src={p.imageSrc} alt="" />
+                                    </figure>
+                                );
+                            }
+                            return (
+                                <EpubHtmlParagraph
+                                    key={p.index}
+                                    index={p.index}
+                                    className={`epub-block epub-block-${p.kind}`}
+                                    html={p.html}
+                                />
+                            );
+                        })}
+                    </div>
+                )}
+
                 {error ? (
                     <div className="epub-status-overlay">
                         <strong>{t("epub.loadError", { error })}</strong>
@@ -688,7 +824,7 @@ export default function EpubReader({
                             </div>
                         ) : (
                             <div className="epub-content-flow">
-                                {paragraphs.map((p) => renderParagraph(p))}
+                                {visibleParagraphs.map((p) => renderParagraph(p))}
                             </div>
                         )}
                     </div>
@@ -716,7 +852,7 @@ export default function EpubReader({
                                         className={`epub-toc-item${item.index === chapterIndex ? " is-active" : ""}`}
                                         onClick={() => {
                                             setTocOpen(false);
-                                            onSelectChapter(item.index);
+                                            callbacksRef.current.onSelectChapter(item.index);
                                         }}
                                     >
                                         <span className="epub-toc-num">{item.index + 1}.</span>
@@ -736,7 +872,7 @@ export default function EpubReader({
                         className="epub-icon-btn"
                         disabled={chapterIndex <= 0}
                         title={t("epub.prevChapter")}
-                        onClick={() => onSelectChapter(Math.max(0, chapterIndex - 1))}
+                        onClick={() => callbacksRef.current.onSelectChapter(Math.max(0, chapterIndex - 1))}
                     >
                         «
                     </button>
@@ -754,8 +890,8 @@ export default function EpubReader({
 
                 <div className="epub-footer-center">
                     <span>{t("epub.chapterOf", { current: chapterIndex + 1, total: chapterCount })}</span>
-                    {(isPaged || isVertical) && pageInfo.total > 1 && (
-                        <span>· {t("epub.pageOf", { current: pageInfo.current, total: pageInfo.total })}</span>
+                    {(isPaged || isVertical) && displayedPageInfo.total > 1 && (
+                        <span>· {t("epub.pageOf", { current: displayedPageInfo.current, total: displayedPageInfo.total })}</span>
                     )}
                     <span>· {t("epub.progress", { percent: currentProgressPct })}</span>
                 </div>
@@ -776,7 +912,7 @@ export default function EpubReader({
                         className="epub-icon-btn"
                         disabled={chapterIndex + 1 >= chapterCount}
                         title={t("epub.nextChapter")}
-                        onClick={() => onSelectChapter(Math.min(chapterCount - 1, chapterIndex + 1))}
+                        onClick={() => callbacksRef.current.onSelectChapter(Math.min(chapterCount - 1, chapterIndex + 1))}
                     >
                         »
                     </button>

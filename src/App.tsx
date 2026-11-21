@@ -666,6 +666,7 @@ export default function App() {
             if (result.missing.length > 0) return result.missing;
             setTabs((prev) => prev.map((tab) => {
                 if (tab.id !== activeTabId || tab.lines !== activeTabLines) return tab;
+                if (tab.mode && tab.mode !== "text") return tab;
                 // Tabs from builds that trimmed history keep their full character
                 // count but only part of the text; extrapolate words/sentences
                 // from the surviving lines instead of collapsing them.
