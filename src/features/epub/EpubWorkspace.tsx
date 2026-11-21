@@ -38,7 +38,6 @@ interface EpubWorkspaceProps {
     onCloseLookup?: () => void;
     escMenuBlocked?: boolean;
     onHome: () => void;
-    onOpenTextHooker?: () => void;
     onSettings: () => void;
     onOpenFile: () => void;
     onSelectBook: (tabId: number) => void;
@@ -51,12 +50,6 @@ interface EpubWorkspaceProps {
     onLookupToken?: LookupTokenHandler;
 }
 
-const IconTextHookerTile = () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M4 6h16M4 12h16M4 18h10" />
-    </svg>
-);
-
 export default function EpubWorkspace({
     books,
     activeBookTab,
@@ -67,7 +60,6 @@ export default function EpubWorkspace({
     onCloseLookup,
     escMenuBlocked = false,
     onHome,
-    onOpenTextHooker,
     onSettings,
     onOpenFile,
     onSelectBook,
@@ -466,28 +458,13 @@ export default function EpubWorkspace({
                                     <small>{t("epub.title")}</small>
                                 </span>
                             </button>
-
-                            {onOpenTextHooker && (
-                                <button
-                                    type="button"
-                                    className="app-menu-tile"
-                                    style={{ ["--i" as string]: 3 }}
-                                    onClick={() => runEscMenuAction(onOpenTextHooker)}
-                                >
-                                    <span className="app-menu-tile-icon"><IconTextHookerTile /></span>
-                                    <span className="app-menu-tile-text">
-                                        <strong>TextHooker</strong>
-                                        <small>{isEn ? "Switch mode" : "Переключить режим"}</small>
-                                    </span>
-                                </button>
-                            )}
                         </div>
                     </section>
                 </div>
 
                 <footer className="app-menu-footer">
                     <div className="app-menu-footer-actions">
-                        <button type="button" onClick={() => runEscMenuAction(onHome)}>
+                        <button type="button" className="is-home" onClick={() => runEscMenuAction(onHome)}>
                             <IconHome /> {isEn ? "Home screen" : "Главный экран"}
                         </button>
                     </div>

@@ -381,6 +381,25 @@
 }
 
 .app-menu-footer-actions button:hover { background: var(--menu-raised); color: var(--text-main); }
+.app-menu-footer-actions button.is-home {
+    padding: 0 13px;
+    border: 1px solid color-mix(in srgb, var(--accent-blue) 38%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    color: var(--accent-blue);
+    font-weight: 600;
+    transition:
+        background-color 160ms ease,
+        border-color 160ms ease,
+        color 160ms ease,
+        scale var(--dur-press, 140ms) var(--ease-spring, ease);
+}
+.app-menu-footer-actions button.is-home:hover {
+    background: color-mix(in srgb, var(--accent-blue) 24%, transparent);
+    border-color: color-mix(in srgb, var(--accent-blue) 58%, transparent);
+    color: var(--text-main);
+}
+.app-menu-footer-actions button.is-home:active { scale: 0.96; }
 .app-menu-footer-actions button.is-danger { color: #e05a5a; }
 .app-menu-footer-actions button.is-danger:hover { background: rgba(224, 90, 90, 0.12); }
 

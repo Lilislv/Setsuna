@@ -3634,7 +3634,6 @@ export default function App() {
                         onCloseLookup={closeLookupStack}
                         escMenuBlocked={isSettingsOpen || Boolean(updateDialog) || Boolean(confirmDialog)}
                         onHome={() => setActiveWorkspace("hub")}
-                        onOpenTextHooker={() => setActiveWorkspace("texthooker")}
                         onSettings={() => isMobileLayout ? openMobileSettingsPanel("reading") : openSettingsPanel("epub-reader")}
                         onOpenFile={openEpubFilePicker}
                         onSelectBook={(tabId) => {
