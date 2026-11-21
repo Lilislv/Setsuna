@@ -4,7 +4,7 @@ import type { Tab } from "../../utils/constants";
 import { getTranslator } from "../../utils/i18n";
 import WorkspaceShell from "../../components/WorkspaceShell";
 import StatsPanel from "../../components/StatsPanel";
-import { IconBookTab } from "../../components/Icons";
+import { IconBookTab, IconHome, IconImport, IconSettings } from "../../components/Icons";
 import EpubLibrary from "./EpubLibrary";
 import EpubReader from "./EpubReader";
 import { loadEpubChapter, openEpubBook } from "./epubApi";
@@ -33,6 +33,7 @@ interface EpubWorkspaceProps {
     activeBookTab: Tab | null;
     settings: AppSettings;
     isMobile: boolean;
+    standaloneMobile?: boolean;
     isPaused: boolean;
     onTogglePause: () => void;
     onHome: () => void;
@@ -53,6 +54,7 @@ export default function EpubWorkspace({
     activeBookTab,
     settings,
     isMobile,
+    standaloneMobile = true,
     isPaused,
     onTogglePause,
     onHome,
@@ -252,7 +254,82 @@ export default function EpubWorkspace({
     );
 
     if (isMobile) {
-        return content;
+        if (!standaloneMobile) {
+            return content;
+        }
+        const totalSeconds = activeBookTab?.stats?.time || 0;
+        const mins = Math.floor(totalSeconds / 60);
+        const secs = totalSeconds % 60;
+        const timerLabel = `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+        const islandTitle = viewMode === "reader" && activeBookTab
+            ? (activeBookTab.epub?.title || activeBookTab.name)
+            : t("epub.title");
+        const islandMeta = viewMode === "reader" && activeBookTab
+            ? `${Math.round(Math.min(1, Math.max(0, activeBookTab.epub?.progress || 0)) * 100)}%`
+            : String(books.filter((tab) => !tab.archived).length);
+
+        return (
+            <div className="m-shell">
+                <header className="m-island-row">
+                    <button
+                        type="button"
+                        className="m-source"
+                        onClick={onHome}
+                        aria-label="Setsuna Hub"
+                        title="Setsuna Hub"
+                    >
+                        <IconHome />
+                    </button>
+                    <button
+                        type="button"
+                        className="m-island"
+                        onClick={() => setViewMode((prev) => (prev === "reader" ? "library" : activeBookTab ? "reader" : "library"))}
+                    >
+                        <span className="m-dot" style={{ ["--dot" as string]: "#d6a84f" }} aria-hidden="true" />
+                        <span className="m-island-name">{islandTitle}</span>
+                        <span className="m-island-meta">{islandMeta}</span>
+                    </button>
+                </header>
+
+                <main className="m-main">{content}</main>
+
+                <nav className="m-dock" aria-label={t("epub.title")}>
+                    <button
+                        type="button"
+                        className={`m-dock-timer${isPaused ? "" : " is-running"}`}
+                        onClick={onTogglePause}
+                        aria-label={isPaused ? t("stats.start") : t("stats.pause")}
+                    >
+                        <span aria-hidden="true">{isPaused ? "▶" : "Ⅱ"}</span>
+                        {timerLabel}
+                    </button>
+                    <button
+                        type="button"
+                        className={`m-dock-btn${viewMode === "library" ? " is-active" : ""}`}
+                        onClick={() => setViewMode("library")}
+                        aria-label={t("epub.library")}
+                    >
+                        <IconBookTab />
+                    </button>
+                    <button
+                        type="button"
+                        className="m-dock-btn"
+                        onClick={onOpenFile}
+                        aria-label={t("epub.openFile")}
+                    >
+                        <IconImport />
+                    </button>
+                    <button
+                        type="button"
+                        className="m-dock-btn"
+                        onClick={onSettings}
+                        aria-label={t("workspace.settings")}
+                    >
+                        <IconSettings />
+                    </button>
+                </nav>
+            </div>
+        );
     }
 
     return (

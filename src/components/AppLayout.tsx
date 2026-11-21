@@ -14,6 +14,7 @@ import { usePresence } from '../utils/presence';
 import './MobileShell.css';
 import { getTranslator } from '../utils/i18n';
 import TextContainer from './TextContainer';
+import EpubWorkspace from '../features/epub/EpubWorkspace';
 import StatsPanel from './StatsPanel';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -348,6 +349,14 @@ export const MobileLayout = ({
     onCloseLookup,
     lookupNotice,
     settingsRequest,
+    epubBooks = [],
+    onOpenEpubFile,
+    onRemoveEpubBook,
+    onUpdateEpubMeta,
+    onEpubProgress,
+    onEpubCountParagraphs,
+    onEpubOrientationChange,
+    onEpubReadingActivity,
 }: any) => {
     const t = getTranslator(settings?.appLanguage || 'ru');
     const [activeMobileView, setActiveMobileView] = useState<'text' | 'lookup'>('text');
@@ -1264,11 +1273,26 @@ export const MobileLayout = ({
                         <span>{isEn ? 'The mobile player will come after text, lookup, and Anki are stable.' : 'Мобильный плеер добавим после текста, лукапа и Anki.'}</span>
                     </div>
                 ) : activeTab?.mode === 'epub' ? (
-                    <div className="m-empty">
-                        <div className="m-empty-icon">📖</div>
-                        <strong>EPUB</strong>
-                        <span>{isEn ? 'The reader will use the same dictionary and mining flow.' : 'Ридер будет использовать тот же словарь и майнинг.'}</span>
-                    </div>
+                    <EpubWorkspace
+                        books={epubBooks}
+                        activeBookTab={activeTab}
+                        settings={settings}
+                        isMobile={true}
+                        standaloneMobile={false}
+                        isPaused={isPaused}
+                        onTogglePause={() => setIsPaused(!isPaused)}
+                        onHome={() => setActiveMobileView('text')}
+                        onSettings={() => openSettingsPage('reading')}
+                        onOpenFile={() => onOpenEpubFile?.()}
+                        onSelectBook={(tabId) => switchTab(tabId)}
+                        onRemoveBook={(tabId) => onRemoveEpubBook?.(tabId)}
+                        onUpdateBookMeta={(tabId, meta) => onUpdateEpubMeta?.(tabId, meta)}
+                        onProgressChange={(tabId, chIdx, offset, prog) => onEpubProgress?.(tabId, chIdx, offset, prog)}
+                        onCountParagraphs={(tabId, chIdx, paragraphs, upTo) => onEpubCountParagraphs?.(tabId, chIdx, paragraphs, upTo)}
+                        onChangeBookOrientation={(tabId, orient) => onEpubOrientationChange?.(tabId, orient)}
+                        onReadingActivity={() => onEpubReadingActivity?.()}
+                        onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
+                    />
                 ) : activeTab?.lines?.length ? (
                     <TextContainer
                         contentKey={activeTab?.id ?? activeTabId}

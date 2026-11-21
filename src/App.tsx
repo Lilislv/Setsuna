@@ -4,7 +4,7 @@ import { isMobilePlatform } from './utils/platform';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { getMobileFlowTimer } from './utils/mobileOverlay';
-import { cleanupMobileDictionaries } from './utils/mobileFiles';
+import { cleanupMobileDictionaries, cleanupMobileEpub, openMobileEpubPicker } from './utils/mobileFiles';
 import { emit, emitTo, listen, UnlistenFn } from '@tauri-apps/api/event';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -1489,6 +1489,9 @@ export default function App() {
 
     const openEpubFilePicker = useCallback(async () => {
         try {
+            if (isMobilePlatform() && openMobileEpubPicker()) {
+                return;
+            }
             const selected = await open({
                 multiple: false,
                 directory: false,
@@ -1503,6 +1506,30 @@ export default function App() {
                 message: t("epub.loadError", { error: String(error) }),
             });
         }
+    }, [importEpubPath, t]);
+
+    useEffect(() => {
+        if (!isMobilePlatform()) return;
+        const onMobileEpubSelected = (event: Event) => {
+            const path = String((event as CustomEvent<string>).detail || "").trim();
+            if (!path) return;
+            void importEpubPath(path).finally(() => {
+                cleanupMobileEpub(path);
+            });
+        };
+        const onMobileEpubFailed = (event: Event) => {
+            const detail = String((event as CustomEvent<string>).detail || "");
+            setNotice({
+                title: t("epub.title"),
+                message: t("epub.loadError", { error: detail }),
+            });
+        };
+        window.addEventListener("setsuna-mobile-epub", onMobileEpubSelected);
+        window.addEventListener("setsuna-mobile-epub-failed", onMobileEpubFailed);
+        return () => {
+            window.removeEventListener("setsuna-mobile-epub", onMobileEpubSelected);
+            window.removeEventListener("setsuna-mobile-epub-failed", onMobileEpubFailed);
+        };
     }, [importEpubPath, t]);
 
     const handleEpubUpdateMeta = useCallback((tabId: number, meta: EpubBookMeta) => {
@@ -3703,6 +3730,14 @@ export default function App() {
                         onCloseLookup={() => setLookupStack([])}
                         lookupNotice={mobileLookupNotice}
                         settingsRequest={mobileSettingsRequest}
+                        epubBooks={tabs.filter((tab) => tab.mode === "epub")}
+                        onOpenEpubFile={openEpubFilePicker}
+                        onRemoveEpubBook={handleRemoveEpubBook}
+                        onUpdateEpubMeta={handleEpubUpdateMeta}
+                        onEpubProgress={handleEpubProgress}
+                        onEpubCountParagraphs={handleEpubCountParagraphs}
+                        onEpubOrientationChange={handleEpubOrientationChange}
+                        onEpubReadingActivity={handleEpubReadingActivity}
                     />
                 ) : (
                 <>
