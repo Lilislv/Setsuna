@@ -603,9 +603,6 @@ export default function App() {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
     const [lookupStack, setLookupStack] = useState<LookupData[]>([]);
-    useEffect(() => {
-        if (lookupStack.length > 0) setFloatingBtn(null);
-    }, [lookupStack.length]);
     const closeLookupStack = useCallback(() => setLookupStack([]), []);
     const sentenceLookupRequestRef = useRef(0);
     const [mobileLookupNotice, setMobileLookupNotice] = useState('');
@@ -3252,7 +3249,7 @@ export default function App() {
                 })}
                 onAnkiDeckChange={(deck) => setSettings((prev) => ({ ...prev, ankiDeck: deck }))}
             />
-            {floatingBtn && (
+            {floatingBtn && lookupStack.length === 0 && (
                 <button
                     onClick={(e) => {
                         e.stopPropagation();
@@ -3679,6 +3676,7 @@ export default function App() {
                         onProgressChange={handleEpubProgress}
                         onCountParagraphs={handleEpubCountParagraphs}
                         onChangeBookOrientation={handleEpubOrientationChange}
+                        onUpdateSettings={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
                         onReadingActivity={handleEpubReadingActivity}
                         onLookupToken={isMobileLayout ? runSentenceTokenLookup : undefined}
                     />

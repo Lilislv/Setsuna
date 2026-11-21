@@ -69,7 +69,7 @@ export default function EpubLibrary({
             </div>
 
             <div className="epub-library-grid">
-                {activeBooks.map((book) => {
+                {activeBooks.map((book, cardIdx) => {
                     const progress = Math.round(Math.min(1, Math.max(0, book.epub?.progress || 0)) * 100);
                     const bookLang = book.epub?.language === "ja" ? "JA" : "EN";
                     const chaptersCount = book.epub?.chapterCount || 0;
@@ -79,6 +79,7 @@ export default function EpubLibrary({
                         <div
                             key={book.id}
                             className="epub-book-card"
+                            style={{ ["--i" as string]: cardIdx }}
                             role="button"
                             tabIndex={0}
                             onClick={() => onSelectBook(book.id)}

@@ -45,6 +45,7 @@ interface EpubWorkspaceProps {
     onProgressChange: (tabId: number, chapterIndex: number, chapterOffset: number, bookProgress: number) => void;
     onCountParagraphs: (tabId: number, chapterIndex: number, paragraphs: EpubParagraph[], upToIndex: number) => void;
     onChangeBookOrientation: (tabId: number, orientation: EpubOrientationSetting) => void;
+    onUpdateSettings?: (patch: Partial<AppSettings>) => void;
     onReadingActivity: () => void;
     onLookupToken?: LookupTokenHandler;
 }
@@ -66,6 +67,7 @@ export default function EpubWorkspace({
     onProgressChange,
     onCountParagraphs,
     onChangeBookOrientation,
+    onUpdateSettings,
     onReadingActivity,
     onLookupToken,
 }: EpubWorkspaceProps) {
@@ -220,6 +222,7 @@ export default function EpubWorkspace({
                         onChangeBookOrientation={(orientation) =>
                             onChangeBookOrientation(activeBookTab.id, orientation)
                         }
+                        onUpdateSettings={onUpdateSettings}
                         onLookupToken={onLookupToken}
                         onBackToLibrary={() => setViewMode("library")}
                         onOpenFile={onOpenFile}

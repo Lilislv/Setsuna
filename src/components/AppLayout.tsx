@@ -1290,6 +1290,7 @@ export const MobileLayout = ({
                         onProgressChange={(tabId, chIdx, offset, prog) => onEpubProgress?.(tabId, chIdx, offset, prog)}
                         onCountParagraphs={(tabId, chIdx, paragraphs, upTo) => onEpubCountParagraphs?.(tabId, chIdx, paragraphs, upTo)}
                         onChangeBookOrientation={(tabId, orient) => onEpubOrientationChange?.(tabId, orient)}
+                        onUpdateSettings={(patch) => updateSettings({ ...settings, ...patch })}
                         onReadingActivity={() => onEpubReadingActivity?.()}
                         onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
                     />
