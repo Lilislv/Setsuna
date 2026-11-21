@@ -16,8 +16,10 @@ import type { EpubBookmark, Tab } from "../../utils/constants";
 import { getTranslator } from "../../utils/i18n";
 import { TokenizedLine } from "../../components/TextContainer";
 import { IconBookTab, IconClose, IconImport, IconSearch } from "../../components/Icons";
+import FontPicker from "../../components/FontPicker";
 import { searchEpubBook } from "./epubApi";
 import EpubGlassSelect from "./EpubGlassSelect";
+import { buildEpubFontPresets } from "./epubFonts";
 import {
     clamp01,
     computeBookProgress,
@@ -976,6 +978,7 @@ export default function EpubReader({
             if (event.ctrlKey || event.metaKey || event.altKey) return;
             const target = event.target as HTMLElement | null;
             if (event.key === "Escape" && (tocOpen || appearanceOpen || searchOpen)) {
+                if (document.querySelector(".font-picker-overlay")) return;
                 event.preventDefault();
                 setTocOpen(false);
                 setAppearanceOpen(false);
@@ -1463,6 +1466,32 @@ export default function EpubReader({
                                 </div>
                             </div>
                         )}
+
+                        <div className="epub-pop-font-row">
+                            <FontPicker
+                                english={language === "en"}
+                                title={language === "en" ? "Reader font" : "Шрифт текста"}
+                                value={settings.epubFontFamily || settings.fontFamily}
+                                onChange={(value) => onUpdateSettings({ epubFontFamily: value })}
+                                sampleText={isJapaneseBook
+                                    ? "あの日見た花の名前を、僕達はまだ知らない。"
+                                    : "Down the rabbit-hole went Alice, never once considering how to get out again."}
+                                presets={buildEpubFontPresets({
+                                    serif: t("wizard.font.serif"),
+                                    sans: t("wizard.font.sans"),
+                                    yu: t("wizard.font.yu"),
+                                    meiryo: t("wizard.font.meiryo"),
+                                    english: language === "en",
+                                })}
+                                customFont={(settings.customFontData || settings.customFontPath) && settings.customFontFamily
+                                    ? {
+                                        value: `'${settings.customFontFamily}', sans-serif`,
+                                        label: settings.customFontName || (language === "en" ? "Custom font" : "Свой шрифт"),
+                                        hint: language === "en" ? "Font file" : "Файл шрифта",
+                                    }
+                                    : null}
+                            />
+                        </div>
 
                         <div className="epub-pop-slider-group">
                             <div className="epub-pop-slider-head">
