@@ -31,6 +31,48 @@
     min-height: 0;
 }
 
+/* Mobile full-screen immersive reading (tap empty area to hide/show all chrome) */
+.m-shell.epub-mobile-shell .m-island-row {
+    transition:
+        opacity 220ms var(--ease-fluid, ease),
+        transform 260ms var(--ease-spring-soft, ease);
+}
+
+.m-shell.epub-mobile-shell .m-dock {
+    transition:
+        opacity 220ms var(--ease-fluid, ease),
+        transform 260ms var(--ease-spring-soft, ease);
+}
+
+.m-shell.epub-mobile-shell .m-main {
+    transition: padding 220ms var(--ease-fluid, ease);
+}
+
+.m-shell.epub-mobile-shell.is-immersive .m-island-row {
+    opacity: 0;
+    transform: translateY(-18px) scale(0.97);
+    pointer-events: none;
+}
+
+.m-shell.epub-mobile-shell.is-immersive .m-island-row * {
+    pointer-events: none;
+}
+
+.m-shell.epub-mobile-shell.is-immersive .m-dock {
+    opacity: 0;
+    transform: translateX(-50%) translateY(24px) scale(0.97);
+    pointer-events: none;
+}
+
+.m-shell.epub-mobile-shell.is-immersive .m-dock * {
+    pointer-events: none;
+}
+
+.m-shell.epub-mobile-shell.is-immersive .m-main {
+    padding-top: max(10px, env(safe-area-inset-top));
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+}
+
 /* === Library (LiquidGlass + soft ambient glow matching HomeScreen) === */
 .epub-library {
     position: relative;

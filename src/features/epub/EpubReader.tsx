@@ -64,6 +64,8 @@ interface EpubReaderProps {
     onOpenFile: () => void;
     onOverlayStateChange?: (open: boolean) => void;
     closeOverlaySignal?: number;
+    immersive?: boolean;
+    onToggleImmersive?: () => void;
 }
 
 type PageRange = { start: number; end: number };
@@ -216,6 +218,8 @@ export default function EpubReader({
     onOpenFile,
     onOverlayStateChange,
     closeOverlaySignal = 0,
+    immersive = false,
+    onToggleImmersive,
 }: EpubReaderProps) {
     const language = settings.appLanguage || "ru";
     const t = getTranslator(language);
@@ -231,6 +235,7 @@ export default function EpubReader({
     const highlightTimerRef = useRef<number | null>(null);
     const swipeStartRef = useRef<{ x: number; y: number; at: number } | null>(null);
     const pageTurnDirRef = useRef<1 | -1 | 0>(0);
+    const anchorParagraphRef = useRef<{ chapterIdx: number; paragraphIdx: number }>({ chapterIdx: -1, paragraphIdx: 0 });
     const callbacksRef = useRef({
         onFragmentHandled,
         onSelectChapter,
@@ -351,8 +356,8 @@ export default function EpubReader({
         ? Math.min(18, settings.epubPagePadding ?? 18)
         : (settings.epubPagePadding ?? 24);
     const paragraphGap = settings.epubParagraphSpacing ?? 14;
-    const topClearance = isMobile ? 54 : 24;
-    const bottomClearance = isMobile ? 52 : 28;
+    const topClearance = isMobile ? (immersive ? 10 : 54) : 24;
+    const bottomClearance = isMobile ? (immersive ? 10 : 52) : 28;
 
     // Track lookup hotkey state (e.g. Shift) so floating bars stay completely hidden during lookup
     useEffect(() => {
@@ -514,8 +519,8 @@ export default function EpubReader({
         }, CHROME_HIDE_DELAY_MS);
     }, [isMobile]);
 
-    const topChromeVisible = !lookupActive && !escMenuOpen && (isMobile || topHover || tocOpen || appearanceOpen || searchOpen);
-    const bottomChromeVisible = !lookupActive && !escMenuOpen && (isMobile || bottomHover);
+    const topChromeVisible = !lookupActive && !escMenuOpen && ((isMobile && !immersive) || topHover || tocOpen || appearanceOpen || searchOpen);
+    const bottomChromeVisible = !lookupActive && !escMenuOpen && ((isMobile && !immersive) || bottomHover);
 
     const setSpreadPreference = useCallback((next: boolean) => {
         setSpreadEnabled(next);
@@ -598,6 +603,15 @@ export default function EpubReader({
         }
 
         setPageRanges(nextRanges);
+        // Keep the user anchored on the exact same paragraph when toggling immersive chrome or resizing.
+        if (anchorParagraphRef.current.chapterIdx === chapter.index && nextRanges.length > 0) {
+            const targetP = anchorParagraphRef.current.paragraphIdx;
+            const foundIdx = nextRanges.findIndex((r) => targetP >= r.start && targetP < r.end);
+            if (foundIdx >= 0) {
+                pageTurnDirRef.current = 0;
+                setCurrentPageIdx(foundIdx);
+            }
+        }
     }, [
         isHorizontalPaged,
         useTwoPageSpread,
@@ -622,6 +636,9 @@ export default function EpubReader({
     const activePageIdx = Math.min(Math.max(0, pageRanges.length - 1), Math.max(0, currentPageIdx));
     const spreadStartIdx = useTwoPageSpread ? activePageIdx - (activePageIdx % 2) : activePageIdx;
     const leftPageRange = pageRanges[spreadStartIdx] || { start: 0, end: paragraphs.length };
+    if (chapter && !loading) {
+        anchorParagraphRef.current = { chapterIdx: chapter.index, paragraphIdx: leftPageRange.start };
+    }
     const rightPageRange = useTwoPageSpread ? (pageRanges[spreadStartIdx + 1] ?? null) : null;
     const visibleParagraphs = useMemo(() => {
         if (!isHorizontalPaged) return paragraphs;
@@ -1036,8 +1053,9 @@ export default function EpubReader({
         return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
     }, [isVertical, isPaged, tocOpen, appearanceOpen, searchOpen, escMenuOpen, turnPage]);
 
-    // Internal EPUB link clicks + edge-click page turning (never interferes with text selection or lookup)
+    // Internal EPUB link clicks + edge-click page turning + mobile empty-area tap to toggle full-screen reading
     const handleContentClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+        const hadOpenPopover = appearanceOpen || searchOpen;
         if (appearanceOpen) setAppearanceOpen(false);
         if (searchOpen) setSearchOpen(false);
 
@@ -1054,12 +1072,11 @@ export default function EpubReader({
         }
 
         if (
-            (isPaged || isVertical)
-            && !event.shiftKey
+            !event.shiftKey
             && !event.ctrlKey
             && !event.altKey
             && !event.metaKey
-            && !target?.closest("a, button, input, select, figure.epub-image-block.is-blurred")
+            && !target?.closest("a, button, input, select, .lookup-word, figure.epub-image-block.is-blurred")
         ) {
             const sel = window.getSelection();
             if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
@@ -1069,13 +1086,19 @@ export default function EpubReader({
             const rect = surface.getBoundingClientRect();
             const relX = event.clientX - rect.left;
             const edgePx = Math.min(EDGE_CLICK_MAX_PX, rect.width * EDGE_CLICK_RATIO);
-            if (relX <= edgePx) {
+            if ((isPaged || isVertical) && relX <= edgePx) {
                 turnPage(isVertical ? 1 : -1);
-            } else if (relX >= rect.width - edgePx) {
+                return;
+            }
+            if ((isPaged || isVertical) && relX >= rect.width - edgePx) {
                 turnPage(isVertical ? -1 : 1);
+                return;
+            }
+            if (isMobile && !hadOpenPopover && !tocOpen && !lookupOpen) {
+                onToggleImmersive?.();
             }
         }
-    }, [chapters, appearanceOpen, searchOpen, isPaged, isVertical, turnPage]);
+    }, [chapters, appearanceOpen, searchOpen, tocOpen, lookupOpen, isMobile, isPaged, isVertical, turnPage, onToggleImmersive]);
 
     const handleSurfaceTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
         if (!isMobile || !isHorizontalPaged || event.touches.length !== 1) {

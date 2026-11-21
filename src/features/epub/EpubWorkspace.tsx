@@ -87,6 +87,7 @@ export default function EpubWorkspace({
     const [escMenuOpen, setEscMenuOpen] = useState(false);
     const [readerOverlayOpen, setReaderOverlayOpen] = useState(false);
     const [closeOverlaySignal, setCloseOverlaySignal] = useState(0);
+    const [mobileImmersive, setMobileImmersive] = useState(false);
     const [escMenuMounted, setEscMenuMounted] = useState(false);
     const [escMenuVisible, setEscMenuVisible] = useState(false);
     const [escMenuEntering, setEscMenuEntering] = useState(false);
@@ -107,6 +108,12 @@ export default function EpubWorkspace({
 
     const bookPath = activeBookTab?.epub?.path || "";
     const activeTabId = activeBookTab?.id ?? null;
+
+    useEffect(() => {
+        if (viewMode !== "reader") {
+            setMobileImmersive(false);
+        }
+    }, [viewMode]);
 
     // Switch into reader view automatically when a new book tab becomes active
     const prevActiveTabIdRef = useRef<number | null>(activeTabId);
@@ -562,6 +569,8 @@ export default function EpubWorkspace({
                     onOpenFile={onOpenFile}
                     onOverlayStateChange={setReaderOverlayOpen}
                     closeOverlaySignal={closeOverlaySignal}
+                    immersive={isMobile && mobileImmersive}
+                    onToggleImmersive={() => setMobileImmersive((prev) => !prev)}
                 />
             ) : (
                 <EpubLibrary
@@ -589,8 +598,10 @@ export default function EpubWorkspace({
             ? `${Math.round(Math.min(1, Math.max(0, activeBookTab.epub?.progress || 0)) * 100)}%`
             : String(visibleBooks.length);
 
+        const isImmersiveShell = viewMode === "reader" && mobileImmersive;
+
         return (
-            <div className="m-shell">
+            <div className={`m-shell epub-mobile-shell${isImmersiveShell ? " is-immersive" : ""}`}>
                 <header className="m-island-row">
                     <button
                         type="button"
