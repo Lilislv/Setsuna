@@ -11,6 +11,7 @@ export interface EpubChapterMeta {
 
 export interface EpubBookMeta {
     title: string;
+    author: string | null;
     language: EpubLanguage;
     metadataLanguage: string | null;
     pageProgressionDirection: string | null;
@@ -19,6 +20,20 @@ export interface EpubBookMeta {
     defaultVertical: boolean;
     chapters: EpubChapterMeta[];
     cover: string | null;
+}
+
+export interface EpubSearchHit {
+    chapterIndex: number;
+    chapterTitle: string | null;
+    paragraphIndex: number;
+    snippet: string;
+}
+
+export const SUPPORTED_BOOK_EXTENSIONS = ["epub", "txt", "htmlz"] as const;
+
+export function isSupportedBookPath(filePath: string): boolean {
+    const clean = filePath.trim().toLowerCase();
+    return SUPPORTED_BOOK_EXTENSIONS.some((ext) => clean.endsWith(`.${ext}`));
 }
 
 export type EpubParagraphKind =

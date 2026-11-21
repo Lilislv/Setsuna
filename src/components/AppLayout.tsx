@@ -355,6 +355,7 @@ export const MobileLayout = ({
     onUpdateEpubMeta,
     onEpubProgress,
     onEpubOrientationChange,
+    onEpubBookmarksChange,
 }: any) => {
     const t = getTranslator(settings?.appLanguage || 'ru');
     const [activeMobileView, setActiveMobileView] = useState<'text' | 'lookup'>('text');
@@ -1285,6 +1286,7 @@ export const MobileLayout = ({
                         onUpdateBookMeta={(tabId, meta) => onUpdateEpubMeta?.(tabId, meta)}
                         onProgressChange={(tabId, chIdx, offset, prog) => onEpubProgress?.(tabId, chIdx, offset, prog)}
                         onChangeBookOrientation={(tabId, orient) => onEpubOrientationChange?.(tabId, orient)}
+                        onChangeBookBookmarks={(tabId, bookmarks) => onEpubBookmarksChange?.(tabId, bookmarks)}
                         onUpdateSettings={(patch) => updateSettings({ ...settings, ...patch })}
                         onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
                     />

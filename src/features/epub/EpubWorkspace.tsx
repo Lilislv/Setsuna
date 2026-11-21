@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppSettings } from "../../components/SettingsModal";
-import type { Tab } from "../../utils/constants";
+import type { EpubBookmark, Tab } from "../../utils/constants";
 import { getTranslator } from "../../utils/i18n";
 import WorkspaceShell from "../../components/WorkspaceShell";
 import { IconBookTab, IconHome, IconImport, IconSettings } from "../../components/Icons";
@@ -40,6 +40,7 @@ interface EpubWorkspaceProps {
     onUpdateBookMeta: (tabId: number, meta: EpubBookMeta) => void;
     onProgressChange: (tabId: number, chapterIndex: number, chapterOffset: number, bookProgress: number) => void;
     onChangeBookOrientation: (tabId: number, orientation: EpubOrientationSetting) => void;
+    onChangeBookBookmarks?: (tabId: number, bookmarks: EpubBookmark[]) => void;
     onUpdateSettings?: (patch: Partial<AppSettings>) => void;
     onLookupToken?: LookupTokenHandler;
 }
@@ -58,6 +59,7 @@ export default function EpubWorkspace({
     onUpdateBookMeta,
     onProgressChange,
     onChangeBookOrientation,
+    onChangeBookBookmarks,
     onUpdateSettings,
     onLookupToken,
 }: EpubWorkspaceProps) {
@@ -70,6 +72,7 @@ export default function EpubWorkspace({
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [pendingFragment, setPendingFragment] = useState<string | null>(null);
+    const [pendingParagraphIndex, setPendingParagraphIndex] = useState<number | null>(null);
     const [coversByPath, setCoversByPath] = useState<Record<string, string | null>>(() => {
         const initial: Record<string, string | null> = {};
         coverCache.forEach((value, key) => {
@@ -96,24 +99,42 @@ export default function EpubWorkspace({
         prevActiveTabIdRef.current = activeTabId;
     }, [activeTabId]);
 
-    // Lazily load cover thumbnails for library books (kept out of workspace-state.json)
+    // Lazily load cover thumbnails (and backfill author metadata if missing) for library books
     useEffect(() => {
         if (viewMode !== "library") return;
-        const missingPaths = books
+        const targets = books
             .filter((tab) => !tab.archived && tab.epub?.path)
-            .map((tab) => tab.epub!.path!)
-            .filter((path, idx, arr) => arr.indexOf(path) === idx && !coverCache.has(path));
+            .filter((tab) => !coverCache.has(tab.epub!.path!) || tab.epub!.author === undefined);
 
-        if (missingPaths.length === 0) return;
+        if (targets.length === 0) return;
         let cancelled = false;
 
         void (async () => {
-            for (const path of missingPaths) {
+            const seenPaths = new Set<string>();
+            for (const tab of targets) {
                 if (cancelled) return;
-                const cover = await loadEpubCover(path).catch(() => null);
-                coverCache.set(path, cover);
-                if (!cancelled) {
-                    setCoversByPath((prev) => ({ ...prev, [path]: cover }));
+                const path = tab.epub!.path!;
+                if (seenPaths.has(path)) continue;
+                seenPaths.add(path);
+
+                if (tab.epub!.author === undefined && !metaCacheRef.current.has(path)) {
+                    const meta = await openEpubBook(path).catch(() => null);
+                    if (meta) {
+                        metaCacheRef.current.set(path, meta);
+                        coverCache.set(path, meta.cover ?? null);
+                        if (!cancelled) {
+                            setCoversByPath((prev) => ({ ...prev, [path]: meta.cover ?? null }));
+                            onUpdateBookMeta(tab.id, meta);
+                        }
+                        continue;
+                    }
+                }
+                if (!coverCache.has(path)) {
+                    const cover = await loadEpubCover(path).catch(() => null);
+                    coverCache.set(path, cover);
+                    if (!cancelled) {
+                        setCoversByPath((prev) => ({ ...prev, [path]: cover }));
+                    }
                 }
             }
         })();
@@ -121,7 +142,7 @@ export default function EpubWorkspace({
         return () => {
             cancelled = true;
         };
-    }, [viewMode, books]);
+    }, [viewMode, books, onUpdateBookMeta]);
 
     const rememberChapter = useCallback((key: string, content: EpubChapterContent) => {
         const cache = chapterCacheRef.current;
@@ -200,11 +221,12 @@ export default function EpubWorkspace({
         void loadBook();
     }, [viewMode, activeBookTab?.id, bookPath, fetchChapter, onUpdateBookMeta]);
 
-    const handleSelectChapter = useCallback((nextIndex: number, fragment?: string) => {
+    const handleSelectChapter = useCallback((nextIndex: number, fragment?: string, paragraphIndex?: number) => {
         if (!activeBookTab || !bookPath || !bookMeta) return;
         const clamped = Math.min(Math.max(0, bookMeta.chapters.length - 1), Math.max(0, nextIndex));
         const generation = ++loadGenerationRef.current;
         setPendingFragment(fragment || null);
+        setPendingParagraphIndex(typeof paragraphIndex === "number" ? paragraphIndex : null);
         const bookProgress = bookMeta.chapters.length > 0 ? clamped / bookMeta.chapters.length : 0;
         onProgressChange(activeBookTab.id, clamped, 0, bookProgress);
         void fetchChapter(bookPath, clamped, generation);
@@ -227,13 +249,20 @@ export default function EpubWorkspace({
                     settings={settings}
                     isMobile={isMobile}
                     pendingFragment={pendingFragment}
-                    onFragmentHandled={() => setPendingFragment(null)}
+                    pendingParagraphIndex={pendingParagraphIndex}
+                    onFragmentHandled={() => {
+                        setPendingFragment(null);
+                        setPendingParagraphIndex(null);
+                    }}
                     onSelectChapter={handleSelectChapter}
                     onProgressChange={(chapterIdx, offset, progress) =>
                         onProgressChange(activeBookTab.id, chapterIdx, offset, progress)
                     }
                     onChangeBookOrientation={(orientation) =>
                         onChangeBookOrientation(activeBookTab.id, orientation)
+                    }
+                    onChangeBookBookmarks={(bookmarks) =>
+                        onChangeBookBookmarks?.(activeBookTab.id, bookmarks)
                     }
                     onUpdateSettings={onUpdateSettings}
                     onLookupToken={onLookupToken}

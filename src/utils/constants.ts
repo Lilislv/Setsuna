@@ -18,8 +18,18 @@ export interface CaptureSourceBinding {
     remoteUrl?: string;
     remoteToken?: string;
 }
+export interface EpubBookmark {
+    id: string;
+    label: string;
+    chapterIndex: number;
+    chapterTitle?: string;
+    paragraphIndex: number;
+    excerpt: string;
+    createdAt: number;
+}
 export interface EpubBookData {
     title: string;
+    author?: string;
     path?: string;
     language?: 'ja' | 'en';
     defaultVertical?: boolean;
@@ -28,6 +38,8 @@ export interface EpubBookData {
     chapterOffset?: number;
     chapterCount?: number;
     countedThrough?: string;
+    bookmarks?: EpubBookmark[];
+    lastOpenedAt?: number;
     lines: string[];
     html?: string;
     blocks?: EpubContentBlock[];
@@ -165,6 +177,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     epubParagraphSpacing: 14,
     epubPagePadding: 24,
     epubShowImages: true,
+    epubBlurImages: false,
     epubImageMaxWidth: 720,
     playerRewindSeconds: 2,
     playerSubtitleStep: 0.1,

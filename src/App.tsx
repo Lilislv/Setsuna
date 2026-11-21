@@ -20,6 +20,7 @@ import LookupSurface from "./features/lookup/LookupSurface";
 import EpubWorkspace from "./features/epub/EpubWorkspace";
 import { openEpubBook, pruneEpubFiles, storeEpubFile } from "./features/epub/epubApi";
 import {
+    isSupportedBookPath,
     type EpubBookMeta,
     type EpubOrientationSetting,
 } from "./features/epub/epubModel";
@@ -32,7 +33,7 @@ import { cachedGlyphScale, glyphScaleFor } from "./utils/fontNormalize";
 import { appendSpeedSample } from "./utils/speedSamples";
 import { loadTabHistory, markTabHistorySaved, mergeTabHistory, pruneTabHistories, saveChangedTabHistories, slimTabForWorkspace, tailTabForCache } from "./utils/tabHistory";
 import { IconPin, IconPlayerTab, IconSearch } from "./components/Icons";
-import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, Tab, themes, PlayerMiningClip, ReadingSpeedSample } from "./utils/constants";
+import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, EpubBookmark, Tab, themes, PlayerMiningClip, ReadingSpeedSample } from "./utils/constants";
 import { getTranslator } from "./utils/i18n";
 import { ConfirmDialogModal, ImportProgressModal, ExportModal, NoticeModal } from "./components/AppModals";
 import SetupWizard from "./components/SetupWizard";
@@ -1108,6 +1109,7 @@ export default function App() {
             const isCtrl = e.ctrlKey || e.metaKey;
 
             if (isCtrl && (code === 'KeyF' || key === 'f' || key === 'а')) {
+                if (resolvedWorkspace === 'epub') return;
                 e.preventDefault();
                 e.stopPropagation();
                 setIsSearchOpen(true);
@@ -1149,7 +1151,7 @@ export default function App() {
 
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [isSearchOpen, isSettingsOpen, settings.appLanguage]);
+    }, [isSearchOpen, isSettingsOpen, resolvedWorkspace, settings.appLanguage]);
 
     useEffect(() => {
         if (!searchQuery.trim() || !activeTab) {
@@ -1436,12 +1438,14 @@ export default function App() {
                 const exists = prev.some((tab) => tab.id === tabId);
                 const nextEpub = {
                     title: meta.title,
+                    author: meta.author || undefined,
                     path: storedPath,
                     language: meta.language,
                     defaultVertical: meta.defaultVertical,
                     chapterIndex: 0,
                     chapterOffset: 0,
                     chapterCount: meta.chapters.length,
+                    lastOpenedAt: Date.now(),
                     lines: [],
                     progress: 0,
                 };
@@ -1493,7 +1497,7 @@ export default function App() {
             const selected = await open({
                 multiple: false,
                 directory: false,
-                filters: [{ name: "EPUB", extensions: ["epub"] }],
+                filters: [{ name: "Books (EPUB, TXT, HTMLZ)", extensions: ["epub", "txt", "htmlz"] }],
             });
             if (typeof selected === "string" && selected.trim()) {
                 await importEpubPath(selected);
@@ -1533,8 +1537,10 @@ export default function App() {
     const handleEpubUpdateMeta = useCallback((tabId: number, meta: EpubBookMeta) => {
         setTabs((prev) => prev.map((tab) => {
             if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            const nextAuthor = meta.author || undefined;
             if (
                 tab.epub.title === meta.title
+                && tab.epub.author === nextAuthor
                 && tab.epub.language === meta.language
                 && tab.epub.defaultVertical === meta.defaultVertical
                 && tab.epub.chapterCount === meta.chapters.length
@@ -1547,6 +1553,7 @@ export default function App() {
                 epub: {
                     ...tab.epub,
                     title: meta.title,
+                    author: nextAuthor,
                     language: meta.language,
                     defaultVertical: meta.defaultVertical,
                     chapterCount: meta.chapters.length,
@@ -1567,6 +1574,7 @@ export default function App() {
                     chapterIndex,
                     chapterOffset,
                     progress: bookProgress,
+                    lastOpenedAt: Date.now(),
                     lines: [],
                 },
             };
@@ -1581,6 +1589,20 @@ export default function App() {
                 epub: {
                     ...tab.epub,
                     orientation,
+                    lines: [],
+                },
+            };
+        }));
+    }, []);
+
+    const handleEpubBookmarksChange = useCallback((tabId: number, bookmarks: EpubBookmark[]) => {
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            return {
+                ...tab,
+                epub: {
+                    ...tab.epub,
+                    bookmarks,
                     lines: [],
                 },
             };
@@ -1802,7 +1824,7 @@ export default function App() {
             const file = paths[0];
             const lowerFile = file.toLowerCase();
 
-            if (lowerFile.endsWith('.epub')) {
+            if (isSupportedBookPath(file)) {
                 await importEpubPath(file);
             } else if (lowerFile.endsWith('.json')) {
                 try {
@@ -2520,7 +2542,7 @@ export default function App() {
         if (!selected || typeof selected !== "string") return;
 
         const lower = selected.toLowerCase();
-        if (lower.endsWith(".epub")) {
+        if (isSupportedBookPath(selected)) {
             await importEpubPath(selected);
             return;
         }
@@ -3613,12 +3635,18 @@ export default function App() {
                         onOpenFile={openEpubFilePicker}
                         onSelectBook={(tabId) => {
                             setLookupStack([]);
+                            setTabs((prev) => prev.map((tab) => (
+                                tab.id === tabId && tab.epub
+                                    ? { ...tab, epub: { ...tab.epub, lastOpenedAt: Date.now() } }
+                                    : tab
+                            )));
                             switchTab(tabId);
                         }}
                         onRemoveBook={handleRemoveEpubBook}
                         onUpdateBookMeta={handleEpubUpdateMeta}
                         onProgressChange={handleEpubProgress}
                         onChangeBookOrientation={handleEpubOrientationChange}
+                        onChangeBookBookmarks={handleEpubBookmarksChange}
                         onUpdateSettings={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
                         onLookupToken={isMobileLayout ? runSentenceTokenLookup : undefined}
                     />
@@ -3680,6 +3708,7 @@ export default function App() {
                         onUpdateEpubMeta={handleEpubUpdateMeta}
                         onEpubProgress={handleEpubProgress}
                         onEpubOrientationChange={handleEpubOrientationChange}
+                        onEpubBookmarksChange={handleEpubBookmarksChange}
                     />
                 ) : (
                 <>

@@ -6,6 +6,7 @@ import {
     detectEpubLanguageFromSample,
     formatCountedThrough,
     isParagraphAlreadyCounted,
+    isSupportedBookPath,
     parseCountedThrough,
     parseEpubLanguageTag,
     resolveEpubHrefTarget,
@@ -88,4 +89,12 @@ test("resolves internal EPUB href links with fragments", () => {
         fragment: undefined,
     });
     assert.equal(resolveEpubHrefTarget("OEBPS/Text/missing.xhtml", chapters), null);
+});
+
+test("recognizes supported book file formats (epub, txt, htmlz)", () => {
+    assert.equal(isSupportedBookPath("C:/Books/novel.epub"), true);
+    assert.equal(isSupportedBookPath("C:/Books/webnovel.TXT"), true);
+    assert.equal(isSupportedBookPath("archive.htmlz"), true);
+    assert.equal(isSupportedBookPath("notes.pdf"), false);
+    assert.equal(isSupportedBookPath("backup.json"), false);
 });
