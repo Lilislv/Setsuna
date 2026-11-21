@@ -8,7 +8,6 @@ import {
     useState,
     type CSSProperties,
     type MouseEvent as ReactMouseEvent,
-    type WheelEvent as ReactWheelEvent,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AppSettings } from "../../components/SettingsModal";
@@ -504,32 +503,35 @@ export default function EpubReader({
         }
     }, [chapter, chapterCount, isHorizontalPaged, activePageIdx, pageRanges.length, goToHorizontalPage, getScrollMetrics, isVertical]);
 
-    const handleWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    useEffect(() => {
         const el = surfaceRef.current;
         if (!el) return;
-        if (isVertical) {
-            if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-                event.preventDefault();
-                el.scrollLeft -= event.deltaY;
-            }
-            return;
-        }
-        if (isHorizontalPaged) {
-            // If a single tall paragraph overflows vertically on this page, let native scroll reach its edge first
-            const canScrollDown = el.scrollTop + el.clientHeight < el.scrollHeight - 2;
-            const canScrollUp = el.scrollTop > 2;
-            if ((event.deltaY > 0 && canScrollDown) || (event.deltaY < 0 && canScrollUp)) {
+        const onWheel = (event: WheelEvent) => {
+            if (isVertical) {
+                if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+                    event.preventDefault();
+                    el.scrollLeft -= event.deltaY;
+                }
                 return;
             }
-            if (Math.abs(event.deltaY) >= 8) {
-                event.preventDefault();
-                const now = Date.now();
-                if (now - lastWheelPageRef.current < WHEEL_PAGE_COOLDOWN_MS) return;
-                lastWheelPageRef.current = now;
-                turnPage(event.deltaY > 0 ? 1 : -1);
+            if (isHorizontalPaged) {
+                const canScrollDown = el.scrollTop + el.clientHeight < el.scrollHeight - 2;
+                const canScrollUp = el.scrollTop > 2;
+                if ((event.deltaY > 0 && canScrollDown) || (event.deltaY < 0 && canScrollUp)) {
+                    return;
+                }
+                if (Math.abs(event.deltaY) >= 8) {
+                    event.preventDefault();
+                    const now = Date.now();
+                    if (now - lastWheelPageRef.current < WHEEL_PAGE_COOLDOWN_MS) return;
+                    lastWheelPageRef.current = now;
+                    turnPage(event.deltaY > 0 ? 1 : -1);
+                }
             }
-        }
-    }, [isVertical, isHorizontalPaged, turnPage]);
+        };
+        el.addEventListener("wheel", onWheel, { passive: false });
+        return () => el.removeEventListener("wheel", onWheel);
+    }, [isVertical, isHorizontalPaged, turnPage, chapter?.index, loading]);
 
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
@@ -715,7 +717,10 @@ export default function EpubReader({
                             className="epub-orientation-select"
                             aria-label={t("epub.orientationAuto")}
                             value={activeBookOrientationValue}
-                            onChange={(event) => onChangeBookOrientation(event.target.value as EpubOrientationSetting)}
+                            onChange={(event) => {
+                                onChangeBookOrientation(event.target.value as EpubOrientationSetting);
+                                event.currentTarget.blur();
+                            }}
                         >
                             <option value="auto">{t("epub.orientationAuto")}</option>
                             <option value="horizontal">{t("epub.orientationHorizontal")}</option>
@@ -790,7 +795,6 @@ export default function EpubReader({
                         data-epub-mode={isPaged ? "paged" : "scroll"}
                         style={surfaceStyle}
                         onScroll={handleScroll}
-                        onWheel={handleWheel}
                         onClick={handleContentClick}
                     >
                         {useVirtualizedScroll ? (
