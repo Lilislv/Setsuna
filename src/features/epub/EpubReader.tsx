@@ -1473,9 +1473,10 @@ export default function EpubReader({
                                 title={language === "en" ? "Reader font" : "Шрифт текста"}
                                 value={settings.epubFontFamily || settings.fontFamily}
                                 onChange={(value) => onUpdateSettings({ epubFontFamily: value })}
-                                sampleText={isJapaneseBook
-                                    ? "あの日見た花の名前を、僕達はまだ知らない。"
-                                    : "Down the rabbit-hole went Alice, never once considering how to get out again."}
+                                defaultFilter={isJapaneseBook ? "japanese" : "latin"}
+                                showLatinFilter
+                                sampleText="あの日見た花の名前を、僕達はまだ知らない。"
+                                latinSampleText="Down the rabbit-hole went Alice, never once considering how to get out again."
                                 presets={buildEpubFontPresets({
                                     serif: t("wizard.font.serif"),
                                     sans: t("wizard.font.sans"),

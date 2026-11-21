@@ -1638,9 +1638,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                         title={settings.appLanguage === 'en' ? 'EPUB reader font' : 'Шрифт читалки'}
                                         value={settings.epubFontFamily || settings.fontFamily}
                                         onChange={(value) => updateSetting('epubFontFamily', value)}
-                                        sampleText={settings.appLanguage === 'en'
-                                            ? 'The quick brown fox — あの日見た花の名前を、僕達はまだ知らない。'
-                                            : 'あの日見た花の名前を、僕達はまだ知らない。— The quick brown fox'}
+                                        defaultFilter="all"
+                                        showLatinFilter
+                                        sampleText="あの日見た花の名前を、僕達はまだ知らない。"
+                                        latinSampleText="Down the rabbit-hole went Alice, never once considering how to get out again."
                                         presets={buildEpubFontPresets({
                                             serif: t('wizard.font.serif'),
                                             sans: t('wizard.font.sans'),

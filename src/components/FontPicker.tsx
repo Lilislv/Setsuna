@@ -19,6 +19,12 @@ export interface FontOption {
     hint?: string;
     /** CSS family used for previews when `value` is a sentinel rather than a font stack. */
     previewFamily?: string;
+    /** Optional script category for preset filtering and preview text. */
+    script?: 'ja' | 'latin';
+    /** Optional section header override when grouping presets. */
+    group?: string;
+    /** Optional inline row sample override. */
+    sample?: string;
 }
 
 let systemFontsPromise: Promise<SystemFont[]> | null = null;
@@ -39,7 +45,7 @@ export const systemFontValue = (family: string) => `'${family.replace(/'/g, "\\'
 
 const firstFamily = (value: string) => value.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || value;
 
-type Filter = 'japanese' | 'all';
+type Filter = 'japanese' | 'latin' | 'all';
 
 interface FontPickerProps {
     value: string;
@@ -48,6 +54,9 @@ interface FontPickerProps {
     title: string;
     presets: FontOption[];
     sampleText?: string;
+    latinSampleText?: string;
+    defaultFilter?: Filter;
+    showLatinFilter?: boolean;
     onPickFile?: () => void;
     onRemoveCustom?: () => void;
     customFont?: FontOption | null;
@@ -55,10 +64,26 @@ interface FontPickerProps {
 
 const ROW_HEIGHT = 58;
 const HEADER_HEIGHT = 30;
+const DEFAULT_JA_SAMPLE = 'あの日見た花の名前を、僕達はまだ知らない。';
+const DEFAULT_LATIN_SAMPLE = 'Down the rabbit-hole went Alice, never once considering how to get out.';
 
-export default function FontPicker({ value, onChange, english, title, presets, sampleText, onPickFile, onRemoveCustom, customFont }: FontPickerProps) {
+export default function FontPicker({
+    value,
+    onChange,
+    english,
+    title,
+    presets,
+    sampleText,
+    latinSampleText,
+    defaultFilter,
+    showLatinFilter,
+    onPickFile,
+    onRemoveCustom,
+    customFont,
+}: FontPickerProps) {
     const L = (en: string, ru: string) => (english ? en : ru);
-    const sample = sampleText || 'あの日見た花の名前を、僕達はまだ知らない。';
+    const hasLatinFilter = showLatinFilter ?? presets.some((option) => option.script === 'latin');
+    const resolvedDefaultFilter: Filter = defaultFilter ?? 'japanese';
     const [open, setOpen] = useState(false);
     const [closing, setClosing] = useState(false);
     const closeTimerRef = useRef(0);
@@ -72,9 +97,13 @@ export default function FontPicker({ value, onChange, english, title, presets, s
     useEffect(() => () => window.clearTimeout(closeTimerRef.current), []);
     const [fonts, setFonts] = useState<SystemFont[] | null>(null);
     const [query, setQuery] = useState('');
-    const [filter, setFilter] = useState<Filter>('japanese');
+    const [filter, setFilter] = useState<Filter>(resolvedDefaultFilter);
     const [hovered, setHovered] = useState<string | null>(null);
     const listRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (open) setFilter(resolvedDefaultFilter);
+    }, [open, resolvedDefaultFilter]);
 
     useEffect(() => {
         if (!open || fonts) return;
@@ -82,10 +111,10 @@ export default function FontPicker({ value, onChange, english, title, presets, s
         void loadSystemFonts().then((list) => {
             if (cancelled) return;
             setFonts(list);
-            if (!list.some((font) => font.japanese)) setFilter('all');
+            if (resolvedDefaultFilter === 'japanese' && !list.some((font) => font.japanese)) setFilter('all');
         });
         return () => { cancelled = true; };
-    }, [open, fonts]);
+    }, [open, fonts, resolvedDefaultFilter]);
 
     useEffect(() => {
         if (!open) return;
@@ -99,30 +128,64 @@ export default function FontPicker({ value, onChange, english, title, presets, s
         return () => window.removeEventListener('keydown', onKey, true);
     }, [open]);
 
-    type Row = { kind: 'header'; label: string } | { kind: 'font'; option: FontOption };
+    type Row = { kind: 'header'; label: string; preset?: boolean } | { kind: 'font'; option: FontOption };
 
     const { rows, flatOptions } = useMemo(() => {
         const normalized = query.trim().toLowerCase();
         const matches = (text: string) => !normalized || text.toLowerCase().includes(normalized);
-        const fixed = [...(customFont ? [customFont] : []), ...presets].filter((option) => matches(option.label));
+        const matchesScript = (option: FontOption) => {
+            if (filter === 'all' || !option.script) return true;
+            return filter === 'japanese' ? option.script === 'ja' : option.script === 'latin';
+        };
+        const matchedCustom = customFont && matches(customFont.label) ? [customFont] : [];
+        const matchedPresets = presets.filter((option) => matchesScript(option) && (matches(option.label) || (option.hint ? matches(option.hint) : false)));
         const system: FontOption[] = (fonts || [])
-            .filter((font) => filter === 'all' || font.japanese)
+            .filter((font) => {
+                if (filter === 'all') return true;
+                return filter === 'japanese' ? font.japanese : !font.japanese;
+            })
             .filter((font) => matches(font.family) || font.localNames.some(matches))
             .map((font) => ({
                 value: systemFontValue(font.family),
                 label: font.family,
                 hint: font.localNames.find((name) => /[^\x00-\x7f]/.test(name)),
+                script: font.japanese ? 'ja' : 'latin',
             }));
         const list: Row[] = [];
-        if (fixed.length) {
-            list.push({ kind: 'header', label: L('Recommended', 'Рекомендуемые') });
-            fixed.forEach((option) => list.push({ kind: 'font', option }));
+        const usesExplicitGroups = presets.some((option) => Boolean(option.group));
+        if (usesExplicitGroups) {
+            if (matchedCustom.length) {
+                list.push({ kind: 'header', label: L('Custom font file', 'Свой файл шрифта'), preset: true });
+                matchedCustom.forEach((option) => list.push({ kind: 'font', option }));
+            }
+            const grouped = new Map<string, FontOption[]>();
+            for (const option of matchedPresets) {
+                const groupLabel = option.group || L('Built-in presets', 'Предустановленные');
+                const bucket = grouped.get(groupLabel);
+                if (bucket) bucket.push(option);
+                else grouped.set(groupLabel, [option]);
+            }
+            for (const [groupLabel, items] of grouped) {
+                list.push({ kind: 'header', label: `${groupLabel} · ${items.length}`, preset: true });
+                items.forEach((option) => list.push({ kind: 'font', option }));
+            }
+        } else {
+            const fixed = [...matchedCustom, ...matchedPresets];
+            if (fixed.length) {
+                list.push({ kind: 'header', label: L('Recommended', 'Рекомендуемые') });
+                fixed.forEach((option) => list.push({ kind: 'font', option }));
+            }
         }
         if (system.length) {
-            list.push({ kind: 'header', label: filter === 'japanese' ? L(`Installed · Japanese · ${system.length}`, `Установленные · японские · ${system.length}`) : L(`Installed · ${system.length}`, `Установленные · ${system.length}`) });
+            const systemHeader = filter === 'japanese'
+                ? L(`Installed · Japanese · ${system.length}`, `Установленные · японские · ${system.length}`)
+                : filter === 'latin'
+                    ? L(`Installed · Latin · ${system.length}`, `Установленные · латиница · ${system.length}`)
+                    : L(`Installed · ${system.length}`, `Установленные · ${system.length}`);
+            list.push({ kind: 'header', label: systemHeader });
             system.forEach((option) => list.push({ kind: 'font', option }));
         }
-        return { rows: list, flatOptions: [...fixed, ...system] };
+        return { rows: list, flatOptions: [...matchedCustom, ...matchedPresets, ...system] };
     }, [customFont, presets, fonts, filter, query, english]);
 
     const virtualizer = useVirtualizer({
@@ -138,8 +201,16 @@ export default function FontPicker({ value, onChange, english, title, presets, s
     const currentLabel = current?.label || firstFamily(value);
     const allFixed = [...(customFont ? [customFont] : []), ...presets];
     const cssFor = (optionValue: string) => allFixed.find((option) => option.value === optionValue)?.previewFamily ?? optionValue;
+    const activePreviewOption = flatOptions.find((option) => option.value === (hovered ?? value)) ?? current;
     const previewValue = withReadableCyrillic(cssFor(hovered ?? value));
-    const previewLabel = flatOptions.find((option) => option.value === (hovered ?? value))?.label || currentLabel;
+    const previewLabel = activePreviewOption?.label || currentLabel;
+    const previewSample = activePreviewOption?.script === 'latin'
+        ? (latinSampleText || DEFAULT_LATIN_SAMPLE)
+        : activePreviewOption?.script === 'ja'
+            ? (sampleText || DEFAULT_JA_SAMPLE)
+            : filter === 'latin'
+                ? (latinSampleText || DEFAULT_LATIN_SAMPLE)
+                : (sampleText || DEFAULT_JA_SAMPLE);
 
     const backdropPressRef = useRef(false);
     const choose = (next: string) => {
@@ -151,7 +222,9 @@ export default function FontPicker({ value, onChange, english, title, presets, s
     return (
         <>
             <button type="button" className="font-picker-trigger" onClick={() => setOpen(true)} title={L('Choose font', 'Выбрать шрифт')}>
-                <span className="font-picker-trigger-sample" style={{ fontFamily: cssFor(value) }}>あア字 Aa</span>
+                <span className="font-picker-trigger-sample" style={{ fontFamily: cssFor(value) }}>
+                    {current?.script === 'latin' ? 'Aa Bb' : 'あア字 Aa'}
+                </span>
                 <span className="font-picker-trigger-name">{currentLabel}</span>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
             </button>
@@ -179,7 +252,7 @@ export default function FontPicker({ value, onChange, english, title, presets, s
                         </header>
 
                         <div className="font-picker-preview">
-                            <div className="font-picker-preview-text" style={{ fontFamily: previewValue }}>{sample}</div>
+                            <div className="font-picker-preview-text" style={{ fontFamily: previewValue }}>{previewSample}</div>
                             <div className="font-picker-preview-meta">
                                 <span style={{ fontFamily: previewValue }}>Aa Бб 0123 — {previewLabel}</span>
                                 {hovered && hovered !== value && <span className="font-picker-preview-badge">{L('Preview', 'Предпросмотр')}</span>}
@@ -196,6 +269,9 @@ export default function FontPicker({ value, onChange, english, title, presets, s
                             />
                             <div className="font-picker-filters" role="group">
                                 <button type="button" className={filter === 'japanese' ? 'is-active' : ''} onClick={() => setFilter('japanese')}>{L('Japanese', 'Японские')}</button>
+                                {hasLatinFilter && (
+                                    <button type="button" className={filter === 'latin' ? 'is-active' : ''} onClick={() => setFilter('latin')}>{L('Latin', 'Латиница')}</button>
+                                )}
                                 <button type="button" className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>{L('All', 'Все')}</button>
                             </div>
                             {onPickFile && (
@@ -213,7 +289,7 @@ export default function FontPicker({ value, onChange, english, title, presets, s
                                     const row = rows[item.index];
                                     if (row.kind === 'header') {
                                         return (
-                                            <div key={`h-${item.index}`} className="font-picker-group" style={{ transform: `translateY(${item.start}px)`, height: item.size }}>
+                                            <div key={`h-${item.index}`} className={`font-picker-group${row.preset ? ' is-preset' : ''}`} style={{ transform: `translateY(${item.start}px)`, height: item.size }}>
                                                 {row.label}
                                             </div>
                                         );
@@ -221,6 +297,7 @@ export default function FontPicker({ value, onChange, english, title, presets, s
                                     const option = row.option;
                                     const selected = option.value === value;
                                     const isCustom = Boolean(customFont && option.value === customFont.value);
+                                    const rowSample = option.sample ?? (option.script === 'latin' ? 'The quick fox Aa' : 'あの日の花 Aa');
                                     return (
                                         <div
                                             key={`${option.value}-${item.index}`}
@@ -238,7 +315,7 @@ export default function FontPicker({ value, onChange, english, title, presets, s
                                                     <strong>{option.label}</strong>
                                                     {option.hint && <small>{option.hint}</small>}
                                                 </span>
-                                                <span className="font-picker-row-sample" style={{ fontFamily: option.previewFamily ?? option.value }}>あの日の花 Aa</span>
+                                                <span className="font-picker-row-sample" style={{ fontFamily: option.previewFamily ?? option.value }}>{rowSample}</span>
                                                 {isCustom && onRemoveCustom ? (
                                                     <span
                                                         role="button"

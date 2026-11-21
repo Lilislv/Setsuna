@@ -262,6 +262,10 @@
     text-transform: uppercase;
 }
 
+.font-picker-group.is-preset {
+    color: var(--accent-blue);
+}
+
 .font-picker-row-slot { padding: 2px 0; box-sizing: border-box; }
 
 .font-picker-row {
