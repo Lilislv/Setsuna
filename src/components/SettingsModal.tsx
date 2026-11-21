@@ -13,6 +13,7 @@ import SettingsCloud from "./Settings/SettingsCloud";
 import SettingsDiscord from "./Settings/SettingsDiscord";
 import { IconArchive, IconBookTab, IconClose, IconCloud, IconEye, IconImport, IconMessage, IconRefresh, IconSearch, IconTextTab } from "./Icons";
 import { DEFAULT_SETTINGS } from "../utils/constants";
+import { EPUB_READER_AVAILABLE } from "../utils/featureFlags";
 import { getTranslator } from "../utils/i18n";
 import "./SettingsModal.css";
 
@@ -53,7 +54,7 @@ export interface AppSettings {
   mobileOverlayOpacity?: number; mobileOverlayTextColor?: string; mobileOverlayBackgroundColor?: string; mobileOverlayBorderColor?: string;
   mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
   mobileOverlayLocked?: boolean; mobileOverlayToolbarExpanded?: boolean;
-  epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubPagePadding?: number; epubShowImages?: boolean; epubImageMaxWidth?: number;
+  epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'auto' | 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubPagePadding?: number; epubShowImages?: boolean; epubImageMaxWidth?: number;
   playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerMiningPreferVideo: boolean; playerMiningUseClipForAnki: boolean;
   playerKeyPlayPause: string; playerKeyBack: string; playerKeyForward: string; playerKeyMine: string; playerKeyOffsetMinus: string; playerKeyOffsetPlus: string;
   discordEnabled: boolean; discordClientId: string; discordShowTab: boolean; discordShowStats: boolean; discordShowChars: boolean; discordShowWords: boolean; discordShowSentences: boolean; discordShowProgress: boolean; discordShowPaused: boolean; discordShowTimer: boolean; discordShowButtons: boolean; discordShowSpeed?: boolean; discordTitleInMemberList?: boolean;
@@ -824,6 +825,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           setActiveTab('anki');
           setActiveSubTab(initialSection);
           setHighlightedSection(initialSection);
+      } else if (initialSection.startsWith('epub-')) {
+          setActiveTab('epub');
+          setActiveSubTab(initialSection);
+          setHighlightedSection(initialSection);
       }
   }, [isOpen, initialSection]);
 
@@ -925,6 +930,15 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                       <SettingsSubNavButton active={activeSubTab === 'text-filters'} label={t('settings.nav.filters')} onClick={() => handleNav('text', 'text-filters')} />
                   </div>}
                   <SettingsNavButton active={activeTab === 'archive'} icon={<IconArchive />} label={isEnglish ? 'Archive' : 'Архив'} onClick={() => handleNav('archive', 'archive-main')} />
+                  {EPUB_READER_AVAILABLE && (
+                      <>
+                          <SettingsNavButton active={activeTab === 'epub'} icon={<IconBookTab />} label={isEnglish ? 'EPUB reader' : 'EPUB-ридер'} onClick={() => handleNav('epub', 'epub-reader')} />
+                          {activeTab === 'epub' && <div className="settings-subnav">
+                              <SettingsSubNavButton active={activeSubTab === 'epub-reader'} label={isEnglish ? 'Reading view' : 'Вид читалки'} onClick={() => handleNav('epub', 'epub-reader')} />
+                              <SettingsSubNavButton active={activeSubTab === 'epub-layout'} label={isEnglish ? 'Layout & images' : 'Раскладка и картинки'} onClick={() => handleNav('epub', 'epub-layout')} />
+                          </div>}
+                      </>
+                  )}
                   <SettingsNavButton active={activeTab === 'jl'} icon={<IconTextTab />} label="Setsuna Flow" onClick={() => handleNav('jl', 'jl-main')} />
               </div>
 
@@ -1604,10 +1618,16 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                             </label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Text direction' : 'Направление текста'}
-                                <select className="modern-select" value={settings.epubTextOrientation || 'horizontal'} onChange={(e) => updateSetting('epubTextOrientation', e.target.value as any)} style={{ marginTop: 6 }}>
+                                <select className="modern-select" value={settings.epubTextOrientation || 'auto'} onChange={(e) => updateSetting('epubTextOrientation', e.target.value as any)} style={{ marginTop: 6 }}>
+                                    <option value="auto">{settings.appLanguage === 'en' ? 'Auto (book default)' : 'Авто (как в книге)'}</option>
                                     <option value="horizontal">{settings.appLanguage === 'en' ? 'Horizontal' : 'Горизонтально'}</option>
                                     <option value="vertical">{settings.appLanguage === 'en' ? 'Vertical right-to-left' : 'Вертикально справа налево'}</option>
                                 </select>
+                                <span style={{ display: 'block', marginTop: 4, fontSize: '11px', opacity: 0.78 }}>
+                                    {settings.appLanguage === 'en'
+                                        ? 'Applies to Japanese books; English books always stay horizontal.'
+                                        : 'Применяется к японским книгам; английские всегда горизонтальные.'}
+                                </span>
                             </label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Font' : 'Шрифт'}

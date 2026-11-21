@@ -21,6 +21,13 @@ export interface CaptureSourceBinding {
 export interface EpubBookData {
     title: string;
     path?: string;
+    language?: 'ja' | 'en';
+    defaultVertical?: boolean;
+    orientation?: 'auto' | 'horizontal' | 'vertical';
+    chapterIndex?: number;
+    chapterOffset?: number;
+    chapterCount?: number;
+    countedThrough?: string;
     lines: string[];
     html?: string;
     blocks?: EpubContentBlock[];
@@ -152,7 +159,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     epubFontFamily: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif",
     epubTheme: 'app',
     epubReadingMode: 'paged',
-    epubTextOrientation: 'horizontal',
+    epubTextOrientation: 'auto',
     epubMaxWidth: 880,
     epubLineHeight: 2.05,
     epubParagraphSpacing: 22,

@@ -72,7 +72,6 @@ export const trimTabForRuntime = (tab: Tab): Tab => {
     const runtimeFurigana = sourceFurigana.length === sourceLines.length
         ? sourceFurigana
         : [];
-    const epubLines = Array.isArray(tab.epub?.lines) ? tab.epub.lines : [];
     return {
         ...tab,
         lines: runtimeLines,
@@ -80,7 +79,7 @@ export const trimTabForRuntime = (tab: Tab): Tab => {
         epub: tab.epub
             ? {
                   ...tab.epub,
-                  lines: epubLines.slice(0, MAX_EPUB_LINES_PER_TAB).map(trimRuntimeLine),
+                  lines: [],
                   html: undefined,
                   blocks: undefined,
                   chapters: undefined,
