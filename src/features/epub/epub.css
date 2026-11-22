@@ -6,8 +6,8 @@
 
 .epub-workspace {
     --epub-accent: #67c587;
-    --epub-glass: color-mix(in srgb, var(--bg-panel) 72%, transparent);
-    --epub-glass-strong: color-mix(in srgb, var(--bg-panel) 86%, transparent);
+    --epub-glass: color-mix(in srgb, var(--bg-panel) 78%, transparent);
+    --epub-glass-strong: color-mix(in srgb, var(--bg-panel) 95%, transparent);
     --epub-glass-hover: color-mix(in srgb, var(--text-main) 10%, var(--bg-panel));
     --epub-glass-border: color-mix(in srgb, var(--text-main) 12%, transparent);
     --epub-glass-specular: inset 0 1px 0 color-mix(in srgb, #ffffff 14%, transparent);
@@ -1047,14 +1047,23 @@
     text-orientation: mixed;
     overflow-x: auto;
     overflow-y: hidden;
-    padding: var(--epub-top-clearance) var(--epub-page-padding) var(--epub-bottom-clearance);
+    padding: 0;
+    box-sizing: border-box;
+}
+
+.epub-reader-surface[data-epub-orientation="vertical"][data-epub-mode="paged"] {
+    overflow-x: hidden;
+    touch-action: pan-y;
 }
 
 .epub-reader-surface[data-epub-orientation="vertical"] .epub-content-flow {
     height: 100%;
     min-width: 100%;
     box-sizing: border-box;
-    padding-inline-end: 64px;
+    padding-top: var(--epub-top-clearance);
+    padding-bottom: var(--epub-bottom-clearance);
+    padding-right: var(--epub-page-padding);
+    padding-left: calc(var(--epub-page-padding) + 48px);
 }
 
 .epub-reader-surface ::selection {

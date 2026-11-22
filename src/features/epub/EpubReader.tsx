@@ -356,8 +356,8 @@ export default function EpubReader({
         ? Math.min(18, settings.epubPagePadding ?? 18)
         : (settings.epubPagePadding ?? 24);
     const paragraphGap = settings.epubParagraphSpacing ?? 14;
-    const topClearance = isMobile ? (immersive ? 10 : 54) : 24;
-    const bottomClearance = isMobile ? (immersive ? 10 : 52) : 28;
+    const topClearance = isMobile ? (immersive ? 12 : 60) : 24;
+    const bottomClearance = isMobile ? (immersive ? 12 : 62) : 28;
 
     // Track lookup hotkey state (e.g. Shift) so floating bars stay completely hidden during lookup
     useEffect(() => {
@@ -662,8 +662,10 @@ export default function EpubReader({
             const max = Math.max(0, el.scrollWidth - el.clientWidth);
             const current = Math.abs(el.scrollLeft);
             const fraction = max > 0 ? clamp01(current / max) : 1;
-            const step = Math.max(1, el.clientWidth);
-            const totalPages = Math.max(1, Math.ceil(el.scrollWidth / step));
+            const colStep = Math.max(18, fontSize * lineHeight);
+            const usableW = Math.max(colStep, el.clientWidth - effectivePadding * 2);
+            const step = Math.max(colStep, Math.floor(usableW / colStep) * colStep);
+            const totalPages = Math.max(1, Math.ceil(max / step) + 1);
             const currentPage = Math.min(totalPages, Math.max(1, Math.round(current / step) + 1));
             return { fraction, currentPage, totalPages, max, step };
         }
@@ -671,7 +673,7 @@ export default function EpubReader({
         const current = Math.max(0, el.scrollTop);
         const fraction = max > 0 ? clamp01(current / max) : 1;
         return { fraction, currentPage: 1, totalPages: 1, max, step: Math.max(1, el.clientHeight) };
-    }, [isVertical]);
+    }, [isVertical, fontSize, lineHeight, effectivePadding]);
 
     const jumpToParagraphInCurrentChapter = useCallback((targetParagraphIdx: number) => {
         if (isHorizontalPaged) {
@@ -1100,44 +1102,53 @@ export default function EpubReader({
         }
     }, [chapters, appearanceOpen, searchOpen, tocOpen, lookupOpen, isMobile, isPaged, isVertical, turnPage, onToggleImmersive]);
 
+    const isSwipePaged = isHorizontalPaged || (isVertical && isPaged);
+
     const handleSurfaceTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
-        if (!isMobile || !isHorizontalPaged || event.touches.length !== 1) {
+        if (!isMobile || !isSwipePaged || event.touches.length !== 1) {
             swipeStartRef.current = null;
             return;
         }
         const touch = event.touches[0];
         swipeStartRef.current = { x: touch.clientX, y: touch.clientY, at: Date.now() };
-    }, [isMobile, isHorizontalPaged]);
+    }, [isMobile, isSwipePaged]);
 
     const handleSurfaceTouchEnd = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
         const start = swipeStartRef.current;
         swipeStartRef.current = null;
-        if (!start || !isMobile || !isHorizontalPaged || event.changedTouches.length !== 1) return;
+        if (!start || !isMobile || !isSwipePaged || event.changedTouches.length !== 1) return;
         const touch = event.changedTouches[0];
         const dx = touch.clientX - start.x;
         const dy = touch.clientY - start.y;
         if (Date.now() - start.at > 650) return;
-        if (Math.abs(dx) >= 52 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-            turnPage(dx < 0 ? 1 : -1);
+        if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.35) {
+            if (isVertical) {
+                // Japanese RTL: swipe right turns forward (next page), swipe left turns back
+                turnPage(dx > 0 ? 1 : -1);
+            } else {
+                turnPage(dx < 0 ? 1 : -1);
+            }
         }
-    }, [isMobile, isHorizontalPaged, turnPage]);
+    }, [isMobile, isSwipePaged, isVertical, turnPage]);
 
     const handleMobileTokenTap = useCallback(
         (paragraphIndex: number) =>
             (token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => {
-                const el = surfaceRef.current?.querySelector<HTMLElement>(
-                    `[data-paragraph-index="${paragraphIndex}"]`,
-                );
-                if (el) {
-                    el.scrollIntoView({
-                        block: isVertical ? "nearest" : "start",
-                        inline: isVertical ? "center" : "nearest",
-                        behavior: "smooth",
-                    });
+                if (!isPaged) {
+                    const el = surfaceRef.current?.querySelector<HTMLElement>(
+                        `[data-paragraph-index="${paragraphIndex}"]`,
+                    );
+                    if (el) {
+                        el.scrollIntoView({
+                            block: isVertical ? "nearest" : "start",
+                            inline: isVertical ? "center" : "nearest",
+                            behavior: "smooth",
+                        });
+                    }
                 }
                 return callbacksRef.current.onLookupToken?.(token, sentence, cursor, boundaries, lemma);
             },
-        [isVertical],
+        [isVertical, isPaged],
     );
 
     const toggleImageReveal = useCallback((paragraphIdx: number) => {

@@ -357,6 +357,7 @@ export const MobileLayout = ({
     onEpubOrientationChange,
     onEpubBookmarksChange,
     onHome,
+    onCloseMobileSettings,
 }: any) => {
     const t = getTranslator(settings?.appLanguage || 'ru');
     const [activeMobileView, setActiveMobileView] = useState<'text' | 'lookup'>('text');
@@ -489,23 +490,32 @@ export const MobileLayout = ({
         return () => window.clearInterval(timer);
     }, [driveBusy, driveTransfer?.startedAt]);
 
+    const closeMobileSettings = () => {
+        setIsMobileSettingsOpen(false);
+        onCloseMobileSettings?.();
+    };
+
     const mobileBackStateRef = useRef({
         lookupOpen,
         isMobileSettingsOpen,
+        settingsHome,
         tabsOpen,
         isStatsOpen,
         activeMobileView,
         onCloseLookup,
         onHome,
+        closeMobileSettings,
     });
     mobileBackStateRef.current = {
         lookupOpen,
         isMobileSettingsOpen,
+        settingsHome,
         tabsOpen,
         isStatsOpen,
         activeMobileView,
         onCloseLookup,
         onHome,
+        closeMobileSettings,
     };
 
     useEffect(() => {
@@ -529,7 +539,11 @@ export const MobileLayout = ({
                 current.onCloseLookup?.();
                 pushWorkspaceGuard();
             } else if (current.isMobileSettingsOpen) {
-                setIsMobileSettingsOpen(false);
+                if (!current.settingsHome) {
+                    setSettingsHome(true);
+                } else {
+                    current.closeMobileSettings();
+                }
                 pushWorkspaceGuard();
             } else if (current.tabsOpen) {
                 setTabsOpen(false);
@@ -1454,7 +1468,7 @@ export const MobileLayout = ({
                                     <p className="m-eyebrow">SETSUNA</p>
                                     <h1>{isEn ? 'Settings' : 'Настройки'}</h1>
                                 </div>
-                                <button type="button" className="m-round-btn" onClick={() => setIsMobileSettingsOpen(false)} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                                <button type="button" className="m-round-btn" onClick={closeMobileSettings} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
                             </header>
                             {driveBusy && driveTransfer && (
                                 <button type="button" className="m-card m-transfer-card" onClick={() => openSettingsPage('drive')}>
@@ -1484,7 +1498,7 @@ export const MobileLayout = ({
                                 <button type="button" className="m-back" onClick={() => setSettingsHome(true)}>
                                     <span aria-hidden="true">‹</span> {isEn ? 'Settings' : 'Настройки'}
                                 </button>
-                                <button type="button" className="m-round-btn" onClick={() => setIsMobileSettingsOpen(false)} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                                <button type="button" className="m-round-btn" onClick={closeMobileSettings} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
                             </header>
                             <h1 className="m-page-title">{currentPage?.label || (isEn ? 'Settings' : 'Настройки')}</h1>
                             <div className="mobile-settings-sheet m-section">

@@ -605,6 +605,7 @@ export default function App() {
     const sentenceLookupRequestRef = useRef(0);
     const [mobileLookupNotice, setMobileLookupNotice] = useState('');
     const [mobileSettingsRequest, setMobileSettingsRequest] = useState({ id: 0, section: 'reading' });
+    const mobileSettingsReturnRef = useRef<{ workspace: 'hub' | 'epub' | null; tabId: number | null }>({ workspace: null, tabId: null });
     const [playerMiningClip, setPlayerMiningClip] = useState<PlayerMiningClip | null>(null);
     const [jsonImportProgress, setJsonImportProgress] = useState<{ current: number; total: number } | null>(null);
     const [dictImportProgress, setDictImportProgress] = useState<{
@@ -2307,9 +2308,29 @@ export default function App() {
         setActiveWorkspace("texthooker");
     };
 
-    const openMobileSettingsPanel = (section: string = 'reading') => {
-        openTextHookerWorkspace();
+    const openMobileSettingsPanel = (section: string = '') => {
+        const currentWorkspace = activeWorkspace === "epub" || activeWorkspace === "hub" ? activeWorkspace : null;
+        mobileSettingsReturnRef.current = {
+            workspace: currentWorkspace,
+            tabId: activeTabIdRef.current,
+        };
+        if (currentWorkspace !== "epub") {
+            openTextHookerWorkspace();
+        } else {
+            setActiveWorkspace("texthooker");
+        }
         setMobileSettingsRequest((current) => ({ id: current.id + 1, section }));
+    };
+
+    const handleCloseMobileSettings = () => {
+        const ret = mobileSettingsReturnRef.current;
+        mobileSettingsReturnRef.current = { workspace: null, tabId: null };
+        if (ret.workspace === "epub") {
+            if (ret.tabId !== null) switchTab(ret.tabId);
+            setActiveWorkspace("epub");
+        } else if (ret.workspace === "hub") {
+            setActiveWorkspace("hub");
+        }
     };
 
     const openEpubWorkspace = () => {
@@ -3620,7 +3641,7 @@ export default function App() {
                         onEpub={openEpubWorkspace}
                         onPlayer={openPlayerWorkspace}
                         onAnki={() => isMobileLayout ? openMobileSettingsPanel('anki') : openSettingsPanel('anki-cards')}
-                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('reading') : openSettingsPanel()}
+                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('') : openSettingsPanel()}
                     />
                 ) : resolvedWorkspace === "epub" ? (YATSU_READER_AVAILABLE ? (
                     <YatsuWorkspace language={settings.appLanguage} onHome={() => setActiveWorkspace("hub")} />
@@ -3634,7 +3655,7 @@ export default function App() {
                         onCloseLookup={closeLookupStack}
                         escMenuBlocked={isSettingsOpen || Boolean(updateDialog) || Boolean(confirmDialog)}
                         onHome={() => setActiveWorkspace("hub")}
-                        onSettings={() => isMobileLayout ? openMobileSettingsPanel("reading") : openSettingsPanel("epub-reader")}
+                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('') : openSettingsPanel("epub-reader")}
                         onOpenFile={openEpubFilePicker}
                         onSelectBook={(tabId) => {
                             setLookupStack([]);
@@ -3713,6 +3734,7 @@ export default function App() {
                         onEpubOrientationChange={handleEpubOrientationChange}
                         onEpubBookmarksChange={handleEpubBookmarksChange}
                         onHome={() => setActiveWorkspace("hub")}
+                        onCloseMobileSettings={handleCloseMobileSettings}
                     />
                 ) : (
                 <>

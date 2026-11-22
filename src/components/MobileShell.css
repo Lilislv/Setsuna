@@ -1059,6 +1059,25 @@ body .dict-mobile-scrim.is-leaving {
     animation: m-context-out 220ms var(--ease-exit) forwards;
 }
 
+.dict-mobile-context .lookup-word {
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+    border-radius: 4px;
+}
+
+.dict-mobile-context .lookup-word:hover {
+    background: transparent;
+}
+
+.dict-mobile-context .lookup-word.active,
+.dict-mobile-context .lookup-word:active {
+    background: var(--accent, var(--accent-blue));
+    color: #fff;
+    padding: 0 2px;
+    box-shadow: none;
+}
+
 @keyframes m-context-in {
     from { opacity: 0; transform: translateY(40px) scale(0.97); }
     to { opacity: 1; transform: none; }
