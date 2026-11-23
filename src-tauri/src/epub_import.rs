@@ -1127,7 +1127,44 @@ fn first_image_path_in_html(html: &str, chapter_base: &str) -> Option<String> {
     None
 }
 
-fn read_cover_thumbnail_data_url(zip: &mut ZipArchive<File>, path: &str) -> Option<String> {
+fn cover_cache_path(book_path: &str) -> PathBuf {
+    PathBuf::from(format!("{}.cover.jpg", book_path))
+}
+
+fn read_cached_cover_data_url(book_path: &str) -> Option<String> {
+    let cache_path = cover_cache_path(book_path);
+    let cache_meta = std::fs::metadata(&cache_path).ok()?;
+    if let Ok(book_meta) = std::fs::metadata(book_path) {
+        if let (Ok(cache_mod), Ok(book_mod)) = (cache_meta.modified(), book_meta.modified()) {
+            if cache_mod < book_mod {
+                return None;
+            }
+        }
+    }
+    let bytes = std::fs::read(&cache_path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let mime = if bytes.starts_with(b"\x89PNG") {
+        "image/png"
+    } else if bytes.starts_with(b"RIFF") && bytes.len() >= 12 && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+    let encoded = general_purpose::STANDARD.encode(bytes);
+    Some(format!("data:{};base64,{}", mime, encoded))
+}
+
+fn write_cover_cache_bytes(book_path: &str, bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    let cache_path = cover_cache_path(book_path);
+    let _ = std::fs::write(cache_path, bytes);
+}
+
+fn read_cover_thumbnail_bytes(zip: &mut ZipArchive<File>, path: &str) -> Option<(Vec<u8>, &'static str)> {
     let mime = safe_raster_mime_from_path(path)?;
     let mut file = zip_open_entry(zip, path)?;
     if file.size() > MAX_EPUB_IMAGE_BYTES {
@@ -1138,9 +1175,13 @@ fn read_cover_thumbnail_data_url(zip: &mut ZipArchive<File>, path: &str) -> Opti
     if bytes.is_empty() {
         return None;
     }
+    // Skip slow CPU decode/resize for already-compact cover images (WebView scales on GPU)
+    if bytes.len() <= 350_000 {
+        return Some((bytes, mime));
+    }
     if let Ok(decoded) = image::load_from_memory(&bytes) {
         let resized = if decoded.width() > 420 || decoded.height() > 630 {
-            decoded.thumbnail(420, 630)
+            decoded.resize(420, 630, image::imageops::FilterType::Triangle)
         } else {
             decoded
         };
@@ -1150,26 +1191,37 @@ fn read_cover_thumbnail_data_url(zip: &mut ZipArchive<File>, path: &str) -> Opti
             .write_to(&mut out, image::ImageFormat::Jpeg)
             .is_ok()
         {
-            let encoded = general_purpose::STANDARD.encode(out.into_inner());
-            return Some(format!("data:image/jpeg;base64,{}", encoded));
+            return Some((out.into_inner(), "image/jpeg"));
         }
     }
+    Some((bytes, mime))
+}
+
+fn read_cover_thumbnail_data_url(zip: &mut ZipArchive<File>, path: &str) -> Option<String> {
+    let (bytes, mime) = read_cover_thumbnail_bytes(zip, path)?;
     let encoded = general_purpose::STANDARD.encode(bytes);
     Some(format!("data:{};base64,{}", mime, encoded))
 }
 
-fn extract_cover_data_url(pkg: &mut ParsedPackage) -> Option<String> {
+fn extract_cover_data_url_cached(pkg: &mut ParsedPackage, book_path: &str) -> Option<String> {
+    if let Some(cached) = read_cached_cover_data_url(book_path) {
+        return Some(cached);
+    }
     if let Some(cover_path) = cover_path_from_opf(&pkg.opf, &pkg.manifest) {
-        if let Some(url) = read_cover_thumbnail_data_url(&mut pkg.zip, &cover_path) {
-            return Some(url);
+        if let Some((bytes, mime)) = read_cover_thumbnail_bytes(&mut pkg.zip, &cover_path) {
+            write_cover_cache_bytes(book_path, &bytes);
+            let encoded = general_purpose::STANDARD.encode(bytes);
+            return Some(format!("data:{};base64,{}", mime, encoded));
         }
     }
     for (_, item) in pkg.spine.iter().take(2) {
         if let Ok(html) = zip_read_to_string(&mut pkg.zip, &item.path) {
             let base = item.path.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
             if let Some(img_path) = first_image_path_in_html(&html, base) {
-                if let Some(url) = read_cover_thumbnail_data_url(&mut pkg.zip, &img_path) {
-                    return Some(url);
+                if let Some((bytes, mime)) = read_cover_thumbnail_bytes(&mut pkg.zip, &img_path) {
+                    write_cover_cache_bytes(book_path, &bytes);
+                    let encoded = general_purpose::STANDARD.encode(bytes);
+                    return Some(format!("data:{};base64,{}", mime, encoded));
                 }
             }
         }
@@ -2722,7 +2774,7 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
             .map_or(false, |mode| mode.contains("vertical"))
     };
 
-    let cover = extract_cover_data_url(&mut pkg);
+    let cover = extract_cover_data_url_cached(&mut pkg, &path);
 
     // Build ordered Table of Contents from EPUB nav/NCX mapped onto spine chapter indices & character offsets
     let mut chapter_starts: Vec<usize> = Vec::with_capacity(chapters.len());
@@ -2941,6 +2993,16 @@ fn prune_epub_files(dir: &Path, keep: &[i64]) -> Result<usize, String> {
     let mut removed = 0usize;
     for entry in entries.flatten() {
         let path = entry.path();
+        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if let Some(prefix) = file_name.strip_suffix(".cover.jpg") {
+            let id_str = prefix.split('.').next().unwrap_or("");
+            if let Ok(id) = id_str.parse::<i64>() {
+                if !keep.contains(&id) {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+            continue;
+        }
         let ext = path.extension().and_then(|ext| ext.to_str()).map(|s| s.to_ascii_lowercase());
         if !matches!(ext.as_deref(), Some("epub" | "txt" | "htmlz")) {
             continue;
@@ -2983,6 +3045,9 @@ pub async fn epub_prune(app: tauri::AppHandle, keep_ids: Vec<i64>) -> Result<usi
 }
 
 pub fn epub_cover_impl(path: String) -> Result<Option<String>, String> {
+    if let Some(cached) = read_cached_cover_data_url(&path) {
+        return Ok(Some(cached));
+    }
     match detect_book_format(&path) {
         BookFormat::Txt => return Ok(None),
         BookFormat::Htmlz => {
@@ -3000,7 +3065,7 @@ pub fn epub_cover_impl(path: String) -> Result<Option<String>, String> {
         BookFormat::Epub => {}
     }
     let mut pkg = open_epub_package(&path)?;
-    Ok(extract_cover_data_url(&mut pkg))
+    Ok(extract_cover_data_url_cached(&mut pkg, &path))
 }
 
 #[tauri::command]

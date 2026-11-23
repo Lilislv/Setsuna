@@ -266,33 +266,48 @@ export default function EpubWorkspace({
         let cancelled = false;
 
         void (async () => {
+            const uniqueTargets: Tab[] = [];
             const seenPaths = new Set<string>();
             for (const tab of targets) {
-                if (cancelled) return;
                 const path = tab.epub!.path!;
                 if (seenPaths.has(path)) continue;
                 seenPaths.add(path);
-
-                if (tab.epub!.author === undefined && !metaCacheRef.current.has(path)) {
-                    const meta = await openEpubBook(path).catch(() => null);
-                    if (meta) {
-                        metaCacheRef.current.set(path, meta);
-                        coverCache.set(path, meta.cover ?? null);
-                        if (!cancelled) {
-                            setCoversByPath((prev) => ({ ...prev, [path]: meta.cover ?? null }));
-                            onUpdateBookMeta(tab.id, meta);
-                        }
-                        continue;
-                    }
-                }
-                if (!coverCache.has(path)) {
-                    const cover = await loadEpubCover(path).catch(() => null);
-                    coverCache.set(path, cover);
-                    if (!cancelled) {
-                        setCoversByPath((prev) => ({ ...prev, [path]: cover }));
-                    }
-                }
+                uniqueTargets.push(tab);
             }
+
+            const CONCURRENCY = 4;
+            let cursor = 0;
+            const worker = async () => {
+                while (!cancelled) {
+                    const idx = cursor++;
+                    if (idx >= uniqueTargets.length) return;
+                    const tab = uniqueTargets[idx];
+                    const path = tab.epub!.path!;
+
+                    if (tab.epub!.author === undefined && !metaCacheRef.current.has(path)) {
+                        const meta = await openEpubBook(path).catch(() => null);
+                        if (meta) {
+                            metaCacheRef.current.set(path, meta);
+                            coverCache.set(path, meta.cover ?? null);
+                            if (!cancelled) {
+                                setCoversByPath((prev) => ({ ...prev, [path]: meta.cover ?? null }));
+                                onUpdateBookMeta(tab.id, meta);
+                            }
+                            continue;
+                        }
+                    }
+                    if (!coverCache.has(path)) {
+                        const cover = await loadEpubCover(path).catch(() => null);
+                        coverCache.set(path, cover);
+                        if (!cancelled) {
+                            setCoversByPath((prev) => ({ ...prev, [path]: cover }));
+                        }
+                    }
+                }
+            };
+            await Promise.all(
+                Array.from({ length: Math.min(CONCURRENCY, uniqueTargets.length) }, () => worker()),
+            );
         })();
 
         return () => {
