@@ -1,0 +1,148 @@
+name: Notify Discord on dev updates
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - dev
+    types:
+      - opened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Discord notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_DEV_WEBHOOK }}
+          DISCORD_USER_ID_SERI: ${{ secrets.DISCORD_USER_ID_SERI }}
+          DISCORD_USER_ID_LAMBDAWESTA: ${{ secrets.DISCORD_USER_ID_LAMBDAWESTA }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+
+          const webhookUrl = (process.env.DISCORD_WEBHOOK_URL || "").trim();
+          if (!webhookUrl) {
+            console.log("DISCORD_DEV_WEBHOOK secret is not configured yet — skipping notification.");
+            process.exit(0);
+          }
+
+          const eventPath = process.env.GITHUB_EVENT_PATH;
+          const event = JSON.parse(fs.readFileSync(eventPath, "utf8"));
+          const eventName = process.env.GITHUB_EVENT_NAME || "push";
+          const actor = (process.env.GITHUB_ACTOR || event.sender?.login || "unknown").trim();
+          const actorLower = actor.toLowerCase();
+          const avatarUrl = event.sender?.avatar_url || undefined;
+
+          // Optional ping of the OTHER developer so they know to sync dev
+          const seriId = (process.env.DISCORD_USER_ID_SERI || "").trim();
+          const lambdaId = (process.env.DISCORD_USER_ID_LAMBDAWESTA || "").trim();
+          let pingText = "";
+          if (actorLower === "lilislv" && lambdaId) {
+            pingText = `<@${lambdaId}> пора синхронизироваться с \`dev\``;
+          } else if (actorLower === "lambdawesta" && seriId) {
+            pingText = `<@${seriId}> пора синхронизироваться с \`dev\``;
+          }
+
+          let embed;
+          if (eventName === "pull_request" && event.pull_request) {
+            const pr = event.pull_request;
+            embed = {
+              title: `📬 Новый PR в dev (#${pr.number}): ${String(pr.title || "").slice(0, 200)}`,
+              url: pr.html_url,
+              color: 0x5865f2,
+              author: {
+                name: actor,
+                icon_url: avatarUrl,
+                url: event.sender?.html_url,
+              },
+              description: String(pr.body || "Без описания").slice(0, 800),
+              fields: [
+                { name: "Ветка", value: `\`${pr.head?.ref || "?"}\` → \`dev\``, inline: true },
+              ],
+              footer: { text: `${process.env.GITHUB_REPOSITORY} · dev sync` },
+              timestamp: new Date().toISOString(),
+            };
+          } else {
+            const commits = Array.isArray(event.commits) ? event.commits : [];
+            const count = commits.length;
+            const maxListed = 10;
+            const lines = commits.slice(0, maxListed).map((c) => {
+              const sha = String(c.id || "").slice(0, 7);
+              const firstLine = String(c.message || "").split("\n")[0].slice(0, 120);
+              return `• [\`${sha}\`](${c.url}) ${firstLine}`;
+            });
+            if (count > maxListed) {
+              lines.push(`…и ещё ${count - maxListed}`);
+            }
+
+            const touchedLogs = new Set();
+            for (const c of commits) {
+              for (const list of [c.added, c.modified]) {
+                for (const f of list || []) {
+                  if (typeof f === "string" && f.startsWith("dev-logs/") && f.endsWith(".md")) {
+                    touchedLogs.add(f);
+                  }
+                }
+              }
+            }
+
+            const fields = [];
+            if (touchedLogs.size > 0) {
+              fields.push({
+                name: "📝 Обновлённые логи",
+                value: Array.from(touchedLogs).map((f) => `\`${f}\``).join("\n"),
+                inline: false,
+              });
+            }
+            fields.push({
+              name: "🔄 Команда синхронизации",
+              value: "```bash\ngit fetch origin && git merge origin/dev\n```",
+              inline: false,
+            });
+
+            embed = {
+              title: `🔄 Ветка dev обновлена (${count} ${count === 1 ? "коммит" : count < 5 ? "коммита" : "коммитов"})`,
+              url: event.compare || event.repository?.html_url,
+              color: 0x4ad182,
+              author: {
+                name: actor,
+                icon_url: avatarUrl,
+                url: event.sender?.html_url,
+              },
+              description: lines.length > 0 ? lines.join("\n").slice(0, 3500) : "Обновление ветки `dev`.",
+              fields,
+              footer: { text: `${process.env.GITHUB_REPOSITORY} · branch: dev` },
+              timestamp: new Date().toISOString(),
+            };
+          }
+
+          const payload = {
+            username: "Setsuna GitHub",
+            content: pingText || undefined,
+            embeds: [embed],
+          };
+
+          (async () => {
+            const res = await fetch(webhookUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+              const body = await res.text().catch(() => "");
+              console.error(`Discord webhook failed (${res.status}): ${body}`);
+              process.exit(1);
+            }
+            console.log("Discord notification sent successfully.");
+          })();
+          EOF

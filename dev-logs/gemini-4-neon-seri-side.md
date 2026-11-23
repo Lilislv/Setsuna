@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-11-23 — Discord Push/PR Notifications for `dev` & Per-Model Dev Logs (`67254ee` + next)
+
+- **Per-model dev logs (`AGENTS.md`, `dev-logs/`):** Switched from a single `DEV_LOG.md` to per-model/developer logs (`dev-logs/<model-name>-<developer>-side.md`) so parallel work never causes log merge conflicts.
+- **Discord notifications (`.github/workflows/notify-dev-discord.yml`):**
+  - Triggers on `push` to `dev` and `pull_request` (`opened` / `ready_for_review`) targeting `dev`.
+  - Posts a rich embed via `secrets.DISCORD_DEV_WEBHOOK` listing commits, compare link, any updated `dev-logs/*.md` files, and `git fetch origin && git merge origin/dev`.
+  - Optionally pings the *other* developer when `DISCORD_USER_ID_SERI` / `DISCORD_USER_ID_LAMBDAWESTA` secrets are configured. Skips cleanly if `DISCORD_DEV_WEBHOOK` is not yet set.
+
+---
+
 ## 2026-11-23 — JLReq Japanese Typography, Folder Import, E-Ink, Volume Paging, Shelves, JSON Backup & TTS/Audiobook (`0a41b69`)
 
 - **JLReq / EBPAJ Japanese Typography & Spread:**
