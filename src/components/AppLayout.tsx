@@ -14,6 +14,7 @@ import { usePresence } from '../utils/presence';
 import './MobileShell.css';
 import { getTranslator } from '../utils/i18n';
 import TextContainer from './TextContainer';
+import EpubWorkspace from '../features/epub/EpubWorkspace';
 import StatsPanel from './StatsPanel';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -348,6 +349,15 @@ export const MobileLayout = ({
     onCloseLookup,
     lookupNotice,
     settingsRequest,
+    epubBooks = [],
+    onOpenEpubFile,
+    onRemoveEpubBook,
+    onUpdateEpubMeta,
+    onEpubProgress,
+    onEpubOrientationChange,
+    onEpubBookmarksChange,
+    onHome,
+    onCloseMobileSettings,
 }: any) => {
     const t = getTranslator(settings?.appLanguage || 'ru');
     const [activeMobileView, setActiveMobileView] = useState<'text' | 'lookup'>('text');
@@ -480,51 +490,72 @@ export const MobileLayout = ({
         return () => window.clearInterval(timer);
     }, [driveBusy, driveTransfer?.startedAt]);
 
+    const closeMobileSettings = () => {
+        setIsMobileSettingsOpen(false);
+        onCloseMobileSettings?.();
+    };
+
     const mobileBackStateRef = useRef({
         lookupOpen,
         isMobileSettingsOpen,
+        settingsHome,
         tabsOpen,
         isStatsOpen,
         activeMobileView,
         onCloseLookup,
+        onHome,
+        closeMobileSettings,
     });
     mobileBackStateRef.current = {
         lookupOpen,
         isMobileSettingsOpen,
+        settingsHome,
         tabsOpen,
         isStatsOpen,
         activeMobileView,
         onCloseLookup,
+        onHome,
+        closeMobileSettings,
     };
 
-    const hasMobileBackLayer = Boolean(
-        lookupOpen
-        || isMobileSettingsOpen
-        || tabsOpen
-        || isStatsOpen
-        || activeMobileView === 'lookup'
-    );
-
     useEffect(() => {
-        if (!hasMobileBackLayer) return;
-        const state = window.history.state as Record<string, unknown> | null;
-        if (state?.setsunaMobileLayer) return;
-        window.history.pushState({ ...(state || {}), setsunaMobileLayer: true }, '', window.location.href);
-    }, [hasMobileBackLayer]);
+        const pushWorkspaceGuard = () => {
+            const state = window.history.state as Record<string, unknown> | null;
+            if (!state?.setsunaMobileWorkspace) {
+                window.history.pushState({ ...(state || {}), setsunaMobileWorkspace: 'texthooker' }, '', window.location.href);
+            }
+        };
+        pushWorkspaceGuard();
 
-    useEffect(() => {
         const handleMobileBack = () => {
             const current = mobileBackStateRef.current;
+            const fontPickerClose = document.querySelector<HTMLButtonElement>('.font-picker-overlay .font-picker-close');
+            if (fontPickerClose) {
+                fontPickerClose.click();
+                pushWorkspaceGuard();
+                return;
+            }
             if (current.lookupOpen) {
                 current.onCloseLookup?.();
+                pushWorkspaceGuard();
             } else if (current.isMobileSettingsOpen) {
-                setIsMobileSettingsOpen(false);
+                if (!current.settingsHome) {
+                    setSettingsHome(true);
+                } else {
+                    current.closeMobileSettings();
+                }
+                pushWorkspaceGuard();
             } else if (current.tabsOpen) {
                 setTabsOpen(false);
+                pushWorkspaceGuard();
             } else if (current.isStatsOpen) {
                 setIsStatsOpen(false);
+                pushWorkspaceGuard();
             } else if (current.activeMobileView === 'lookup') {
                 setActiveMobileView('text');
+                pushWorkspaceGuard();
+            } else {
+                current.onHome?.();
             }
         };
         window.addEventListener('popstate', handleMobileBack);
@@ -1266,11 +1297,24 @@ export const MobileLayout = ({
                         <span>{isEn ? 'The mobile player will come after text, lookup, and Anki are stable.' : 'Мобильный плеер добавим после текста, лукапа и Anki.'}</span>
                     </div>
                 ) : activeTab?.mode === 'epub' ? (
-                    <div className="m-empty">
-                        <div className="m-empty-icon">📖</div>
-                        <strong>EPUB</strong>
-                        <span>{isEn ? 'The reader will use the same dictionary and mining flow.' : 'Ридер будет использовать тот же словарь и майнинг.'}</span>
-                    </div>
+                    <EpubWorkspace
+                        books={epubBooks}
+                        activeBookTab={activeTab}
+                        settings={settings}
+                        isMobile={true}
+                        standaloneMobile={false}
+                        onHome={() => setActiveMobileView('text')}
+                        onSettings={() => openSettingsPage('reading')}
+                        onOpenFile={() => onOpenEpubFile?.()}
+                        onSelectBook={(tabId) => switchTab(tabId)}
+                        onRemoveBook={(tabId) => onRemoveEpubBook?.(tabId)}
+                        onUpdateBookMeta={(tabId, meta) => onUpdateEpubMeta?.(tabId, meta)}
+                        onProgressChange={(tabId, chIdx, offset, prog) => onEpubProgress?.(tabId, chIdx, offset, prog)}
+                        onChangeBookOrientation={(tabId, orient) => onEpubOrientationChange?.(tabId, orient)}
+                        onChangeBookBookmarks={(tabId, bookmarks) => onEpubBookmarksChange?.(tabId, bookmarks)}
+                        onUpdateSettings={(patch) => updateSettings({ ...settings, ...patch })}
+                        onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
+                    />
                 ) : activeTab?.lines?.length ? (
                     <TextContainer
                         contentKey={activeTab?.id ?? activeTabId}
@@ -1426,7 +1470,7 @@ export const MobileLayout = ({
                                     <p className="m-eyebrow">SETSUNA</p>
                                     <h1>{isEn ? 'Settings' : 'Настройки'}</h1>
                                 </div>
-                                <button type="button" className="m-round-btn" onClick={() => setIsMobileSettingsOpen(false)} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                                <button type="button" className="m-round-btn" onClick={closeMobileSettings} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
                             </header>
                             {driveBusy && driveTransfer && (
                                 <button type="button" className="m-card m-transfer-card" onClick={() => openSettingsPage('drive')}>
@@ -1456,7 +1500,7 @@ export const MobileLayout = ({
                                 <button type="button" className="m-back" onClick={() => setSettingsHome(true)}>
                                     <span aria-hidden="true">‹</span> {isEn ? 'Settings' : 'Настройки'}
                                 </button>
-                                <button type="button" className="m-round-btn" onClick={() => setIsMobileSettingsOpen(false)} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                                <button type="button" className="m-round-btn" onClick={closeMobileSettings} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
                             </header>
                             <h1 className="m-page-title">{currentPage?.label || (isEn ? 'Settings' : 'Настройки')}</h1>
                             <div className="mobile-settings-sheet m-section">

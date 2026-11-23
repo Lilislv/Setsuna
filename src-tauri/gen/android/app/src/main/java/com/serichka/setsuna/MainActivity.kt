@@ -72,7 +72,22 @@ class MainActivity : TauriActivity() {
   @Deprecated("Deprecated in Android API 35")
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.onActivityResult(requestCode, resultCode, data)
-    if (requestCode != REQUEST_DICTIONARIES || resultCode != RESULT_OK || data == null) return
+    if (resultCode != RESULT_OK || data == null) return
+    if (requestCode == REQUEST_EPUB) {
+      val uri = data.data ?: return
+      Thread {
+        val directory = File(cacheDir, "epub-imports/" + java.util.UUID.randomUUID().toString()).apply { mkdirs() }
+        try {
+          val copiedPath = copyEpubUri(uri, directory)
+          dispatchWebEvent("setsuna-mobile-epub", copiedPath)
+        } catch (error: Exception) {
+          directory.deleteRecursively()
+          dispatchWebEvent("setsuna-mobile-epub-failed", error.message ?: "Could not read the selected EPUB file.")
+        }
+      }.start()
+      return
+    }
+    if (requestCode != REQUEST_DICTIONARIES) return
     val uris = buildList {
       data.data?.let(::add)
       data.clipData?.let { clip -> for (index in 0 until clip.itemCount) add(clip.getItemAt(index).uri) }
@@ -90,6 +105,40 @@ class MainActivity : TauriActivity() {
         dispatchWebEvent("setsuna-mobile-dictionaries-copy-failed", error.message ?: "Could not read the selected dictionary files.")
       }
     }.start()
+  }
+
+  private fun copyEpubUri(uri: android.net.Uri, directory: File): String {
+    var size = 0L
+    val displayName = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+      if (!cursor.moveToFirst()) null else {
+        val sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE)
+        if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) size = cursor.getLong(sizeColumn)
+        cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+      }
+    } ?: "book-${System.currentTimeMillis()}.epub"
+    require(displayName.endsWith(".epub", true)) { "Unsupported format: $displayName" }
+    val safeName = File(displayName).name
+    require(safeName != "." && safeName != "..") { "Invalid filename" }
+    require(size <= 0 || directory.usableSpace > size + 16L * 1024 * 1024) { "Not enough space to copy $displayName" }
+    val target = File(directory, safeName)
+    try {
+      val input = contentResolver.openInputStream(uri) ?: error("Could not open $displayName")
+      input.use { source -> FileOutputStream(target).use { output ->
+        val buffer = ByteArray(128 * 1024)
+        var copied = 0L
+        while (true) {
+          val bytes = source.read(buffer)
+          if (bytes < 0) break
+          output.write(buffer, 0, bytes)
+          copied += bytes
+        }
+        require(size <= 0 || copied == size) { "Incomplete file copy: $displayName" }
+      } }
+      return target.absolutePath
+    } catch (error: Exception) {
+      target.delete()
+      throw error
+    }
   }
 
   private fun copyDictionaryUri(uri: android.net.Uri, index: Int, count: Int, directory: File): String {
@@ -175,5 +224,6 @@ class MainActivity : TauriActivity() {
     const val ACTION_OVERLAY_LOOKUP = "com.serichka.setsuna.overlay.LOOKUP"
     const val ACTION_OPEN_APP = "com.serichka.setsuna.overlay.OPEN_APP"
     const val REQUEST_DICTIONARIES = 8122
+    const val REQUEST_EPUB = 8123
   }
 }

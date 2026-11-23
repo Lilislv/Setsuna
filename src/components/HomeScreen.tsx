@@ -1,5 +1,5 @@
 import { appVersionLabel } from "../utils/appVersion";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { IconBookTab, IconPlayerTab, IconSettings, IconTextTab, IconWifi } from "./Icons";
 import { ANIME_PLAYER_AVAILABLE, EPUB_READER_AVAILABLE, YATSU_READER_AVAILABLE } from "../utils/featureFlags";
 import "./HomeScreen.css";
@@ -25,6 +25,12 @@ type ModeItem = {
 };
 
 export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, onAnki, onSettings, wsConnected }: HomeScreenProps) {
+    useEffect(() => {
+        const state = window.history.state as Record<string, unknown> | null;
+        if (state?.setsunaMobileWorkspace) {
+            window.history.back();
+        }
+    }, []);
     const isEn = language === "en";
     const items: ModeItem[] = [
         {

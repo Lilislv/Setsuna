@@ -26,6 +26,34 @@ class MobileFileBridge(private val activity: Activity) {
     }
 
     @JavascriptInterface
+    fun selectEpub(): String = wrap {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf("application/epub+zip", "application/octet-stream"),
+            )
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+        }
+        activity.runOnUiThread {
+            activity.startActivityForResult(intent, MainActivity.REQUEST_EPUB)
+        }
+        JSONObject().put("opened", true)
+    }
+
+    @JavascriptInterface
+    fun cleanupEpub(path: String): String = wrap {
+        val directory = java.io.File(activity.cacheDir, "epub-imports").canonicalFile
+        val file = java.io.File(path).canonicalFile
+        if (file.toPath().startsWith(directory.toPath()) && file != directory && file.isFile) {
+            file.delete()
+            file.parentFile?.takeIf { it != directory }?.delete()
+        }
+        JSONObject().put("cleaned", true)
+    }
+
+    @JavascriptInterface
     fun cleanupDictionaries(pathsJson: String): String = wrap {
         val directory = java.io.File(activity.cacheDir, "dictionary-imports").canonicalFile
         val paths = org.json.JSONArray(pathsJson)

@@ -15,6 +15,8 @@ import SettingsAI from "./Settings/SettingsAI";
 import { isMobilePlatform } from "../utils/platform";
 import { IconBookTab, IconClose, IconCloud, IconEye, IconImport, IconMessage, IconRefresh, IconSearch, IconSparkle, IconTextTab } from "./Icons";
 import { DEFAULT_SETTINGS } from "../utils/constants";
+import { EPUB_READER_AVAILABLE } from "../utils/featureFlags";
+import { buildEpubFontPresets } from "../features/epub/epubFonts";
 import { getTranslator } from "../utils/i18n";
 import "./SettingsModal.css";
 
@@ -57,7 +59,7 @@ export interface AppSettings {
   mobileOverlayOpacity?: number; mobileOverlayTextColor?: string; mobileOverlayBackgroundColor?: string; mobileOverlayBorderColor?: string;
   mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
   mobileOverlayLocked?: boolean; mobileOverlayToolbarExpanded?: boolean;
-  epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubPagePadding?: number; epubShowImages?: boolean; epubImageMaxWidth?: number;
+  epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'auto' | 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubPagePadding?: number; epubShowImages?: boolean; epubBlurImages?: boolean; epubImageMaxWidth?: number;
   playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerMiningPreferVideo: boolean; playerMiningUseClipForAnki: boolean;
   playerKeyPlayPause: string; playerKeyBack: string; playerKeyForward: string; playerKeyMine: string; playerKeyOffsetMinus: string; playerKeyOffsetPlus: string;
   discordEnabled: boolean; discordClientId: string; discordShowTab: boolean; discordShowStats: boolean; discordShowChars: boolean; discordShowWords: boolean; discordShowSentences: boolean; discordShowProgress: boolean; discordShowPaused: boolean; discordShowTimer: boolean; discordShowButtons: boolean; discordShowSpeed?: boolean; discordTitleInMemberList?: boolean;
@@ -823,6 +825,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           setActiveTab('anki');
           setActiveSubTab(initialSection);
           setHighlightedSection(initialSection);
+      } else if (initialSection.startsWith('epub-')) {
+          setActiveTab('epub');
+          setActiveSubTab(initialSection);
+          setHighlightedSection(initialSection);
       }
   }, [isOpen, initialSection]);
 
@@ -923,6 +929,15 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                       <SettingsSubNavButton active={activeSubTab === 'text-src'} label={t('settings.nav.sources')} onClick={() => handleNav('text', 'text-src')} />
                       <SettingsSubNavButton active={activeSubTab === 'text-filters'} label={t('settings.nav.filters')} onClick={() => handleNav('text', 'text-filters')} />
                   </div>}
+                  {EPUB_READER_AVAILABLE && (
+                      <>
+                          <SettingsNavButton active={activeTab === 'epub'} icon={<IconBookTab />} label={isEnglish ? 'EPUB reader' : 'EPUB-ридер'} onClick={() => handleNav('epub', 'epub-reader')} />
+                          {activeTab === 'epub' && <div className="settings-subnav">
+                              <SettingsSubNavButton active={activeSubTab === 'epub-reader'} label={isEnglish ? 'Reading view' : 'Вид читалки'} onClick={() => handleNav('epub', 'epub-reader')} />
+                              <SettingsSubNavButton active={activeSubTab === 'epub-layout'} label={isEnglish ? 'Layout & images' : 'Раскладка и картинки'} onClick={() => handleNav('epub', 'epub-layout')} />
+                          </div>}
+                      </>
+                  )}
                   <SettingsNavButton active={activeTab === 'jl'} icon={<IconTextTab />} label="Setsuna Flow" onClick={() => handleNav('jl', 'jl-main')} />
               </div>
 
@@ -1546,37 +1561,65 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                             </label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Text direction' : 'Направление текста'}
-                                <select className="modern-select" value={settings.epubTextOrientation || 'horizontal'} onChange={(e) => updateSetting('epubTextOrientation', e.target.value as any)} style={{ marginTop: 6 }}>
+                                <select className="modern-select" value={settings.epubTextOrientation || 'auto'} onChange={(e) => updateSetting('epubTextOrientation', e.target.value as any)} style={{ marginTop: 6 }}>
+                                    <option value="auto">{settings.appLanguage === 'en' ? 'Auto (book default)' : 'Авто (как в книге)'}</option>
                                     <option value="horizontal">{settings.appLanguage === 'en' ? 'Horizontal' : 'Горизонтально'}</option>
                                     <option value="vertical">{settings.appLanguage === 'en' ? 'Vertical right-to-left' : 'Вертикально справа налево'}</option>
                                 </select>
+                                <span style={{ display: 'block', marginTop: 4, fontSize: '11px', opacity: 0.78 }}>
+                                    {settings.appLanguage === 'en'
+                                        ? 'Applies to Japanese books; English books always stay horizontal.'
+                                        : 'Применяется к японским книгам; английские всегда горизонтальные.'}
+                                </span>
                             </label>
-                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-                                {settings.appLanguage === 'en' ? 'Font' : 'Шрифт'}
-                                <select className="modern-select" value={settings.epubFontFamily || settings.fontFamily} onChange={(e) => updateSetting('epubFontFamily', e.target.value)} style={{ marginTop: 6 }}>
-                                    <option value="'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif">{t('wizard.font.serif')}</option>
-                                    <option value="'Noto Sans JP', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'BIZ UDPGothic', sans-serif">{t('wizard.font.sans')}</option>
-                                    <option value="'Yu Gothic UI', 'Yu Gothic', 'Meiryo', sans-serif">{t('wizard.font.yu')}</option>
-                                    <option value="'Meiryo', 'Yu Gothic UI', sans-serif">{t('wizard.font.meiryo')}</option>
-                                </select>
-                            </label>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                <span>{settings.appLanguage === 'en' ? 'Font' : 'Шрифт'}</span>
+                                <div style={{ display: 'flex', marginTop: 6 }}>
+                                    <FontPicker
+                                        english={settings.appLanguage === 'en'}
+                                        title={settings.appLanguage === 'en' ? 'EPUB reader font' : 'Шрифт читалки'}
+                                        value={settings.epubFontFamily || settings.fontFamily}
+                                        onChange={(value) => updateSetting('epubFontFamily', value)}
+                                        defaultFilter="all"
+                                        showLatinFilter
+                                        sampleText="あの日見た花の名前を、僕達はまだ知らない。"
+                                        latinSampleText="Down the rabbit-hole went Alice, never once considering how to get out again."
+                                        presets={buildEpubFontPresets({
+                                            serif: t('wizard.font.serif'),
+                                            sans: t('wizard.font.sans'),
+                                            yu: t('wizard.font.yu'),
+                                            meiryo: t('wizard.font.meiryo'),
+                                            english: settings.appLanguage === 'en',
+                                        })}
+                                        customFont={(settings.customFontData || settings.customFontPath) && settings.customFontFamily
+                                            ? {
+                                                value: `'${settings.customFontFamily}', sans-serif`,
+                                                label: settings.customFontName || (settings.appLanguage === 'en' ? 'Custom font' : 'Свой шрифт'),
+                                                hint: settings.appLanguage === 'en' ? 'Font file' : 'Файл шрифта',
+                                            }
+                                            : null}
+                                        onPickFile={() => void handleCustomFontPick()}
+                                    />
+                                </div>
+                            </div>
                             <button className="btn-primary" onClick={() => onSettingsChange({ ...settings, epubFontFamily: settings.fontFamily, epubFontSize: settings.fontSize, epubTextOrientation: settings.textOrientation })} style={{ alignSelf: 'end', padding: '8px 10px', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Copy text-hooker look' : 'Скопировать вид текстхукера'}
                             </button>
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px' }}>
-                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Font size' : 'Размер шрифта'}<input type="number" min="12" max="72" className="modern-input" value={settings.epubFontSize ?? 26} onChange={(e) => updateSetting('epubFontSize', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
-                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Line height' : 'Высота строки'}<input type="number" min="1.1" max="3" step="0.05" className="modern-input" value={settings.epubLineHeight ?? 2.05} onChange={(e) => updateSetting('epubLineHeight', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
-                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Paragraph gap' : 'Отступ абзацев'}<input type="number" min="0" max="80" className="modern-input" value={settings.epubParagraphSpacing ?? 22} onChange={(e) => updateSetting('epubParagraphSpacing', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
-                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Page padding' : 'Поля страницы'}<input type="number" min="0" max="120" className="modern-input" value={settings.epubPagePadding ?? 34} onChange={(e) => updateSetting('epubPagePadding', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Font size' : 'Размер шрифта'}<input type="number" min="12" max="72" className="modern-input" value={settings.epubFontSize ?? 21} onChange={(e) => updateSetting('epubFontSize', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Line height' : 'Высота строки'}<input type="number" min="1.1" max="3" step="0.05" className="modern-input" value={settings.epubLineHeight ?? 1.65} onChange={(e) => updateSetting('epubLineHeight', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Paragraph gap' : 'Отступ абзацев'}<input type="number" min="0" max="80" className="modern-input" value={settings.epubParagraphSpacing ?? 14} onChange={(e) => updateSetting('epubParagraphSpacing', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Page padding' : 'Поля страницы'}<input type="number" min="0" max="120" className="modern-input" value={settings.epubPagePadding ?? 24} onChange={(e) => updateSetting('epubPagePadding', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
                         </div>
                     </div>
 
                     <div id="epub-layout" className={`modern-card ${highlightedSection === 'epub-layout' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>
                         <div className="card-label" style={{ color: 'var(--text-main)' }}>{settings.appLanguage === 'en' ? 'Page layout and images' : 'Раскладка и картинки'}</div>
-                        <label className="checkbox-label" style={{ marginBottom: 14 }}><input type="checkbox" checked={settings.epubShowImages ?? true} onChange={(e) => updateSetting('epubShowImages', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Show EPUB images' : 'Показывать картинки из EPUB'}</label>
+                        <label className="checkbox-label" style={{ marginBottom: 10 }}><input type="checkbox" checked={settings.epubShowImages ?? true} onChange={(e) => updateSetting('epubShowImages', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Show EPUB images' : 'Показывать картинки из EPUB'}</label>
+                        <label className="checkbox-label" style={{ marginBottom: 14 }}><input type="checkbox" checked={settings.epubBlurImages ?? false} onChange={(e) => updateSetting('epubBlurImages', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Blur illustrations until clicked (spoiler-safe)' : 'Размывать иллюстрации до клика (без спойлеров)'}</label>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px' }}>
-                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Text column width' : 'Ширина текста'}<input type="number" min="420" max="1400" className="modern-input" value={settings.epubMaxWidth ?? 880} onChange={(e) => updateSetting('epubMaxWidth', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Text column width' : 'Ширина текста'}<input type="number" min="420" max="1400" className="modern-input" value={settings.epubMaxWidth ?? 1040} onChange={(e) => updateSetting('epubMaxWidth', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Image max width' : 'Макс. ширина картинки'}<input type="number" min="240" max="1400" className="modern-input" value={settings.epubImageMaxWidth ?? 720} onChange={(e) => updateSetting('epubImageMaxWidth', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
                         </div>
                     </div>

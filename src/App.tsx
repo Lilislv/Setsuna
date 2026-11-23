@@ -4,7 +4,7 @@ import { isMobilePlatform } from './utils/platform';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { getMobileFlowTimer } from './utils/mobileOverlay';
-import { cleanupMobileDictionaries } from './utils/mobileFiles';
+import { cleanupMobileDictionaries, cleanupMobileEpub, openMobileEpubPicker } from './utils/mobileFiles';
 import { emit, emitTo, listen, UnlistenFn } from '@tauri-apps/api/event';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -17,6 +17,13 @@ import SettingsModal, { AppSettings, WsConfig } from "./components/SettingsModal
 import { removeGarbageTags } from "./utils/textCleaner";
 import { DictEntry, LookupData } from "./components/Lookuper";
 import LookupSurface from "./features/lookup/LookupSurface";
+import EpubWorkspace from "./features/epub/EpubWorkspace";
+import { openEpubBook, pruneEpubFiles, storeEpubFile } from "./features/epub/epubApi";
+import {
+    isSupportedBookPath,
+    type EpubBookMeta,
+    type EpubOrientationSetting,
+} from "./features/epub/epubModel";
 import "./App.css";
 
 import { calculateStats } from "./utils/helpers";
@@ -25,8 +32,8 @@ import { recordDailyLine, recordDailySeconds } from "./utils/dailyStats";
 import { cachedGlyphScale, glyphScaleFor } from "./utils/fontNormalize";
 import { appendSpeedSample } from "./utils/speedSamples";
 import { listTabHistoryIds, loadTabHistory, markTabHistorySaved, mergeTabHistory, pruneTabHistories, saveChangedTabHistories, slimTabForWorkspace, tailTabForCache } from "./utils/tabHistory";
-import { IconBookTab, IconPin, IconPlayerTab, IconSearch } from "./components/Icons";
-import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, Tab, themes, PlayerMiningClip, ReadingSpeedSample, isTabLocked, type CaptureSourceBinding } from "./utils/constants";
+import { IconPin, IconPlayerTab, IconSearch } from "./components/Icons";
+import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, EpubBookmark, Tab, themes, PlayerMiningClip, ReadingSpeedSample, isTabLocked, type CaptureSourceBinding } from "./utils/constants";
 import { useSharedReading } from "./utils/useSharedReading";
 import SharedReadingDialog from "./components/SharedReadingDialog";
 import { registerCaptureSourceRequest } from "./utils/captureRequest";
@@ -712,6 +719,7 @@ export default function App() {
     const sentenceLookupRequestRef = useRef(0);
     const [mobileLookupNotice, setMobileLookupNotice] = useState('');
     const [mobileSettingsRequest, setMobileSettingsRequest] = useState({ id: 0, section: 'reading' });
+    const mobileSettingsReturnRef = useRef<{ workspace: 'hub' | 'epub' | null; tabId: number | null }>({ workspace: null, tabId: null });
     const [playerMiningClip, setPlayerMiningClip] = useState<PlayerMiningClip | null>(null);
     const [jsonImportProgress, setJsonImportProgress] = useState<{ current: number; total: number } | null>(null);
     const [dictImportProgress, setDictImportProgress] = useState<{
@@ -768,6 +776,7 @@ export default function App() {
             if (result.missing.length > 0) return result.missing;
             setTabs((prev) => prev.map((tab) => {
                 if (tab.id !== activeTabId || tab.lines !== activeTabLines) return tab;
+                if (tab.mode && tab.mode !== "text") return tab;
                 // Tabs from builds that trimmed history keep their full character
                 // count but only part of the text; extrapolate words/sentences
                 // from the surviving lines instead of collapsing them.
@@ -1275,6 +1284,7 @@ export default function App() {
             const isCtrl = e.ctrlKey || e.metaKey;
 
             if (isCtrl && (code === 'KeyF' || key === 'f' || key === 'а')) {
+                if (resolvedWorkspace === 'epub') return;
                 e.preventDefault();
                 e.stopPropagation();
                 setIsSearchOpen(true);
@@ -1316,7 +1326,7 @@ export default function App() {
 
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [isSearchOpen, isSettingsOpen, settings.appLanguage]);
+    }, [isSearchOpen, isSettingsOpen, resolvedWorkspace, settings.appLanguage]);
 
     useEffect(() => {
         if (!searchQuery.trim() || !activeTab) {
@@ -1594,19 +1604,223 @@ export default function App() {
     }, [runDictImport, t]);
 
     const importEpubPath = useCallback(async (filePath: string, targetTabId?: number) => {
-        void filePath;
-        void targetTabId;
-        alert(settings.appLanguage === "en"
-            ? "EPUB reader is temporarily disabled while reading support is being developed."
-            : "EPUB-читалка временно отключена, пока стабилизируем браузер и lookup.");
-    }, [settings.appLanguage, switchTab]);
+        try {
+            const meta = await openEpubBook(filePath);
+            const tabId = targetTabId ?? nextTabId.current++;
+            const storedPath = await storeEpubFile(filePath, tabId);
+
+            setTabs((prev) => {
+                const exists = prev.some((tab) => tab.id === tabId);
+                const nextEpub = {
+                    title: meta.title,
+                    author: meta.author || undefined,
+                    path: storedPath,
+                    language: meta.language,
+                    defaultVertical: meta.defaultVertical,
+                    chapterIndex: 0,
+                    chapterOffset: 0,
+                    chapterCount: meta.chapters.length,
+                    lastOpenedAt: Date.now(),
+                    lines: [],
+                    progress: 0,
+                };
+                if (exists) {
+                    return prev.map((tab) => (
+                        tab.id === tabId
+                            ? {
+                                  ...tab,
+                                  name: meta.title || tab.name,
+                                  mode: "epub",
+                                  archived: false,
+                                  epub: { ...tab.epub, ...nextEpub },
+                              }
+                            : tab
+                    ));
+                }
+                return [
+                    ...prev,
+                    {
+                        id: tabId,
+                        name: meta.title,
+                        lines: [],
+                        stats: { ...defaultStats },
+                        status: "reading",
+                        speedSamples: [],
+                        mode: "epub",
+                        readerProgress: 0,
+                        epub: nextEpub,
+                    },
+                ];
+            });
+
+            switchTab(tabId);
+            setLookupStack([]);
+            setActiveWorkspace("epub");
+        } catch (error) {
+            setNotice({
+                title: t("epub.title"),
+                message: t("epub.loadError", { error: String(error) }),
+            });
+        }
+    }, [switchTab, t]);
+
+    const openEpubFilePicker = useCallback(async () => {
+        try {
+            if (isMobilePlatform() && openMobileEpubPicker()) {
+                return;
+            }
+            const selected = await open({
+                multiple: false,
+                directory: false,
+                filters: [{ name: "Books (EPUB, TXT, HTMLZ)", extensions: ["epub", "txt", "htmlz"] }],
+            });
+            if (typeof selected === "string" && selected.trim()) {
+                await importEpubPath(selected);
+            }
+        } catch (error) {
+            setNotice({
+                title: t("epub.title"),
+                message: t("epub.loadError", { error: String(error) }),
+            });
+        }
+    }, [importEpubPath, t]);
+
+    useEffect(() => {
+        if (!isMobilePlatform()) return;
+        const onMobileEpubSelected = (event: Event) => {
+            const path = String((event as CustomEvent<string>).detail || "").trim();
+            if (!path) return;
+            void importEpubPath(path).finally(() => {
+                cleanupMobileEpub(path);
+            });
+        };
+        const onMobileEpubFailed = (event: Event) => {
+            const detail = String((event as CustomEvent<string>).detail || "");
+            setNotice({
+                title: t("epub.title"),
+                message: t("epub.loadError", { error: detail }),
+            });
+        };
+        window.addEventListener("setsuna-mobile-epub", onMobileEpubSelected);
+        window.addEventListener("setsuna-mobile-epub-failed", onMobileEpubFailed);
+        return () => {
+            window.removeEventListener("setsuna-mobile-epub", onMobileEpubSelected);
+            window.removeEventListener("setsuna-mobile-epub-failed", onMobileEpubFailed);
+        };
+    }, [importEpubPath, t]);
+
+    const handleEpubUpdateMeta = useCallback((tabId: number, meta: EpubBookMeta) => {
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            const nextAuthor = meta.author || undefined;
+            if (
+                tab.epub.title === meta.title
+                && tab.epub.author === nextAuthor
+                && tab.epub.language === meta.language
+                && tab.epub.defaultVertical === meta.defaultVertical
+                && tab.epub.chapterCount === meta.chapters.length
+            ) {
+                return tab;
+            }
+            return {
+                ...tab,
+                name: meta.title || tab.name,
+                epub: {
+                    ...tab.epub,
+                    title: meta.title,
+                    author: nextAuthor,
+                    language: meta.language,
+                    defaultVertical: meta.defaultVertical,
+                    chapterCount: meta.chapters.length,
+                    lines: [],
+                },
+            };
+        }));
+    }, []);
+
+    const handleEpubProgress = useCallback((tabId: number, chapterIndex: number, chapterOffset: number, bookProgress: number) => {
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            return {
+                ...tab,
+                readerProgress: bookProgress,
+                epub: {
+                    ...tab.epub,
+                    chapterIndex,
+                    chapterOffset,
+                    progress: bookProgress,
+                    lastOpenedAt: Date.now(),
+                    lines: [],
+                },
+            };
+        }));
+    }, []);
+
+    const handleEpubOrientationChange = useCallback((tabId: number, orientation: EpubOrientationSetting) => {
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            return {
+                ...tab,
+                epub: {
+                    ...tab.epub,
+                    orientation,
+                    lines: [],
+                },
+            };
+        }));
+    }, []);
+
+    const handleEpubBookmarksChange = useCallback((tabId: number, bookmarks: EpubBookmark[]) => {
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            return {
+                ...tab,
+                epub: {
+                    ...tab.epub,
+                    bookmarks,
+                    lines: [],
+                },
+            };
+        }));
+    }, []);
+
+    const handleRemoveEpubBook = useCallback((tabId: number) => {
+        const target = tabsRef.current.find((tab) => tab.id === tabId && tab.mode === "epub");
+        if (!target) return;
+        const title = target.epub?.title || target.name;
+        setConfirmDialog({
+            title: t("epub.removeBook"),
+            message: t("epub.removeBookConfirm", { title }),
+            onConfirm: () => {
+                const remainingTabs = tabsRef.current.filter((tab) => tab.id !== tabId);
+                const keepEpubIds = remainingTabs.filter((tab) => tab.mode === "epub").map((tab) => tab.id);
+                setTabs(remainingTabs);
+                if (activeTabIdRef.current === tabId) {
+                    const nextBook = remainingTabs.find((tab) => tab.mode === "epub" && !tab.archived);
+                    const nextText = remainingTabs.find((tab) => !tab.archived && (!tab.mode || tab.mode === "text"));
+                    if (nextBook) switchTab(nextBook.id);
+                    else if (nextText) switchTab(nextText.id);
+                }
+                pruneEpubFiles(keepEpubIds).catch(() => {});
+            },
+        });
+    }, [switchTab, t]);
 
     const epubReloadingRef = useRef<Set<number>>(new Set());
     useEffect(() => {
         if (!activeTab || activeTab.mode !== 'epub') return;
+        const path = activeTab.epub?.path;
+        if (!path) return;
+        if (activeTab.epub?.language && typeof activeTab.epub?.chapterCount === "number") return;
         if (epubReloadingRef.current.has(activeTab.id)) return;
         epubReloadingRef.current.add(activeTab.id);
-    }, [activeTab?.id, activeTab?.mode, activeTab?.epub?.path, activeTab?.epub?.chapters?.length, importEpubPath]);
+        openEpubBook(path)
+            .then((meta) => handleEpubUpdateMeta(activeTab.id, meta))
+            .catch(() => {})
+            .finally(() => {
+                epubReloadingRef.current.delete(activeTab.id);
+            });
+    }, [activeTab?.id, activeTab?.mode, activeTab?.epub?.path, activeTab?.epub?.language, activeTab?.epub?.chapterCount, handleEpubUpdateMeta]);
 
     const handleImportYomitanFromWizard = useCallback(async () => {
         try {
@@ -1793,7 +2007,7 @@ export default function App() {
             const file = paths[0];
             const lowerFile = file.toLowerCase();
 
-            if (lowerFile.endsWith('.epub')) {
+            if (isSupportedBookPath(file)) {
                 await importEpubPath(file);
             } else if (lowerFile.endsWith('.json')) {
                 try {
@@ -1928,7 +2142,7 @@ export default function App() {
 
     useEffect(() => {
         const nativeTimer = getMobileFlowTimer();
-        if (isPaused && !nativeTimer) {
+        if (resolvedWorkspace === "epub" || activeTab?.mode === "epub" || (isPaused && !nativeTimer)) {
             setTimerDisplayOffset(0);
             return;
         }
@@ -1992,7 +2206,7 @@ export default function App() {
             commitElapsed(pendingSeconds);
             setTimerDisplayOffset(0);
         };
-    }, [isPaused, activeTabId, setTabs, settings.autoPauseOnIdle, settings.autoPauseIdleMinutes]);
+    }, [isPaused, activeTabId, resolvedWorkspace, activeTab?.mode, setTabs, settings.autoPauseOnIdle, settings.autoPauseIdleMinutes]);
 
     const triggerFlash = useCallback(() => {
         setIsFlashing(false);
@@ -2000,6 +2214,9 @@ export default function App() {
     }, []);
 
     const handleNewText = useCallback((rawText: string, bypassPause: boolean = false, publishToTextSync: boolean = true, suppliedFurigana?: unknown) => {
+        const activeTabForIncoming = tabsRef.current.find((tab) => tab.id === activeTabIdRef.current);
+        if (activeTabForIncoming?.mode && activeTabForIncoming.mode !== 'text') return;
+
         let cleanText = settings.enableTextCleaner !== false ? removeGarbageTags(rawText) : rawText;
         if (!cleanText) return;
 
@@ -2397,12 +2614,40 @@ export default function App() {
         setActiveWorkspace("texthooker");
     };
 
-    const openMobileSettingsPanel = (section: string = 'reading') => {
-        openTextHookerWorkspace();
+    const openMobileSettingsPanel = (section: string = '') => {
+        const currentWorkspace = activeWorkspace === "epub" || activeWorkspace === "hub" ? activeWorkspace : null;
+        mobileSettingsReturnRef.current = {
+            workspace: currentWorkspace,
+            tabId: activeTabIdRef.current,
+        };
+        if (currentWorkspace !== "epub") {
+            openTextHookerWorkspace();
+        } else {
+            setActiveWorkspace("texthooker");
+        }
         setMobileSettingsRequest((current) => ({ id: current.id + 1, section }));
     };
 
-    const openEpubWorkspace = () => { setLookupStack([]); setActiveWorkspace("epub"); };
+    const handleCloseMobileSettings = () => {
+        const ret = mobileSettingsReturnRef.current;
+        mobileSettingsReturnRef.current = { workspace: null, tabId: null };
+        if (ret.workspace === "epub") {
+            if (ret.tabId !== null) switchTab(ret.tabId);
+            setActiveWorkspace("epub");
+        } else if (ret.workspace === "hub") {
+            setActiveWorkspace("hub");
+        }
+    };
+
+    const openEpubWorkspace = () => {
+        setLookupStack([]);
+        const current = tabsRef.current.find((tab) => tab.id === activeTabIdRef.current);
+        if (!current || current.mode !== "epub") {
+            const firstBook = tabsRef.current.find((tab) => tab.mode === "epub" && !tab.archived);
+            if (firstBook) switchTab(firstBook.id);
+        }
+        setActiveWorkspace("epub");
+    };
     useEffect(() => {
         // Also hide retained native views after a main-page recovery/reload.
         if (YATSU_READER_AVAILABLE && resolvedWorkspace !== "epub") void hideYatsuWorkspace();
@@ -2624,7 +2869,7 @@ export default function App() {
         if (!selected || typeof selected !== "string") return;
 
         const lower = selected.toLowerCase();
-        if (lower.endsWith(".epub")) {
+        if (isSupportedBookPath(selected)) {
             await importEpubPath(selected);
             return;
         }
@@ -3299,7 +3544,7 @@ export default function App() {
                 })}
                 onAnkiDeckChange={(deck) => setSettings((prev) => ({ ...prev, ankiDeck: deck }))}
             />
-            {floatingBtn && (
+            {floatingBtn && lookupStack.length === 0 && (
                 <button
                     onClick={(e) => {
                         e.stopPropagation();
@@ -3719,25 +3964,39 @@ export default function App() {
                         onEpub={openEpubWorkspace}
                         onPlayer={openPlayerWorkspace}
                         onAnki={() => isMobileLayout ? openMobileSettingsPanel('anki') : openSettingsPanel('anki-cards')}
-                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('reading') : openSettingsPanel()}
+                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('') : openSettingsPanel()}
                     />
                 ) : resolvedWorkspace === "epub" ? (YATSU_READER_AVAILABLE ? (
                     <YatsuWorkspace language={settings.appLanguage} onHome={() => setActiveWorkspace("hub")} />
                 ) : (
-                    <WorkspaceShell
-                        title={settings.appLanguage === "en" ? "EPUB Reader" : "EPUB-ридер"}
-                        icon={<IconBookTab />}
-                        accent="reader"
-                        language={settings.appLanguage}
+                    <EpubWorkspace
+                        books={tabs.filter((tab) => tab.mode === "epub")}
+                        activeBookTab={activeTab?.mode === "epub" ? activeTab : null}
+                        settings={settings}
+                        isMobile={isMobileLayout}
+                        lookupOpen={lookupStack.length > 0}
+                        onCloseLookup={closeLookupStack}
+                        escMenuBlocked={isSettingsOpen || Boolean(updateDialog) || Boolean(confirmDialog)}
                         onHome={() => setActiveWorkspace("hub")}
-                        onSettings={() => openSettingsPanel('epub-reader')}
-                    >
-                        <div className="mode-empty-state">
-                            <span className="mode-empty-icon"><IconBookTab /></span>
-                            <strong>{settings.appLanguage === "en" ? "EPUB Reader" : "EPUB-ридер"}</strong>
-                            <span>{settings.appLanguage === "en" ? "The reader workspace is ready for the next implementation step." : "Рабочее пространство ридера готово к следующему этапу реализации."}</span>
-                        </div>
-                    </WorkspaceShell>
+                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('') : openSettingsPanel("epub-reader")}
+                        onOpenFile={openEpubFilePicker}
+                        onSelectBook={(tabId) => {
+                            setLookupStack([]);
+                            setTabs((prev) => prev.map((tab) => (
+                                tab.id === tabId && tab.epub
+                                    ? { ...tab, epub: { ...tab.epub, lastOpenedAt: Date.now() } }
+                                    : tab
+                            )));
+                            switchTab(tabId);
+                        }}
+                        onRemoveBook={handleRemoveEpubBook}
+                        onUpdateBookMeta={handleEpubUpdateMeta}
+                        onProgressChange={handleEpubProgress}
+                        onChangeBookOrientation={handleEpubOrientationChange}
+                        onChangeBookBookmarks={handleEpubBookmarksChange}
+                        onUpdateSettings={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
+                        onLookupToken={isMobileLayout ? runSentenceTokenLookup : undefined}
+                    />
                 )) : resolvedWorkspace === "player" ? (
                     <WorkspaceShell
                         title={settings.appLanguage === "en" ? "Anime Player" : "Аниме-плеер"}
@@ -3790,6 +4049,15 @@ export default function App() {
                         onCloseLookup={() => setLookupStack([])}
                         lookupNotice={mobileLookupNotice}
                         settingsRequest={mobileSettingsRequest}
+                        epubBooks={tabs.filter((tab) => tab.mode === "epub")}
+                        onOpenEpubFile={openEpubFilePicker}
+                        onRemoveEpubBook={handleRemoveEpubBook}
+                        onUpdateEpubMeta={handleEpubUpdateMeta}
+                        onEpubProgress={handleEpubProgress}
+                        onEpubOrientationChange={handleEpubOrientationChange}
+                        onEpubBookmarksChange={handleEpubBookmarksChange}
+                        onHome={() => setActiveWorkspace("hub")}
+                        onCloseMobileSettings={handleCloseMobileSettings}
                     />
                 ) : (
                 <>
@@ -3934,7 +4202,7 @@ export default function App() {
                         settings={settings}
                         playerClip={playerMiningClip}
                         captureSource={resolvedWorkspace === "texthooker" ? (activeTab?.captureSource || null) : null}
-                        ankiDeck={resolvedWorkspace === "texthooker" ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
+                        ankiDeck={(resolvedWorkspace === "texthooker" || resolvedWorkspace === "epub") ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
                         onClose={() => setLookupStack([])}
                         onSentenceLookup={isMobileLayout ? runSentenceTokenLookup : undefined}
                     />

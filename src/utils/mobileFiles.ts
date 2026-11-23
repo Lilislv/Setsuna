@@ -1,7 +1,9 @@
 type MobileFileBridge = {
     selectDictionaries: () => string;
+    selectEpub?: () => string;
     captureScreen?: () => string;
     cleanupDictionaries?: (paths: string) => string;
+    cleanupEpub?: (path: string) => string;
 };
 
 declare global {
@@ -18,6 +20,18 @@ export const openMobileDictionaryPicker = () => {
     const result = JSON.parse(bridge.selectDictionaries() || '{}');
     if (!result.ok) throw new Error(result.error || 'Unable to open the dictionary picker.');
     return true;
+};
+
+export const openMobileEpubPicker = () => {
+    const bridge = typeof window === 'undefined' ? null : window.SetsunaMobileFiles;
+    if (!bridge?.selectEpub) return false;
+    const result = JSON.parse(bridge.selectEpub() || '{}');
+    if (!result.ok) throw new Error(result.error || 'Unable to open the EPUB picker.');
+    return true;
+};
+
+export const cleanupMobileEpub = (path: string) => {
+    window.SetsunaMobileFiles?.cleanupEpub?.(path);
 };
 
 export const hasMobileScreenCapture = () => Boolean(

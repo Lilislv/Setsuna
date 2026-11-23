@@ -192,7 +192,7 @@ export default function AppMenu({
                     <div className="app-menu-footer-actions">
                         <button type="button" onClick={() => run(onImport)}><IconExport /> {L('Import', 'Импорт')}</button>
                         <button type="button" onClick={() => run(onExport)}><IconImport /> {L('Export', 'Экспорт')}</button>
-                        <button type="button" onClick={() => run(onHome)}><IconHome /> {L('Home screen', 'Главный экран')}</button>
+                        <button type="button" className="is-home" onClick={() => run(onHome)}><IconHome /> {L('Home screen', 'Главный экран')}</button>
                         <button type="button" className="is-danger" onClick={() => run(onClear)}><IconClear /> {L('Clear tab', 'Очистить вкладку')}</button>
                     </div>
                     <p className="app-menu-hint"><kbd>Esc</kbd> {L('back to reading', 'вернуться к чтению')}</p>
