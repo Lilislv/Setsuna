@@ -11,6 +11,7 @@ export interface EpubSyncBookEntry {
     series?: string;
     seriesPosition?: number | null;
     tags?: string[];
+    shelves?: string[];
     manualStatus?: "unread" | "reading" | "completed";
     coverBlurred?: boolean;
     language?: EpubLanguage;
@@ -77,6 +78,7 @@ export function tabToSyncEntry(tab: Tab): EpubSyncBookEntry | null {
         series: tab.epub.series,
         seriesPosition: tab.epub.seriesPosition ?? null,
         tags: tab.epub.tags,
+        shelves: tab.epub.shelves,
         manualStatus: tab.epub.manualStatus,
         coverBlurred: tab.epub.coverBlurred,
         language: tab.epub.language,
@@ -171,6 +173,7 @@ export function mergeEpubBookEntries(
         series: metaSource.series ?? local.series ?? remote.series,
         seriesPosition: metaSource.seriesPosition ?? local.seriesPosition ?? remote.seriesPosition ?? null,
         tags: (metaSource.tags && metaSource.tags.length > 0) ? metaSource.tags : (local.tags?.length ? local.tags : remote.tags),
+        shelves: metaSource.shelves !== undefined ? metaSource.shelves : (local.shelves?.length ? local.shelves : remote.shelves),
         manualStatus: metaSource.manualStatus ?? local.manualStatus ?? remote.manualStatus,
         coverBlurred: metaSource.coverBlurred ?? local.coverBlurred ?? remote.coverBlurred,
         language: local.language || remote.language,
@@ -212,6 +215,7 @@ export function mergeEpubBookEntries(
         && (a.stats?.chars || 0) === (b.stats?.chars || 0)
         && (a.stats?.time || 0) === (b.stats?.time || 0)
         && JSON.stringify(a.tags || []) === JSON.stringify(b.tags || [])
+        && JSON.stringify(a.shelves || []) === JSON.stringify(b.shelves || [])
     );
 
     return {
@@ -264,6 +268,7 @@ export function mergeManifestWithLocalTabs(
                 series: merged.series,
                 seriesPosition: merged.seriesPosition,
                 tags: merged.tags,
+                shelves: merged.shelves,
                 manualStatus: merged.manualStatus,
                 coverBlurred: merged.coverBlurred,
                 orientation: merged.orientation,
@@ -307,6 +312,7 @@ export function mergeManifestWithLocalTabs(
                 series: remoteEntry.series,
                 seriesPosition: remoteEntry.seriesPosition,
                 tags: remoteEntry.tags,
+                shelves: remoteEntry.shelves,
                 manualStatus: remoteEntry.manualStatus,
                 coverBlurred: remoteEntry.coverBlurred,
                 language: remoteEntry.language,
@@ -358,6 +364,7 @@ export function buildEpubSyncFingerprint(tabs: readonly Tab[]): string {
             e.series || "",
             e.seriesPosition ?? "",
             (e.tags || []).join(","),
+            (e.shelves || []).join(","),
             e.manualStatus || "",
             e.coverBlurred ? 1 : 0,
             e.bookmarks?.length || 0,

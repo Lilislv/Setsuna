@@ -1254,6 +1254,7 @@ pub fn run() {
             epub_import::epub_cover,
             epub_import::epub_drive_upload,
             epub_import::epub_drive_download,
+            epub_import::epub_scan_folder,
             epub_import::epub_gallery,
             epub_import::epub_search,
             epub_import::epub_chapter,

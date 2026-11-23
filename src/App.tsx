@@ -20,9 +20,11 @@ import LookupSurface from "./features/lookup/LookupSurface";
 import EpubWorkspace from "./features/epub/EpubWorkspace";
 import type { EpubBookMetaPatch } from "./features/epub/EpubLibrary";
 import { setMemoryCover } from "./features/epub/epubCoverCache";
-import { restoreRetainedBookData } from "./features/epub/epubLibraryModel";
+import { loadCustomShelves, restoreRetainedBookData, saveCustomShelves, saveRetainedBookRecord } from "./features/epub/epubLibraryModel";
+import { mergePortableEpubBackup, type EpubPortableBackup } from "./features/epub/epubBackup";
+import { saveEpubGoals } from "./features/epub/epubTracker";
 import { useEpubSync } from "./features/epub/useEpubSync";
-import { openEpubBook, pruneEpubFiles, storeEpubFile } from "./features/epub/epubApi";
+import { openEpubBook, pruneEpubFiles, scanEpubFolder, storeEpubFile } from "./features/epub/epubApi";
 import {
     isSupportedBookPath,
     type EpubBookMeta,
@@ -35,7 +37,7 @@ import "./App.css";
 
 import { calculateStats } from "./utils/helpers";
 import { countLineStats, sumLineStats } from "./utils/textStats";
-import { recordDailyChars, recordDailyLine, recordDailySeconds } from "./utils/dailyStats";
+import { mergeDailyStatsSnapshot, recordDailyChars, recordDailyLine, recordDailySeconds } from "./utils/dailyStats";
 import { cachedGlyphScale, glyphScaleFor } from "./utils/fontNormalize";
 import { appendSpeedSample } from "./utils/speedSamples";
 import { listTabHistoryIds, loadTabHistory, markTabHistorySaved, mergeTabHistory, pruneTabHistories, saveChangedTabHistories, slimTabForWorkspace, tailTabForCache } from "./utils/tabHistory";
@@ -1610,9 +1612,24 @@ export default function App() {
         };
     }, [runDictImport, t]);
 
-    const importEpubPath = useCallback(async (filePath: string, targetTabId?: number, options?: { activate?: boolean }) => {
+    const importEpubPath = useCallback(async (
+        filePath: string,
+        targetTabId?: number,
+        options?: { activate?: boolean; defaultSeries?: string; skipIfTitleExists?: boolean },
+    ): Promise<boolean> => {
         try {
             const meta = await openEpubBook(filePath);
+            if (options?.skipIfTitleExists && !targetTabId) {
+                const normNew = (meta.title || "").normalize("NFKC").trim().toLowerCase();
+                const alreadyExists = normNew.length > 0 && tabsRef.current.some((tab) =>
+                    tab.mode === "epub"
+                    && !tab.archived
+                    && (tab.epub?.title || tab.name || "").normalize("NFKC").trim().toLowerCase() === normNew,
+                );
+                if (alreadyExists) {
+                    return false;
+                }
+            }
             const tabId = targetTabId ?? nextTabId.current++;
             const storedPath = await storeEpubFile(filePath, tabId);
             if (meta.cover) {
@@ -1626,9 +1643,10 @@ export default function App() {
                 const nextEpub = {
                     title: meta.title,
                     author: meta.author || undefined,
-                    series: retained?.epub?.series || meta.series || undefined,
+                    series: retained?.epub?.series || meta.series || options?.defaultSeries || undefined,
                     seriesPosition: retained?.epub?.seriesPosition ?? meta.seriesPosition ?? null,
                     tags: retained?.epub?.tags,
+                    shelves: retained?.epub?.shelves,
                     manualStatus: retained?.epub?.manualStatus,
                     coverBlurred: retained?.epub?.coverBlurred,
                     bookmarks: retained?.epub?.bookmarks,
@@ -1639,12 +1657,12 @@ export default function App() {
                     path: storedPath,
                     language: meta.language,
                     defaultVertical: meta.defaultVertical,
-                    chapterIndex: 0,
-                    chapterOffset: 0,
+                    chapterIndex: retained?.epub?.chapterIndex ?? 0,
+                    chapterOffset: retained?.epub?.chapterOffset ?? 0,
                     chapterCount: meta.chapters.length,
                     lastOpenedAt: options?.activate ? Date.now() : 0,
                     lines: [],
-                    progress: 0,
+                    progress: retained?.epub?.progress ?? 0,
                 };
                 if (exists) {
                     return prev.map((tab) => (
@@ -1680,13 +1698,51 @@ export default function App() {
             }
             setLookupStack([]);
             setActiveWorkspace("epub");
+            return true;
+        } catch (error) {
+            setNotice({
+                title: t("epub.title"),
+                message: t("epub.loadError", { error: String(error) }),
+            });
+            return false;
+        }
+    }, [switchTab, t]);
+
+    const openEpubFolderPicker = useCallback(async () => {
+        try {
+            const selected = await open({
+                multiple: false,
+                directory: true,
+            });
+            const dirPath = typeof selected === "string" ? selected.trim() : "";
+            if (!dirPath) return;
+            const entries = await scanEpubFolder(dirPath);
+            if (entries.length === 0) {
+                setNotice({
+                    title: t("epub.title"),
+                    message: t("epub.folderNoBooks"),
+                });
+                return;
+            }
+            let importedCount = 0;
+            for (const entry of entries) {
+                const ok = await importEpubPath(entry.path, undefined, {
+                    defaultSeries: entry.subfolderSeries || undefined,
+                    skipIfTitleExists: true,
+                });
+                if (ok) importedCount += 1;
+            }
+            setNotice({
+                title: t("epub.title"),
+                message: t("epub.folderImported", { imported: importedCount, total: entries.length }),
+            });
         } catch (error) {
             setNotice({
                 title: t("epub.title"),
                 message: t("epub.loadError", { error: String(error) }),
             });
         }
-    }, [switchTab, t]);
+    }, [importEpubPath, t]);
 
     const openEpubFilePicker = useCallback(async () => {
         try {
@@ -1873,6 +1929,44 @@ export default function App() {
                 },
             };
         }));
+    }, []);
+
+    const handleImportEpubBackup = useCallback((backup: EpubPortableBackup) => {
+        const result = mergePortableEpubBackup(tabsRef.current, backup);
+        setTabs(result.nextTabs);
+        for (const entry of result.unmatchedEntries) {
+            saveRetainedBookRecord({
+                title: entry.title,
+                savedAt: entry.updatedAt || Date.now(),
+                series: entry.series,
+                seriesPosition: entry.seriesPosition,
+                tags: entry.tags,
+                shelves: entry.shelves,
+                manualStatus: entry.manualStatus,
+                coverBlurred: entry.coverBlurred,
+                chapterIndex: entry.chapterIndex,
+                chapterOffset: entry.chapterOffset,
+                progress: entry.progress,
+                bookmarks: entry.bookmarks,
+                highlights: entry.highlights,
+                notes: entry.notes,
+                stats: entry.stats,
+            });
+        }
+        if (result.mergedShelves.length > 0) {
+            const existing = loadCustomShelves();
+            saveCustomShelves([...existing, ...result.mergedShelves]);
+        }
+        if (backup.goals) {
+            saveEpubGoals(backup.goals);
+        }
+        if (backup.dailyStats) {
+            mergeDailyStatsSnapshot(backup.dailyStats);
+        }
+        return {
+            updatedBooks: result.updatedBooks,
+            retainedBooks: result.unmatchedEntries.length,
+        };
     }, []);
 
     const handleEpubRecordStats = useCallback((tabId: number, deltaChars: number, deltaSeconds: number) => {
@@ -2147,6 +2241,31 @@ export default function App() {
             if (bookPaths.length > 0) {
                 for (const bookPath of bookPaths) {
                     await importEpubPath(bookPath);
+                }
+                return;
+            }
+
+            // Check if any dropped paths are folders containing EPUB/TXT/HTMLZ books
+            let importedFromFolders = 0;
+            let scannedAnyFolder = false;
+            for (const candidate of paths) {
+                try {
+                    const entries = await scanEpubFolder(candidate);
+                    scannedAnyFolder = true;
+                    for (const entry of entries) {
+                        const ok = await importEpubPath(entry.path, undefined, {
+                            defaultSeries: entry.subfolderSeries || undefined,
+                            skipIfTitleExists: true,
+                        });
+                        if (ok) importedFromFolders += 1;
+                    }
+                } catch {
+                    // Not a directory; continue to single-file handlers
+                }
+            }
+            if (scannedAnyFolder) {
+                if (importedFromFolders > 0) {
+                    setActiveWorkspace("epub");
                 }
                 return;
             }
@@ -4138,6 +4257,8 @@ export default function App() {
                         onHome={() => setActiveWorkspace("hub")}
                         onSettings={() => isMobileLayout ? openMobileSettingsPanel('') : openSettingsPanel("epub-reader")}
                         onOpenFile={openEpubFilePicker}
+                        onImportFolder={!isMobileLayout ? openEpubFolderPicker : undefined}
+                        onImportBackup={handleImportEpubBackup}
                         onSelectBook={(tabId) => {
                             setLookupStack([]);
                             const target = tabsRef.current.find((tab) => tab.id === tabId && tab.mode === "epub");

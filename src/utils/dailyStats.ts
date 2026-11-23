@@ -92,6 +92,50 @@ export const recordDailyChars = (tabId: number | string, chars: number) => {
 
 export const getDay = (key = dayKey()): DayRecord => load()[key] || { total: emptyCounts(), tabs: {} };
 
+/** Export a shallow snapshot of all stored daily reading stats (for portable backups). */
+export const exportDailyStatsSnapshot = (): Record<string, DayRecord> => {
+    const data = load();
+    return JSON.parse(JSON.stringify(data)) as Record<string, DayRecord>;
+};
+
+/** Merge imported daily stats into local storage without regressing existing day totals. */
+export const mergeDailyStatsSnapshot = (incoming: Record<string, DayRecord> | undefined | null) => {
+    if (!incoming || typeof incoming !== 'object') return;
+    const data = load();
+    let changed = false;
+    for (const [dateKey, incRecord] of Object.entries(incoming)) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey) || !incRecord || typeof incRecord !== 'object') continue;
+        const incTotal = incRecord.total;
+        if (!incTotal || typeof incTotal !== 'object') continue;
+        const existing = data[dateKey];
+        if (!existing) {
+            data[dateKey] = {
+                total: {
+                    chars: Math.max(0, Number(incTotal.chars) || 0),
+                    words: Math.max(0, Number(incTotal.words) || 0),
+                    sentences: Math.max(0, Number(incTotal.sentences) || 0),
+                    lines: Math.max(0, Number(incTotal.lines) || 0),
+                    seconds: Math.max(0, Number(incTotal.seconds) || 0),
+                },
+                tabs: incRecord.tabs && typeof incRecord.tabs === 'object' ? { ...incRecord.tabs } : {},
+            };
+            changed = true;
+        } else {
+            const fields: (keyof DayCounts)[] = ['chars', 'words', 'sentences', 'lines', 'seconds'];
+            for (const f of fields) {
+                const nextVal = Math.max(existing.total[f] || 0, Math.max(0, Number(incTotal[f]) || 0));
+                if (nextVal !== existing.total[f]) {
+                    existing.total[f] = nextVal;
+                    changed = true;
+                }
+            }
+        }
+    }
+    if (changed) {
+        persist();
+    }
+};
+
 /** The last `count` days, oldest first, including today. */
 export const getRecentDays = (count: number) => {
     const days: { key: string; date: Date; record: DayRecord }[] = [];

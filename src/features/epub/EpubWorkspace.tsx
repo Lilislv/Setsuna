@@ -19,6 +19,7 @@ import type {
     EpubReadingPoint,
 } from "./epubModel";
 import { loadEpubGoals, type EpubReadingGoals } from "./epubTracker";
+import type { EpubPortableBackup } from "./epubBackup";
 import type { EpubSyncStatus } from "./useEpubSync";
 import "./epub.css";
 
@@ -46,6 +47,8 @@ interface EpubWorkspaceProps {
     onHome: () => void;
     onSettings: () => void;
     onOpenFile: () => void;
+    onImportFolder?: () => void;
+    onImportBackup?: (backup: EpubPortableBackup) => { updatedBooks: number; retainedBooks: number };
     onSelectBook: (tabId: number) => void;
     onRemoveBook: (tabId: number) => void;
     onRemoveBooks?: (tabIds: number[]) => void;
@@ -82,6 +85,8 @@ export default function EpubWorkspace({
     onHome,
     onSettings,
     onOpenFile,
+    onImportFolder,
+    onImportBackup,
     onSelectBook,
     onRemoveBook,
     onRemoveBooks,
@@ -697,6 +702,8 @@ export default function EpubWorkspace({
                     language={language}
                     isMobile={isMobile}
                     onOpenFile={onOpenFile}
+                    onImportFolder={onImportFolder}
+                    onImportBackup={onImportBackup}
                     onSelectBook={handleSelectBook}
                     onRemoveBook={onRemoveBook}
                     onRemoveBooks={onRemoveBooks}

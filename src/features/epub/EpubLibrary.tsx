@@ -8,9 +8,11 @@ import {
     compareBooks,
     compareNaturalStrings,
     DEFAULT_LIBRARY_PREFS,
+    loadCustomShelves,
     loadLibraryPrefs,
     resolveBookSeries,
     resolveBookStatus,
+    saveCustomShelves,
     saveLibraryPrefs,
     saveRetainedBookData,
     type EpubLibraryPrefs,
@@ -19,13 +21,20 @@ import {
     type LibraryGroupSort,
     type LibraryStatusFilter,
 } from "./epubLibraryModel";
+import {
+    buildPortableEpubBackup,
+    parsePortableEpubBackup,
+    type EpubPortableBackup,
+} from "./epubBackup";
+import { loadEpubGoals } from "./epubTracker";
+import { exportDailyStatsSnapshot } from "../../utils/dailyStats";
 
 import type { EpubSyncStatus } from "./useEpubSync";
 
 const UNKNOWN_AUTHOR_KEY = "__unknown__";
 
 export type EpubBookMetaPatch = Partial<
-    Pick<EpubBookData, "series" | "seriesPosition" | "tags" | "manualStatus" | "coverBlurred">
+    Pick<EpubBookData, "series" | "seriesPosition" | "tags" | "shelves" | "manualStatus" | "coverBlurred">
 >;
 
 interface EpubLibraryProps {
@@ -34,6 +43,8 @@ interface EpubLibraryProps {
     language: AppLanguage;
     isMobile: boolean;
     onOpenFile: () => void;
+    onImportFolder?: () => void;
+    onImportBackup?: (backup: EpubPortableBackup) => { updatedBooks: number; retainedBooks: number };
     onSelectBook: (tabId: number) => void;
     onRemoveBook: (tabId: number) => void;
     onRemoveBooks?: (tabIds: number[]) => void;
@@ -59,6 +70,8 @@ export default function EpubLibrary({
     language,
     isMobile,
     onOpenFile,
+    onImportFolder,
+    onImportBackup,
     onSelectBook,
     onRemoveBook,
     onRemoveBooks,
@@ -78,6 +91,12 @@ export default function EpubLibrary({
     const [query, setQuery] = useState("");
     const [authorFilter, setAuthorFilter] = useState<string>("all");
     const [tagFilter, setTagFilter] = useState<string>("all");
+    const [shelfFilter, setShelfFilter] = useState<string>("all");
+    const [customShelves, setCustomShelves] = useState<string[]>(() => loadCustomShelves());
+    const [addingShelf, setAddingShelf] = useState(false);
+    const [newShelfName, setNewShelfName] = useState("");
+    const [backupNotice, setBackupNotice] = useState<string | null>(null);
+    const backupInputRef = useRef<HTMLInputElement>(null);
     const [focusedGroupKey, setFocusedGroupKey] = useState<string | null>(null);
     const [displayOpen, setDisplayOpen] = useState(false);
 
@@ -91,11 +110,12 @@ export default function EpubLibrary({
     const [editSeries, setEditSeries] = useState("");
     const [editPosition, setEditPosition] = useState("");
     const [editTags, setEditTags] = useState("");
+    const [editShelves, setEditShelves] = useState<string[]>([]);
     const [editStatus, setEditStatus] = useState<"auto" | "unread" | "reading" | "completed">("auto");
     const [editBlurCover, setEditBlurCover] = useState(false);
 
-    // Bulk prompt drawer ("series" | "tags" | null)
-    const [bulkPromptMode, setBulkPromptMode] = useState<"series" | "tags" | null>(null);
+    // Bulk prompt drawer ("series" | "tags" | "shelves" | null)
+    const [bulkPromptMode, setBulkPromptMode] = useState<"series" | "tags" | "shelves" | null>(null);
     const [bulkInputValue, setBulkInputValue] = useState("");
 
     const updatePrefs = useCallback((patch: Partial<EpubLibraryPrefs>) => {
@@ -119,9 +139,11 @@ export default function EpubLibrary({
         return counts;
     }, [activeBooks]);
 
-    const { authors, hasUnknownAuthor, allTags } = useMemo(() => {
+    const { authors, hasUnknownAuthor, allTags, allShelves, shelfCounts } = useMemo(() => {
         const authorSet = new Set<string>();
         const tagSet = new Set<string>();
+        const shelfSet = new Set<string>(customShelves);
+        const sCounts: Record<string, number> = {};
         let unknown = false;
         for (const book of activeBooks) {
             const author = book.epub?.author?.trim();
@@ -131,18 +153,99 @@ export default function EpubLibrary({
                 const clean = tag.trim();
                 if (clean) tagSet.add(clean);
             }
+            for (const shelf of book.epub?.shelves || []) {
+                const clean = shelf.trim();
+                if (clean) {
+                    shelfSet.add(clean);
+                    sCounts[clean] = (sCounts[clean] || 0) + 1;
+                }
+            }
         }
         return {
             authors: Array.from(authorSet).sort((a, b) => compareNaturalStrings(a, b, language)),
             hasUnknownAuthor: unknown,
             allTags: Array.from(tagSet).sort((a, b) => compareNaturalStrings(a, b, language)),
+            allShelves: Array.from(shelfSet),
+            shelfCounts: sCounts,
         };
-    }, [activeBooks, language]);
+    }, [activeBooks, customShelves, language]);
+
+    const handleAddCustomShelf = useCallback((rawName: string) => {
+        const clean = rawName.trim();
+        if (!clean) return;
+        setCustomShelves((prev) => {
+            if (prev.includes(clean)) return prev;
+            const next = [...prev, clean];
+            saveCustomShelves(next);
+            return next;
+        });
+        setNewShelfName("");
+        setAddingShelf(false);
+    }, []);
+
+    const handleDeleteCustomShelf = useCallback((shelfName: string) => {
+        setCustomShelves((prev) => {
+            const next = prev.filter((s) => s !== shelfName);
+            saveCustomShelves(next);
+            return next;
+        });
+        if (shelfFilter === shelfName) setShelfFilter("all");
+        if (onPatchBooks) {
+            for (const book of activeBooks) {
+                const current = book.epub?.shelves || [];
+                if (current.includes(shelfName)) {
+                    onPatchBooks([book.id], { shelves: current.filter((s) => s !== shelfName) });
+                }
+            }
+        }
+    }, [shelfFilter, onPatchBooks, activeBooks]);
+
+    const handleExportBackup = useCallback(() => {
+        const payload = buildPortableEpubBackup(
+            books,
+            allShelves,
+            loadEpubGoals(),
+            exportDailyStatsSnapshot(),
+        );
+        const json = JSON.stringify(payload, null, 2);
+        const blob = new Blob([json], { type: "application/json;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const stamp = new Date().toISOString().slice(0, 10);
+        a.href = url;
+        a.download = `setsuna-epub-backup-${stamp}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+        setBackupNotice(t("epub.backupExported", { count: payload.books.length }));
+    }, [books, allShelves, t]);
+
+    const handleImportBackupFile = useCallback(async (file: File | null) => {
+        if (!file || !onImportBackup) return;
+        try {
+            const text = await file.text();
+            const parsed = parsePortableEpubBackup(text);
+            const result = onImportBackup(parsed);
+            setCustomShelves(loadCustomShelves());
+            setBackupNotice(
+                t("epub.backupImported", {
+                    updated: result.updatedBooks,
+                    retained: result.retainedBooks,
+                }),
+            );
+        } catch (err) {
+            setBackupNotice(t("epub.backupError", { error: String(err) }));
+        }
+    }, [onImportBackup, t]);
 
     const filteredBooks = useMemo(() => {
         const q = query.trim().toLowerCase();
         const list = activeBooks.filter((book) => {
             if (prefs.statusFilter !== "all" && resolveBookStatus(book) !== prefs.statusFilter) {
+                return false;
+            }
+            if (shelfFilter !== "all" && !(book.epub?.shelves || []).includes(shelfFilter)) {
                 return false;
             }
             const bookLang = book.epub?.language === "ja" ? "ja" : "en";
@@ -164,7 +267,8 @@ export default function EpubLibrary({
                 const title = (book.epub?.title || book.name || "").toLowerCase();
                 const series = resolveBookSeries(book, activeBooks).toLowerCase();
                 const tagStr = tags.join(" ").toLowerCase();
-                if (!title.includes(q) && !author.toLowerCase().includes(q) && !series.includes(q) && !tagStr.includes(q)) {
+                const shelfStr = (book.epub?.shelves || []).join(" ").toLowerCase();
+                if (!title.includes(q) && !author.toLowerCase().includes(q) && !series.includes(q) && !tagStr.includes(q) && !shelfStr.includes(q)) {
                     return false;
                 }
             }
@@ -174,7 +278,7 @@ export default function EpubLibrary({
         return [...list].sort((a, b) =>
             compareBooks(a, b, prefs.sortBy, prefs.sortDir, language, activeBooks, false),
         );
-    }, [activeBooks, query, prefs.statusFilter, prefs.langFilter, prefs.sortBy, prefs.sortDir, authorFilter, tagFilter, language]);
+    }, [activeBooks, query, prefs.statusFilter, prefs.langFilter, prefs.sortBy, prefs.sortDir, shelfFilter, authorFilter, tagFilter, language]);
 
     const groups = useMemo(() => {
         if (prefs.groupBy === "none") return [];
@@ -305,6 +409,7 @@ export default function EpubLibrary({
                 : "",
         );
         setEditTags((book.epub?.tags || []).join(", "));
+        setEditShelves(book.epub?.shelves ? [...book.epub.shelves] : []);
         setEditStatus(book.epub?.manualStatus || "auto");
         setEditBlurCover(Boolean(book.epub?.coverBlurred));
     }, [activeBooks]);
@@ -323,11 +428,12 @@ export default function EpubLibrary({
             series: editSeries.trim() || undefined,
             seriesPosition: parsedPos !== null && Number.isFinite(parsedPos) ? parsedPos : null,
             tags: parsedTags,
+            shelves: editShelves,
             manualStatus: editStatus === "auto" ? undefined : editStatus,
             coverBlurred: editBlurCover,
         });
         setEditingBook(null);
-    }, [editingBook, onPatchBooks, editSeries, editPosition, editTags, editStatus, editBlurCover]);
+    }, [editingBook, onPatchBooks, editSeries, editPosition, editTags, editShelves, editStatus, editBlurCover]);
 
     const handleCardClick = useCallback((book: Tab, event: ReactMouseEvent) => {
         if (selectMode || event.shiftKey || event.ctrlKey || event.metaKey) {
@@ -672,9 +778,57 @@ export default function EpubLibrary({
                                         onChange={(e) => updatePrefs({ keepDataOnDelete: e.target.checked })}
                                     />
                                 </label>
+
+                                <div className="epub-backup-section">
+                                    <span className="epub-pop-label">{t("epub.backupTitle")}</span>
+                                    <div className="epub-backup-actions">
+                                        <button
+                                            type="button"
+                                            className="epub-glass-btn"
+                                            onClick={handleExportBackup}
+                                        >
+                                            {t("epub.backupExport")}
+                                        </button>
+                                        {onImportBackup && (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    className="epub-glass-btn"
+                                                    onClick={() => backupInputRef.current?.click()}
+                                                >
+                                                    {t("epub.backupImport")}
+                                                </button>
+                                                <input
+                                                    ref={backupInputRef}
+                                                    type="file"
+                                                    accept=".json,application/json"
+                                                    style={{ display: "none" }}
+                                                    onChange={(e) => {
+                                                        const file = e.target.files?.[0] || null;
+                                                        e.target.value = "";
+                                                        void handleImportBackupFile(file);
+                                                    }}
+                                                />
+                                            </>
+                                        )}
+                                    </div>
+                                    {backupNotice && (
+                                        <div className="epub-backup-notice">{backupNotice}</div>
+                                    )}
+                                </div>
                             </div>
                         )}
                     </div>
+                    {onImportFolder && !isMobile && (
+                        <button
+                            type="button"
+                            className="epub-glass-btn epub-lib-action-btn"
+                            onClick={onImportFolder}
+                            title={t("epub.importFolderHint")}
+                        >
+                            {t("epub.importFolder")}
+                        </button>
+                    )}
                     <button
                         type="button"
                         className={isMobile ? "m-pill-button primary" : "btn-primary"}
@@ -685,7 +839,7 @@ export default function EpubLibrary({
                 </div>
             </div>
 
-            {/* Reading status shelves */}
+            {/* Reading status shelves + custom shelves */}
             <div className="epub-library-shelves">
                 <div className="epub-segmented epub-shelf-tabs" role="tablist">
                     {([
@@ -708,6 +862,75 @@ export default function EpubLibrary({
                             {label} <span className="epub-shelf-count">{count}</span>
                         </button>
                     ))}
+                </div>
+
+                <div className="epub-custom-shelves-row">
+                    {allShelves.map((shelf) => (
+                        <div key={shelf} className={`epub-custom-shelf-chip${shelfFilter === shelf ? " is-active" : ""}`}>
+                            <button
+                                type="button"
+                                className="epub-custom-shelf-btn"
+                                onClick={() => {
+                                    setShelfFilter((prev) => (prev === shelf ? "all" : shelf));
+                                    setFocusedGroupKey(null);
+                                }}
+                            >
+                                {shelf} <span className="epub-shelf-count">{shelfCounts[shelf] || 0}</span>
+                            </button>
+                            <button
+                                type="button"
+                                className="epub-custom-shelf-del"
+                                title={t("epub.deleteShelf")}
+                                aria-label={t("epub.deleteShelf")}
+                                onClick={() => handleDeleteCustomShelf(shelf)}
+                            >
+                                ×
+                            </button>
+                        </div>
+                    ))}
+                    {addingShelf ? (
+                        <form
+                            className="epub-new-shelf-form"
+                            onSubmit={(e) => {
+                                e.preventDefault();
+                                handleAddCustomShelf(newShelfName);
+                            }}
+                        >
+                            <input
+                                type="text"
+                                className="epub-new-shelf-input"
+                                autoFocus
+                                value={newShelfName}
+                                onChange={(e) => setNewShelfName(e.target.value)}
+                                placeholder={t("epub.shelfPlaceholder")}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Escape") {
+                                        setAddingShelf(false);
+                                        setNewShelfName("");
+                                    }
+                                }}
+                            />
+                            <button type="submit" className="epub-glass-btn">+</button>
+                            <button
+                                type="button"
+                                className="epub-glass-btn"
+                                onClick={() => {
+                                    setAddingShelf(false);
+                                    setNewShelfName("");
+                                }}
+                            >
+                                ×
+                            </button>
+                        </form>
+                    ) : (
+                        <button
+                            type="button"
+                            className="epub-chip-toggle epub-add-shelf-btn"
+                            onClick={() => setAddingShelf(true)}
+                        >
+                            + {t("epub.addShelf")}
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -928,6 +1151,16 @@ export default function EpubLibrary({
                                     <button
                                         type="button"
                                         className="epub-glass-btn"
+                                        onClick={() => {
+                                            setBulkPromptMode("shelves");
+                                            setBulkInputValue("");
+                                        }}
+                                    >
+                                        {t("epub.shelvesLabel")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="epub-glass-btn"
                                         onClick={() => applyBulkPatch({ manualStatus: "completed" })}
                                     >
                                         {t("epub.bulkComplete")}
@@ -976,6 +1209,16 @@ export default function EpubLibrary({
                             e.preventDefault();
                             if (bulkPromptMode === "series") {
                                 applyBulkPatch({ series: bulkInputValue.trim() || undefined });
+                            } else if (bulkPromptMode === "shelves") {
+                                const shelves = bulkInputValue.split(",").map((s) => s.trim()).filter(Boolean);
+                                if (shelves.length > 0) {
+                                    setCustomShelves((prev) => {
+                                        const merged = Array.from(new Set([...prev, ...shelves]));
+                                        saveCustomShelves(merged);
+                                        return merged;
+                                    });
+                                }
+                                applyBulkPatch({ shelves });
                             } else {
                                 const tags = bulkInputValue.split(",").map((s) => s.trim()).filter(Boolean);
                                 applyBulkPatch({ tags });
@@ -984,7 +1227,13 @@ export default function EpubLibrary({
                         }}
                     >
                         <div className="epub-modal-head">
-                            <strong>{bulkPromptMode === "series" ? t("epub.seriesLabel") : t("epub.tagsLabel")}</strong>
+                            <strong>
+                                {bulkPromptMode === "series"
+                                    ? t("epub.seriesLabel")
+                                    : bulkPromptMode === "shelves"
+                                        ? t("epub.shelvesLabel")
+                                        : t("epub.tagsLabel")}
+                            </strong>
                             <button type="button" className="epub-glass-btn epub-glass-circle" onClick={() => setBulkPromptMode(null)}>
                                 <IconClose />
                             </button>
@@ -995,7 +1244,13 @@ export default function EpubLibrary({
                             autoFocus
                             value={bulkInputValue}
                             onChange={(e) => setBulkInputValue(e.target.value)}
-                            placeholder={bulkPromptMode === "series" ? t("epub.seriesLabel") : t("epub.tagsLabel")}
+                            placeholder={
+                                bulkPromptMode === "series"
+                                    ? t("epub.seriesLabel")
+                                    : bulkPromptMode === "shelves"
+                                        ? t("epub.shelfPlaceholder")
+                                        : t("epub.tagsLabel")
+                            }
                         />
                         <div className="epub-modal-foot">
                             <button type="button" className="epub-glass-btn" onClick={() => setBulkPromptMode(null)}>
@@ -1057,6 +1312,32 @@ export default function EpubLibrary({
                                 placeholder="isekai, ln, ..."
                             />
                         </label>
+                        {allShelves.length > 0 && (
+                            <div className="epub-edit-field">
+                                <span>{t("epub.shelvesLabel")}</span>
+                                <div className="epub-display-chips">
+                                    {allShelves.map((shelf) => {
+                                        const active = editShelves.includes(shelf);
+                                        return (
+                                            <button
+                                                key={shelf}
+                                                type="button"
+                                                className={`epub-chip-toggle${active ? " is-active" : ""}`}
+                                                onClick={() => {
+                                                    setEditShelves((prev) =>
+                                                        prev.includes(shelf)
+                                                            ? prev.filter((s) => s !== shelf)
+                                                            : [...prev, shelf],
+                                                    );
+                                                }}
+                                            >
+                                                {shelf}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
                         <div className="epub-edit-field">
                             <span>{isEn ? "Reading status" : "Статус чтения"}</span>
                             <div className="epub-segmented">

@@ -29,6 +29,15 @@ export const loadEpubGallery = async (path: string): Promise<EpubGalleryImage[]>
     return invoke<EpubGalleryImage[]>("epub_gallery", { path });
 };
 
+export interface EpubFolderEntry {
+    path: string;
+    subfolderSeries: string | null;
+}
+
+export const scanEpubFolder = async (dir: string): Promise<EpubFolderEntry[]> => {
+    return invoke<EpubFolderEntry[]>("epub_scan_folder", { dir });
+};
+
 export const uploadEpubToDrive = async (
     accessToken: string,
     path: string,

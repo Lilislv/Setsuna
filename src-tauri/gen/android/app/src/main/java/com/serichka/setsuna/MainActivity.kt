@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.IntentFilter
 import android.provider.OpenableColumns
 import android.os.Bundle
+import android.view.KeyEvent
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
@@ -16,6 +17,7 @@ class MainActivity : TauriActivity() {
   override val handleBackNavigation: Boolean = true
 
   private var setsunaWebView: WebView? = null
+  @Volatile var volumePagingEnabled: Boolean = false
   private var pendingSharedText: String? = null
   private var pendingOverlayLookup: String? = null
   private val overlayReceiver = object : BroadcastReceiver() {
@@ -65,8 +67,20 @@ class MainActivity : TauriActivity() {
   override fun onDestroy() {
     runCatching { unregisterReceiver(overlayReceiver) }
     runCatching { unregisterReceiver(captureReceiver) }
+    volumePagingEnabled = false
     setsunaWebView = null
     super.onDestroy()
+  }
+
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    if (volumePagingEnabled && (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
+      if (event.action == KeyEvent.ACTION_DOWN) {
+        val dir = if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) "down" else "up"
+        dispatchWebEvent("setsuna-volume-key", dir)
+      }
+      return true
+    }
+    return super.dispatchKeyEvent(event)
   }
 
   @Deprecated("Deprecated in Android API 35")

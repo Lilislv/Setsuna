@@ -4,6 +4,7 @@ type MobileFileBridge = {
     captureScreen?: () => string;
     cleanupDictionaries?: (paths: string) => string;
     cleanupEpub?: (path: string) => string;
+    setVolumePagingEnabled?: (enabled: boolean) => string;
 };
 
 declare global {
@@ -32,6 +33,14 @@ export const openMobileEpubPicker = () => {
 
 export const cleanupMobileEpub = (path: string) => {
     window.SetsunaMobileFiles?.cleanupEpub?.(path);
+};
+
+export const setMobileVolumePagingEnabled = (enabled: boolean) => {
+    try {
+        window.SetsunaMobileFiles?.setVolumePagingEnabled?.(enabled);
+    } catch {
+        // Ignore on desktop / unsupported webviews
+    }
 };
 
 export const hasMobileScreenCapture = () => Boolean(

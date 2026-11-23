@@ -54,6 +54,12 @@ class MobileFileBridge(private val activity: Activity) {
     }
 
     @JavascriptInterface
+    fun setVolumePagingEnabled(enabled: Boolean): String = wrap {
+        (activity as? MainActivity)?.volumePagingEnabled = enabled
+        JSONObject().put("enabled", enabled)
+    }
+
+    @JavascriptInterface
     fun cleanupDictionaries(pathsJson: String): String = wrap {
         val directory = java.io.File(activity.cacheDir, "dictionary-imports").canonicalFile
         val paths = org.json.JSONArray(pathsJson)

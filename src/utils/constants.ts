@@ -35,6 +35,7 @@ export interface EpubBookData {
     series?: string;
     seriesPosition?: number | null;
     tags?: string[];
+    shelves?: string[];
     manualStatus?: 'unread' | 'reading' | 'completed';
     coverBlurred?: boolean;
     totalChars?: number;
@@ -203,6 +204,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     epubMaxWidth: 1040,
     epubLineHeight: 1.65,
     epubParagraphSpacing: 14,
+    epubParagraphSpacingJa: 2,
     epubPagePadding: 24,
     epubShowImages: true,
     epubBlurImages: false,
@@ -215,6 +217,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     epubAutoscrollSpeed: 38,
     epubAutoSync: true,
     epubSyncUploadFiles: true,
+    epubVolumeKeyPaging: true,
+    epubEinkMode: false,
     epubImageMaxWidth: 720,
     playerRewindSeconds: 2,
     playerSubtitleStep: 0.1,

@@ -1682,6 +1682,26 @@ fn build_sanitized_tag(
                     kept.push(("rowspan", value.trim().to_string()));
                 }
             }
+            "style" => {
+                // Never emit raw inline CSS, but preserve Japanese typographic hints
+                // (bouten emphasis marks & tate-chu-yoko) via safe data attributes.
+                let lower = value.to_ascii_lowercase();
+                if lower.contains("text-emphasis") {
+                    let style_val = if lower.contains("dot") || lower.contains("circle") {
+                        "dot"
+                    } else {
+                        "sesame"
+                    };
+                    if !kept.iter().any(|(k, _)| *k == "data-epub-emphasis") {
+                        kept.push(("data-epub-emphasis", style_val.to_string()));
+                    }
+                }
+                if lower.contains("text-combine-upright") || lower.contains("text-combine") {
+                    if !kept.iter().any(|(k, _)| *k == "data-epub-tcy") {
+                        kept.push(("data-epub-tcy", "1".to_string()));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -3114,6 +3134,96 @@ pub async fn epub_drive_download(
         format!("Failed to finalize downloaded book: {}", e)
     })?;
     Ok(dest.to_string_lossy().to_string())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpubFolderEntry {
+    pub path: String,
+    pub subfolder_series: Option<String>,
+}
+
+const MAX_FOLDER_SCAN_BOOKS: usize = 500;
+const MAX_FOLDER_SCAN_DEPTH: usize = 8;
+
+fn is_supported_book_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "epub" | "txt" | "htmlz"))
+        .unwrap_or(false)
+}
+
+fn walk_book_dir(
+    root: &Path,
+    current: &Path,
+    depth: usize,
+    out: &mut Vec<EpubFolderEntry>,
+) {
+    if depth > MAX_FOLDER_SCAN_DEPTH || out.len() >= MAX_FOLDER_SCAN_BOOKS {
+        return;
+    }
+    let Ok(read_dir) = std::fs::read_dir(current) else {
+        return;
+    };
+    let mut entries: Vec<PathBuf> = read_dir
+        .filter_map(|e| e.ok().map(|entry| entry.path()))
+        .collect();
+    entries.sort();
+
+    for entry_path in entries {
+        if out.len() >= MAX_FOLDER_SCAN_BOOKS {
+            break;
+        }
+        let Some(file_name) = entry_path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&entry_path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            walk_book_dir(root, &entry_path, depth + 1, out);
+        } else if meta.is_file() && is_supported_book_extension(&entry_path) {
+            let subfolder_series = if current != root {
+                current
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
+            };
+            out.push(EpubFolderEntry {
+                path: entry_path.to_string_lossy().to_string(),
+                subfolder_series,
+            });
+        }
+    }
+}
+
+pub fn scan_epub_folder_impl(dir: &str) -> Result<Vec<EpubFolderEntry>, String> {
+    let root = Path::new(dir);
+    if !root.exists() {
+        return Err("Folder does not exist".to_string());
+    }
+    if !root.is_dir() {
+        return Err("Path is not a directory".to_string());
+    }
+    let mut out = Vec::new();
+    walk_book_dir(root, root, 0, &mut out);
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn epub_scan_folder(dir: String) -> Result<Vec<EpubFolderEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || scan_epub_folder_impl(&dir))
+        .await
+        .map_err(|e| format!("EPUB folder scan task failed: {}", e))?
 }
 
 #[tauri::command]

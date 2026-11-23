@@ -35,6 +35,17 @@ import {
     mergeEpubBookEntries,
     mergeManifestWithLocalTabs,
 } from "../src/features/epub/epubSyncModel.ts";
+import {
+    buildPortableEpubBackup,
+    mergePortableEpubBackup,
+    parsePortableEpubBackup,
+} from "../src/features/epub/epubBackup.ts";
+import {
+    findActiveCueIndex,
+    formatAudioTime,
+    matchCueToParagraphIndex,
+    parseSubtitles,
+} from "../src/features/epub/epubSubtitles.ts";
 
 test("A1: parses dc:language tags and falls back to kana/kanji ratio", () => {
     assert.equal(parseEpubLanguageTag("ja"), "ja");
@@ -352,4 +363,108 @@ test("EPUB Drive sync merges newer phone reading position, union-merges annotati
     assert.equal(res.nextTabs[0].epub.cloudOnly, true);
     assert.equal(res.nextTabs[0].epub.chapterIndex, 4);
     assert.equal(res.nextTabs[0].epub.driveFileId, "drive-file-2");
+});
+
+test("parseSubtitles parses SRT and WebVTT, binary-searches active cues, and matches Japanese EPUB paragraphs", () => {
+    const srt = `1
+00:00:01,500 --> 00:00:04,200
+<i>プロローグ『始まりの余熱』</i>
+
+2
+00:00:05,000 --> 00:00:09,500
+――これは本気でヤバい。
+`;
+    const cues = parseSubtitles(srt);
+    assert.equal(cues.length, 2);
+    assert.equal(cues[0].startSec, 1.5);
+    assert.equal(cues[0].text, "プロローグ『始まりの余熱』");
+    assert.equal(findActiveCueIndex(cues, 0.5), -1);
+    assert.equal(findActiveCueIndex(cues, 2.0), 0);
+    assert.equal(findActiveCueIndex(cues, 6.2), 1);
+
+    const vtt = `WEBVTT
+
+NOTE intro comment
+
+00:12.000 --> 00:15.500 align:center
+固い地べたの感触を顔面に味わい
+`;
+    const vttCues = parseSubtitles(vtt);
+    assert.equal(vttCues.length, 1);
+    assert.equal(vttCues[0].startSec, 12);
+    assert.equal(vttCues[0].endSec, 15.5);
+
+    const paragraphs = [
+        { index: 0, text: "プロローグ『始まりの余熱』" },
+        { index: 1, text: "――これは本気でヤバい。" },
+        { index: 2, text: "固い地べたの感触を顔面に味わい、彼は自分がうつ伏せに倒れたのだと気付いた。" },
+    ];
+    assert.equal(matchCueToParagraphIndex(cues[1].text, paragraphs, 0), 1);
+    assert.equal(matchCueToParagraphIndex(vttCues[0].text, paragraphs, 1), 2);
+    assert.equal(formatAudioTime(65), "1:05");
+    assert.equal(formatAudioTime(3665), "1:01:05");
+});
+
+test("portable EPUB JSON backup exports, parses, merges progress/shelves/bookmarks, and retains unmatched books", () => {
+    const localTabs = [
+        {
+            id: 1,
+            name: "Re:Zero 1",
+            mode: "epub",
+            lines: [],
+            stats: { chars: 1200, words: 0, sentences: 0, time: 60 },
+            epub: {
+                title: "Re:Zero 1",
+                series: "Re:Zero",
+                shelves: ["Favorites"],
+                chapterIndex: 2,
+                chapterOffset: 0.25,
+                progress: 0.12,
+                lastOpenedAt: 1000,
+                syncUpdatedAt: 1000,
+                bookmarks: [{ id: "b1", label: "Start", chapterIndex: 1, paragraphIndex: 0, excerpt: "a", createdAt: 100 }],
+                highlights: [],
+                notes: [],
+                lines: [],
+            },
+        },
+    ];
+
+    const backup = buildPortableEpubBackup(localTabs, ["Favorites", "JLPT N1"]);
+    const raw = JSON.stringify(backup);
+    const parsed = parsePortableEpubBackup(raw);
+    assert.equal(parsed.schemaVersion, 1);
+    assert.equal(parsed.books.length, 1);
+    assert.deepEqual(parsed.customShelves, ["Favorites", "JLPT N1"]);
+
+    // Simulate importing a backup with newer progress on Book 1 + a second book not yet on this device
+    parsed.books[0].chapterIndex = 6;
+    parsed.books[0].chapterOffset = 0.8;
+    parsed.books[0].progress = 0.55;
+    parsed.books[0].updatedAt = 5000;
+    parsed.books[0].shelves = ["Reading Club"];
+    parsed.books[0].bookmarks = [
+        { id: "b2", label: "Climax", chapterIndex: 6, paragraphIndex: 12, excerpt: "b", createdAt: 200 },
+    ];
+    parsed.books.push({
+        bookKey: "mushokutensei1",
+        title: "Mushoku Tensei 1",
+        chapterIndex: 4,
+        chapterOffset: 0.5,
+        progress: 0.35,
+        lastOpenedAt: 4000,
+        updatedAt: 4000,
+        shelves: ["Isekai"],
+    });
+
+    const merged = mergePortableEpubBackup(localTabs, parsed);
+    assert.equal(merged.updatedBooks, 1);
+    assert.equal(merged.unmatchedEntries.length, 1);
+    assert.equal(merged.unmatchedEntries[0].title, "Mushoku Tensei 1");
+    assert.equal(merged.nextTabs[0].epub.chapterIndex, 6);
+    assert.equal(merged.nextTabs[0].epub.progress, 0.55);
+    assert.equal(merged.nextTabs[0].epub.bookmarks.length, 2);
+    assert.ok(merged.nextTabs[0].epub.shelves.includes("Favorites"));
+    assert.ok(merged.nextTabs[0].epub.shelves.includes("Reading Club"));
+    assert.ok(merged.mergedShelves.includes("Isekai"));
 });

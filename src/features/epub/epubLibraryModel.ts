@@ -47,6 +47,7 @@ export const DEFAULT_LIBRARY_PREFS: EpubLibraryPrefs = {
 
 const LIBRARY_PREFS_KEY = "setsuna-epub-library-prefs";
 const RETAINED_DATA_KEY = "setsuna-epub-retained-data";
+const CUSTOM_SHELVES_KEY = "setsuna-epub-custom-shelves";
 
 export interface RetainedBookRecord {
     title: string;
@@ -54,12 +55,44 @@ export interface RetainedBookRecord {
     series?: string;
     seriesPosition?: number | null;
     tags?: string[];
+    shelves?: string[];
     manualStatus?: "unread" | "reading" | "completed";
     coverBlurred?: boolean;
+    chapterIndex?: number;
+    chapterOffset?: number;
+    progress?: number;
     bookmarks?: EpubBookmark[];
     highlights?: EpubHighlight[];
     notes?: EpubBookNote[];
     stats?: TabStats;
+}
+
+export function loadCustomShelves(): string[] {
+    try {
+        const raw = localStorage.getItem(CUSTOM_SHELVES_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return Array.from(
+            new Set(
+                parsed
+                    .filter((s): s is string => typeof s === "string")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+            ),
+        );
+    } catch {
+        return [];
+    }
+}
+
+export function saveCustomShelves(shelves: readonly string[]): void {
+    try {
+        const clean = Array.from(new Set(shelves.map((s) => s.trim()).filter(Boolean)));
+        localStorage.setItem(CUSTOM_SHELVES_KEY, JSON.stringify(clean));
+    } catch {
+        // Ignore storage errors
+    }
 }
 
 const JA_COLLATOR = new Intl.Collator("ja-JP", { numeric: true, sensitivity: "base" });
@@ -536,13 +569,30 @@ export function saveRetainedBookData(book: Tab): void {
             series: book.epub.series,
             seriesPosition: book.epub.seriesPosition,
             tags: book.epub.tags,
+            shelves: book.epub.shelves,
             manualStatus: book.epub.manualStatus,
             coverBlurred: book.epub.coverBlurred,
+            chapterIndex: book.epub.chapterIndex,
+            chapterOffset: book.epub.chapterOffset,
+            progress: book.epub.progress,
             bookmarks: book.epub.bookmarks,
             highlights: book.epub.highlights,
             notes: book.epub.notes,
             stats: book.stats,
         };
+        localStorage.setItem(RETAINED_DATA_KEY, JSON.stringify(map));
+    } catch {
+        // Ignore storage quota errors
+    }
+}
+
+export function saveRetainedBookRecord(record: RetainedBookRecord): void {
+    const key = normalizeTitleKey(record.title || "");
+    if (!key) return;
+    try {
+        const raw = localStorage.getItem(RETAINED_DATA_KEY);
+        const map: Record<string, RetainedBookRecord> = raw ? JSON.parse(raw) : {};
+        map[key] = { ...record, savedAt: record.savedAt || Date.now() };
         localStorage.setItem(RETAINED_DATA_KEY, JSON.stringify(map));
     } catch {
         // Ignore storage quota errors
@@ -563,8 +613,12 @@ export function restoreRetainedBookData(title: string): Partial<{ epub: Partial<
                 series: found.series,
                 seriesPosition: found.seriesPosition,
                 tags: found.tags,
+                shelves: found.shelves,
                 manualStatus: found.manualStatus,
                 coverBlurred: found.coverBlurred,
+                chapterIndex: found.chapterIndex,
+                chapterOffset: found.chapterOffset,
+                progress: found.progress,
                 bookmarks: found.bookmarks,
                 highlights: found.highlights,
                 notes: found.notes,
