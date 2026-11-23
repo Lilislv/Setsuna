@@ -20,8 +20,9 @@ import FontPicker from "../../components/FontPicker";
 import { getDay, useDailyStatsVersion } from "../../utils/dailyStats";
 import { setMobileVolumePagingEnabled } from "../../utils/mobileFiles";
 import { searchEpubBook } from "./epubApi";
-import EpubAudioBar from "./EpubAudioBar";
+import EpubAudioBar, { type AudiobookActiveMedia } from "./EpubAudioBar";
 import EpubGalleryModal from "./EpubGalleryModal";
+import { subtitleScenes } from "../player/mining";
 import EpubGlassSelect from "./EpubGlassSelect";
 import EpubQuoteModal from "./EpubQuoteModal";
 import { buildEpubFontPresets } from "./epubFonts";
@@ -289,6 +290,8 @@ export default function EpubReader({
     const [galleryOpen, setGalleryOpen] = useState(false);
     const [audioBarOpen, setAudioBarOpen] = useState(false);
     const [ttsActiveParagraph, setTtsActiveParagraph] = useState<number | null>(null);
+    const [audiobookMedia, setAudiobookMedia] = useState<AudiobookActiveMedia | null>(null);
+    const [audioSeekRequest, setAudioSeekRequest] = useState<{ chapterIndex: number; paragraphIndex: number; nonce: number } | null>(null);
     const [quoteModalText, setQuoteModalText] = useState<string | null>(null);
     const [zenMode, setZenMode] = useState(false);
     const [settingReadingPoint, setSettingReadingPoint] = useState(false);
@@ -629,8 +632,8 @@ export default function EpubReader({
     }, [isMobile, lookupOpen, lookupActive, escMenuOpen, evaluateHoverZones]);
 
     useEffect(() => {
-        onOverlayStateChange?.(tocOpen || searchOpen || appearanceOpen || galleryOpen || Boolean(quoteModalText));
-    }, [tocOpen, searchOpen, appearanceOpen, galleryOpen, quoteModalText, onOverlayStateChange]);
+        onOverlayStateChange?.(tocOpen || searchOpen || appearanceOpen || galleryOpen || audioBarOpen || Boolean(quoteModalText));
+    }, [tocOpen, searchOpen, appearanceOpen, galleryOpen, audioBarOpen, quoteModalText, onOverlayStateChange]);
 
     useEffect(() => {
         if (!closeOverlaySignal) return;
@@ -638,6 +641,7 @@ export default function EpubReader({
         setSearchOpen(false);
         setAppearanceOpen(false);
         setGalleryOpen(false);
+        setAudioBarOpen(false);
         setQuoteModalText(null);
         setSelectionPill(null);
         setSettingReadingPoint(false);
@@ -1604,6 +1608,39 @@ export default function EpubReader({
         };
     }, [isMobile, volumeKeyPaging, lookupOpen, escMenuOpen, tocOpen, appearanceOpen, searchOpen, galleryOpen, quoteModalText, turnPage]);
 
+    // Bind aligned audiobook paragraph timestamps to Lookuper's `subtitleScenes` WeakMap
+    // so hovering any word & clicking "+" mines live narrator audio directly from the .m4b/.mp3 into Anki!
+    useEffect(() => {
+        const surface = surfaceRef.current;
+        if (!surface) return;
+        const nodes = surface.querySelectorAll<HTMLElement>(".text-line[data-paragraph-index]");
+        if (!audiobookMedia?.alignment || !audiobookMedia.audioPath || !(audiobookMedia.duration > 0)) {
+            nodes.forEach((node) => subtitleScenes.delete(node));
+            return;
+        }
+        const byPara = new Map<number, { startSec: number; endSec: number }>();
+        for (const p of audiobookMedia.alignment.paragraphs) {
+            if (p.chapterIndex === chapterIndex) {
+                byPara.set(p.paragraphIndex, { startSec: p.startSec, endSec: p.endSec });
+            }
+        }
+        nodes.forEach((node) => {
+            const idx = Number(node.dataset.paragraphIndex);
+            const timing = Number.isInteger(idx) ? byPara.get(idx) : undefined;
+            if (timing && timing.endSec > timing.startSec) {
+                subtitleScenes.set(node, {
+                    source: audiobookMedia.audioPath,
+                    start: timing.startSec,
+                    end: timing.endSec,
+                    duration: audiobookMedia.duration,
+                    audioOnly: true,
+                });
+            } else {
+                subtitleScenes.delete(node);
+            }
+        });
+    }, [audiobookMedia, chapterIndex, currentPageIdx, useTwoPageSpread, paragraphs]);
+
     // Internal EPUB link clicks + edge-click page turning + mobile empty-area tap to toggle full-screen reading
     const handleContentClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
         const hadOpenPopover = appearanceOpen || searchOpen;
@@ -1612,6 +1649,19 @@ export default function EpubReader({
         if (selectionPill) setSelectionPill(null);
 
         const target = event.target as HTMLElement | null;
+
+        if (event.altKey && audiobookMedia?.alignment) {
+            const paraNode = target?.closest<HTMLElement>("[data-paragraph-index]");
+            if (paraNode) {
+                const idx = Number(paraNode.dataset.paragraphIndex);
+                if (Number.isInteger(idx)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setAudioSeekRequest({ chapterIndex, paragraphIndex: idx, nonce: Date.now() });
+                    return;
+                }
+            }
+        }
 
         if (settingReadingPoint) {
             const paraNode = target?.closest<HTMLElement>("[data-paragraph-index]");
@@ -1664,7 +1714,7 @@ export default function EpubReader({
                 onToggleImmersive?.();
             }
         }
-    }, [chapters, appearanceOpen, searchOpen, tocOpen, lookupOpen, isMobile, isPaged, isVertical, turnPage, onToggleImmersive, selectionPill, settingReadingPoint, paragraphs, handleSaveReadingPoint]);
+    }, [chapters, appearanceOpen, searchOpen, tocOpen, lookupOpen, isMobile, isPaged, isVertical, turnPage, onToggleImmersive, selectionPill, settingReadingPoint, paragraphs, handleSaveReadingPoint, audiobookMedia, chapterIndex]);
 
     const isSwipePaged = isHorizontalPaged || (isVertical && isPaged);
 
@@ -3110,8 +3160,16 @@ export default function EpubReader({
 
                 <EpubAudioBar
                     open={audioBarOpen}
+                    isMobile={isMobile}
+                    zenMode={zenMode}
+                    lookupOpen={Boolean(lookupOpen)}
+                    bottomChromeVisible={bottomChromeVisible}
                     language={language}
                     bookLanguage={bookLanguage}
+                    bookPath={bookPath}
+                    bookTitle={tab.epub?.title || bookMeta?.title || tab.name}
+                    bookAuthor={tab.epub?.author || bookMeta?.author || undefined}
+                    coverDataUrl={coverDataUrl}
                     chapterIndex={chapterIndex}
                     chapterCount={chapterCount}
                     paragraphs={paragraphs}
@@ -3120,17 +3178,21 @@ export default function EpubReader({
                             ? (pageRanges[spreadStartIdx]?.start ?? 0)
                             : (anchorParagraphRef.current.chapterIdx === chapterIndex ? anchorParagraphRef.current.paragraphIdx : 0)
                     }
+                    seekToParagraphRequest={audioSeekRequest}
                     onFocusParagraph={handleAudioFocusParagraph}
+                    onJumpToChapterParagraph={(chIdx, pIdx) => {
+                        setTtsActiveParagraph(pIdx);
+                        jumpToLocation(chIdx, pIdx);
+                    }}
                     onAdvanceChapter={() => {
                         if (chapterIndex + 1 < chapterCount) {
                             pageTurnDirRef.current = 1;
                             callbacksRef.current.onSelectChapter(chapterIndex + 1);
                         }
                     }}
-                    onClose={() => {
-                        setAudioBarOpen(false);
-                        setTtsActiveParagraph(null);
-                    }}
+                    onAudiobookMediaChange={setAudiobookMedia}
+                    onOpenPanel={() => setAudioBarOpen(true)}
+                    onClosePanel={() => setAudioBarOpen(false)}
                 />
 
                 <EpubGalleryModal

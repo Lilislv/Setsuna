@@ -54,3 +54,84 @@ export const downloadEpubFromDrive = async (
 ): Promise<string> => {
     return invoke<string>("epub_drive_download", { accessToken, driveFileId, tabId, ext });
 };
+
+export interface EpubAlignedCue {
+    index: number;
+    startSec: number;
+    endSec: number;
+    text: string;
+    chapterIndex: number | null;
+    paragraphIndex: number | null;
+}
+
+export interface EpubAlignedParagraph {
+    chapterIndex: number;
+    paragraphIndex: number;
+    startSec: number;
+    endSec: number;
+}
+
+export interface EpubAudioChapterMarker {
+    title: string;
+    startSec: number;
+    chapterIndex: number | null;
+}
+
+export interface EpubAudioAlignment {
+    matchedChars: number;
+    totalChars: number;
+    matchPct: number;
+    matchedCues: number;
+    totalCues: number;
+    cues: EpubAlignedCue[];
+    paragraphs: EpubAlignedParagraph[];
+    chapters: EpubAudioChapterMarker[];
+}
+
+export interface EpubAudioFileLinkInfo {
+    audioPath: string;
+    companionSrt: string | null;
+    companionCue: string | null;
+}
+
+export const allowEpubAudioFile = async (path: string): Promise<EpubAudioFileLinkInfo> => {
+    return invoke<EpubAudioFileLinkInfo>("epub_audio_allow_file", { path });
+};
+
+export const alignEpubAudio = async (
+    bookPath: string,
+    srtPath: string,
+    cuePath: string | null,
+    bookKey: string,
+): Promise<EpubAudioAlignment> => {
+    return invoke<EpubAudioAlignment>("epub_audio_align", {
+        bookPath,
+        srtPath,
+        cuePath,
+        bookKey,
+    });
+};
+
+export const alignEpubAudioText = async (
+    bookPath: string,
+    srtText: string,
+    cueText: string | null,
+    bookKey: string,
+): Promise<EpubAudioAlignment> => {
+    return invoke<EpubAudioAlignment>("epub_audio_align_text", {
+        bookPath,
+        srtText,
+        cueText,
+        bookKey,
+    });
+};
+
+export const loadEpubAudioAlignment = async (
+    bookKey: string,
+): Promise<EpubAudioAlignment | null> => {
+    return invoke<EpubAudioAlignment | null>("epub_audio_load_alignment", { bookKey });
+};
+
+export const clearEpubAudioAlignment = async (bookKey: string): Promise<void> => {
+    return invoke<void>("epub_audio_clear_alignment", { bookKey });
+};

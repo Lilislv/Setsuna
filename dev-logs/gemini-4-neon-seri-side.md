@@ -5,6 +5,21 @@
 
 ---
 
+## 2026-11-23 — Sasayaki-Style Full-Book Audiobook Sync Engine, Auto-Pause & Anki Audio Mining
+
+- **Rust full-book alignment engine (`src-tauri/src/epub_audio.rs`, registered in both `main.rs` & `lib.rs`):**
+  - Commands: `epub_audio_allow_file` (grants `asset_protocol_scope().allow_file` + auto-detects sibling `.srt`/`.vtt` and `.cue`), `epub_audio_align`, `epub_audio_align_text`, `epub_audio_load_alignment`, `epub_audio_clear_alignment`.
+  - Flattens all EPUB chapters into normalized character stream with trigram/bigram anchor indexing + bounded edit-tolerant monotonic alignment + gap interpolation + CUE sheet parser (supports minutes > 60).
+  - Benchmarked on real Japanese light novel *Slayers Vol. 1* (`1.epub` + `Slayers01.srt` + `.cue`): **69,152 / 69,600 chars (99.4%)**, 3,628 / 3,632 cues, 3,096 paragraphs, 10 chapters in 0.74s (debug).
+  - Disk cache under `app_data_dir/epub-audio/align_<hash>.json`.
+- **Frontend Sasayaki-style UI & sync (`src/features/epub/EpubAudioBar.tsx`, `src/features/epub/epubAudioStorage.ts`, `src/features/epub/EpubReader.tsx`):**
+  - Persistent per-book audio/SRT/CUE linking + resume timestamp in `localStorage["setsuna-epub-audio-links-v1"]`.
+  - Three sub-tabs: **Resources** (link `.m4b`/`.mp3`, auto-detect sibling `.srt`/`.cue`, **Match** button with exact char `%` & **Export SRT**), **Chapters** (`.cue` / aligned ToC timestamps), **Settings** (auto-follow across pages & chapters, auto-pause on dictionary lookup, skip interval).
+  - Unobtrusive bottom-left mini playback bar (`« ▶ » · time · ⌖`) while reading; **Alt+Click** any paragraph or click `⌖` to seek audio to text.
+  - **Live Anki audiobook clip mining:** binds aligned `.text-line` paragraphs into `subtitleScenes` (`src/features/player/mining.ts`, `audioOnly: true`) so clicking `+` in the dictionary automatically cuts the narrator's spoken sentence from `.m4b`/`.mp3` via FFmpeg into Anki.
+
+---
+
 ## 2026-11-23 — Desktop Anime Player Workspace, Dual Subtitles, Scene Mining & HLS (authored with ChatGPT on `seri`'s side, verified & pushed)
 
 - **New module:** `src/features/player/*` (`PlayerWorkspace.tsx`, `PlayerCardEditor.tsx`, `SubtitleTracks.tsx`, `model.ts`, `mining.ts`, `usePlayerSource.ts`, `useCompatibleVideo.ts`, `webMedia.ts`, `player.css`) replacing legacy `src/components/PlayerSkeleton.tsx`; docs in `docs/anime-player.md`.

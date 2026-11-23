@@ -7,6 +7,7 @@ mod japanese_tokenizer;
 mod text_stats;
 mod http_client;
 mod tab_lines;
+mod epub_audio;
 mod epub_import;
 mod lookup_normalization;
 mod japanese_deinflector;
@@ -1255,6 +1256,11 @@ pub fn run() {
             epub_import::epub_drive_upload,
             epub_import::epub_drive_download,
             epub_import::epub_scan_folder,
+            epub_audio::epub_audio_allow_file,
+            epub_audio::epub_audio_align,
+            epub_audio::epub_audio_align_text,
+            epub_audio::epub_audio_load_alignment,
+            epub_audio::epub_audio_clear_alignment,
             epub_import::epub_gallery,
             epub_import::epub_search,
             epub_import::epub_chapter,

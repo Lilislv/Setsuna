@@ -46,6 +46,11 @@ import {
     matchCueToParagraphIndex,
     parseSubtitles,
 } from "../src/features/epub/epubSubtitles.ts";
+import {
+    findAlignedCueAtTime,
+    findTimestampForParagraph,
+    formatAlignmentAsSrt,
+} from "../src/features/epub/epubAudioStorage.ts";
 
 test("A1: parses dc:language tags and falls back to kana/kanji ratio", () => {
     assert.equal(parseEpubLanguageTag("ja"), "ja");
@@ -467,4 +472,36 @@ test("portable EPUB JSON backup exports, parses, merges progress/shelves/bookmar
     assert.ok(merged.nextTabs[0].epub.shelves.includes("Favorites"));
     assert.ok(merged.nextTabs[0].epub.shelves.includes("Reading Club"));
     assert.ok(merged.mergedShelves.includes("Isekai"));
+});
+
+test("epubAudioStorage finds aligned cues by time, resolves paragraph timestamps, and exports valid SRT", () => {
+    const alignment = {
+        matchedChars: 69152,
+        totalChars: 69600,
+        matchPct: 99.4,
+        matchedCues: 2,
+        totalCues: 2,
+        cues: [
+            { index: 0, startSec: 35.72, endSec: 38.5, text: "一、気をつけよう", chapterIndex: 2, paragraphIndex: 0 },
+            { index: 1, startSec: 41.86, endSec: 42.92, text: "あたしは追われていた。", chapterIndex: 2, paragraphIndex: 3 },
+        ],
+        paragraphs: [
+            { chapterIndex: 2, paragraphIndex: 0, startSec: 35.72, endSec: 38.5 },
+            { chapterIndex: 2, paragraphIndex: 3, startSec: 41.86, endSec: 42.92 },
+        ],
+        chapters: [{ title: "一、気をつけよう", startSec: 35.72, chapterIndex: 2 }],
+    };
+
+    assert.equal(findAlignedCueAtTime(alignment.cues, 10), null);
+    assert.equal(findAlignedCueAtTime(alignment.cues, 36.5)?.paragraphIndex, 0);
+    assert.equal(findAlignedCueAtTime(alignment.cues, 42.1)?.paragraphIndex, 3);
+
+    // Exact paragraph match + nearest fallback in same chapter
+    assert.equal(findTimestampForParagraph(alignment.paragraphs, 2, 3)?.startSec, 41.86);
+    assert.equal(findTimestampForParagraph(alignment.paragraphs, 2, 2)?.startSec, 41.86);
+    assert.equal(findTimestampForParagraph(alignment.paragraphs, 9, 0), null);
+
+    const exported = formatAlignmentAsSrt(alignment);
+    assert.ok(exported.includes("00:00:35,720 --> 00:00:38,500"));
+    assert.ok(exported.includes("あたしは追われていた。"));
 });

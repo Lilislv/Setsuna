@@ -79,6 +79,7 @@ mod ai_assistant;
 mod dictionary_share;
 mod core;
 mod dictionary_import;
+mod epub_audio;
 mod epub_import;
 #[cfg(target_os = "linux")]
 mod hover_lookup;
@@ -6011,6 +6012,11 @@ fn main() {
             epub_drive_upload,
             epub_drive_download,
             epub_scan_folder,
+            epub_audio::epub_audio_allow_file,
+            epub_audio::epub_audio_align,
+            epub_audio::epub_audio_align_text,
+            epub_audio::epub_audio_load_alignment,
+            epub_audio::epub_audio_clear_alignment,
             epub_gallery,
             epub_search,
             epub_chapter,
