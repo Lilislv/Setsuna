@@ -1620,7 +1620,7 @@ export default function App() {
                     chapterIndex: 0,
                     chapterOffset: 0,
                     chapterCount: meta.chapters.length,
-                    lastOpenedAt: Date.now(),
+                    lastOpenedAt: options?.activate ? Date.now() : 0,
                     lines: [],
                     progress: 0,
                 };

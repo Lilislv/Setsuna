@@ -9,6 +9,30 @@ type LibrarySort = "recent" | "title" | "progress";
 
 const UNKNOWN_AUTHOR_KEY = "__unknown__";
 
+function normalizeTitleForSort(title: string): string {
+    return title.normalize("NFKC").replace(/\s+/g, "");
+}
+
+function compareBookTitles(a: Tab, b: Tab, language: AppLanguage): number {
+    const titleA = a.epub?.title || a.name || "";
+    const titleB = b.epub?.title || b.name || "";
+    const normCmp = normalizeTitleForSort(titleA).localeCompare(
+        normalizeTitleForSort(titleB),
+        language,
+        { numeric: true, sensitivity: "base" },
+    );
+    if (normCmp !== 0) return normCmp;
+    return titleA.localeCompare(titleB, language, { numeric: true, sensitivity: "base" });
+}
+
+function hasReadingProgress(book: Tab): boolean {
+    return (
+        (book.epub?.progress || 0) > 0
+        || (book.epub?.chapterIndex || 0) > 0
+        || (book.epub?.chapterOffset || 0) > 0
+    );
+}
+
 interface EpubLibraryProps {
     books: Tab[];
     coversByPath: Record<string, string | null>;
@@ -75,14 +99,22 @@ export default function EpubLibrary({
 
         return [...list].sort((a, b) => {
             if (sortBy === "title") {
-                const titleA = a.epub?.title || a.name || "";
-                const titleB = b.epub?.title || b.name || "";
-                return titleA.localeCompare(titleB, language);
+                return compareBookTitles(a, b, language);
             }
             if (sortBy === "progress") {
-                return (b.epub?.progress || 0) - (a.epub?.progress || 0);
+                const progressDiff = (b.epub?.progress || 0) - (a.epub?.progress || 0);
+                return progressDiff !== 0 ? progressDiff : compareBookTitles(a, b, language);
             }
-            return (b.epub?.lastOpenedAt || b.id) - (a.epub?.lastOpenedAt || a.id);
+            const startedA = hasReadingProgress(a);
+            const startedB = hasReadingProgress(b);
+            if (startedA !== startedB) {
+                return startedA ? -1 : 1;
+            }
+            if (startedA && startedB) {
+                const timeDiff = (b.epub?.lastOpenedAt || 0) - (a.epub?.lastOpenedAt || 0);
+                if (timeDiff !== 0) return timeDiff;
+            }
+            return compareBookTitles(a, b, language);
         });
     }, [activeBooks, query, langFilter, authorFilter, sortBy, language]);
 
