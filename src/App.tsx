@@ -1603,7 +1603,7 @@ export default function App() {
         };
     }, [runDictImport, t]);
 
-    const importEpubPath = useCallback(async (filePath: string, targetTabId?: number) => {
+    const importEpubPath = useCallback(async (filePath: string, targetTabId?: number, options?: { activate?: boolean }) => {
         try {
             const meta = await openEpubBook(filePath);
             const tabId = targetTabId ?? nextTabId.current++;
@@ -1653,9 +1653,11 @@ export default function App() {
                 ];
             });
 
-            switchTab(tabId);
-            setLookupStack([]);
-            setActiveWorkspace("epub");
+            if (options?.activate !== false) {
+                switchTab(tabId);
+                setLookupStack([]);
+                setActiveWorkspace("epub");
+            }
         } catch (error) {
             setNotice({
                 title: t("epub.title"),
@@ -1670,12 +1672,15 @@ export default function App() {
                 return;
             }
             const selected = await open({
-                multiple: false,
+                multiple: true,
                 directory: false,
                 filters: [{ name: "Books (EPUB, TXT, HTMLZ)", extensions: ["epub", "txt", "htmlz"] }],
             });
-            if (typeof selected === "string" && selected.trim()) {
-                await importEpubPath(selected);
+            const selectedPaths = Array.isArray(selected)
+                ? selected.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+                : [];
+            for (let i = 0; i < selectedPaths.length; i++) {
+                await importEpubPath(selectedPaths[i], undefined, { activate: i === selectedPaths.length - 1 });
             }
         } catch (error) {
             setNotice({
@@ -2004,12 +2009,18 @@ export default function App() {
                 return;
             }
 
+            const bookPaths = paths.filter((path) => isSupportedBookPath(path));
+            if (bookPaths.length > 0) {
+                for (let i = 0; i < bookPaths.length; i++) {
+                    await importEpubPath(bookPaths[i], undefined, { activate: i === bookPaths.length - 1 });
+                }
+                return;
+            }
+
             const file = paths[0];
             const lowerFile = file.toLowerCase();
 
-            if (isSupportedBookPath(file)) {
-                await importEpubPath(file);
-            } else if (lowerFile.endsWith('.json')) {
+            if (lowerFile.endsWith('.json')) {
                 try {
                     const content = await invoke<string>("load_sync_file", { path: file });
                     const parsed = JSON.parse(content);
