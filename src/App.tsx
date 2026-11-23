@@ -42,7 +42,7 @@ import { cachedGlyphScale, glyphScaleFor } from "./utils/fontNormalize";
 import { appendSpeedSample } from "./utils/speedSamples";
 import { listTabHistoryIds, loadTabHistory, markTabHistorySaved, mergeTabHistory, pruneTabHistories, saveChangedTabHistories, slimTabForWorkspace, tailTabForCache } from "./utils/tabHistory";
 import { IconPin, IconPlayerTab, IconSearch } from "./components/Icons";
-import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, EpubBookmark, Tab, themes, PlayerMiningClip, ReadingSpeedSample, isTabLocked, type CaptureSourceBinding } from "./utils/constants";
+import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, EpubBookmark, Tab, themes, ReadingSpeedSample, isTabLocked, type CaptureSourceBinding } from "./utils/constants";
 import { useSharedReading } from "./utils/useSharedReading";
 import SharedReadingDialog from "./components/SharedReadingDialog";
 import { registerCaptureSourceRequest } from "./utils/captureRequest";
@@ -52,7 +52,7 @@ import SetupWizard from "./components/SetupWizard";
 import StartupSplash from "./components/StartupSplash";
 import HomeScreen from "./components/HomeScreen";
 import { YATSU_READER_AVAILABLE } from './utils/featureFlags';
-import PlayerSkeleton from "./components/PlayerSkeleton";
+import PlayerWorkspace from "./features/player/PlayerWorkspace";
 import WorkspaceShell from "./components/WorkspaceShell";
 import { appVersionLabel } from "./utils/appVersion";
 import { contentFingerprint, createLatestTaskQueue } from './utils/runtimeMemory';
@@ -729,7 +729,6 @@ export default function App() {
     const [mobileLookupNotice, setMobileLookupNotice] = useState('');
     const [mobileSettingsRequest, setMobileSettingsRequest] = useState({ id: 0, section: 'reading' });
     const mobileSettingsReturnRef = useRef<{ workspace: 'hub' | 'epub' | null; tabId: number | null }>({ workspace: null, tabId: null });
-    const [playerMiningClip, setPlayerMiningClip] = useState<PlayerMiningClip | null>(null);
     const [jsonImportProgress, setJsonImportProgress] = useState<{ current: number; total: number } | null>(null);
     const [dictImportProgress, setDictImportProgress] = useState<{
         dict_name: string;
@@ -4312,10 +4311,10 @@ export default function App() {
                         onHome={() => setActiveWorkspace("hub")}
                         onSettings={() => openSettingsPanel('player-main')}
                     >
-                        <PlayerSkeleton
+                        <PlayerWorkspace
                             language={settings.appLanguage}
                             settings={settings}
-                            onClipReady={setPlayerMiningClip}
+                            shortcutsBlocked={isSettingsOpen || lookupStack.length > 0 || Boolean(confirmDialog) || Boolean(updateDialog)}
                         />
                     </WorkspaceShell>
                 ) : isMobileLayout ? (
@@ -4506,7 +4505,6 @@ export default function App() {
                         onReplaceAt={replaceLookupStackAt}
                         onSlice={sliceLookupStack}
                         settings={settings}
-                        playerClip={playerMiningClip}
                         captureSource={resolvedWorkspace === "texthooker" ? (activeTab?.captureSource || null) : null}
                         ankiDeck={(resolvedWorkspace === "texthooker" || resolvedWorkspace === "epub") ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
                         onClose={() => setLookupStack([])}

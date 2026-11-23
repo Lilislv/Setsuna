@@ -13,9 +13,9 @@ import SettingsCloud from "./Settings/SettingsCloud";
 import SettingsDiscord from "./Settings/SettingsDiscord";
 import SettingsAI from "./Settings/SettingsAI";
 import { isMobilePlatform } from "../utils/platform";
-import { IconBookTab, IconClose, IconCloud, IconEye, IconImport, IconMessage, IconRefresh, IconSearch, IconSparkle, IconTextTab } from "./Icons";
+import { IconPlayerTab, IconBookTab, IconClose, IconCloud, IconEye, IconImport, IconMessage, IconRefresh, IconSearch, IconSparkle, IconTextTab } from "./Icons";
 import { DEFAULT_SETTINGS } from "../utils/constants";
-import { EPUB_READER_AVAILABLE } from "../utils/featureFlags";
+import { ANIME_PLAYER_AVAILABLE, EPUB_READER_AVAILABLE } from "../utils/featureFlags";
 import { buildEpubFontPresets } from "../features/epub/epubFonts";
 import { getTranslator } from "../utils/i18n";
 import "./SettingsModal.css";
@@ -60,7 +60,7 @@ export interface AppSettings {
   mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
   mobileOverlayLocked?: boolean; mobileOverlayToolbarExpanded?: boolean;
   epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'auto' | 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubParagraphSpacingJa?: number; epubPagePadding?: number; epubShowImages?: boolean; epubBlurImages?: boolean; epubBlurImagesMode?: 'off' | 'after-toc' | 'all'; epubFuriganaMode?: 'show' | 'hover' | 'hide'; epubJustify?: boolean; epubPrettyWrap?: boolean; epubVerticalGrid?: boolean; epubTextIndent?: 'auto' | 'none' | 'indent'; epubAutoscrollSpeed?: number; epubAutoSync?: boolean; epubSyncUploadFiles?: boolean; epubVolumeKeyPaging?: boolean; epubEinkMode?: boolean; epubImageMaxWidth?: number;
-  playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerMiningPreferVideo: boolean; playerMiningUseClipForAnki: boolean;
+  playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerCardFormat?: "audio" | "video"; playerSceneLeadIn?: number; playerMiningUseClipForAnki: boolean;
   playerKeyPlayPause: string; playerKeyBack: string; playerKeyForward: string; playerKeyMine: string; playerKeyOffsetMinus: string; playerKeyOffsetPlus: string;
   discordEnabled: boolean; discordClientId: string; discordShowTab: boolean; discordShowStats: boolean; discordShowChars: boolean; discordShowWords: boolean; discordShowSentences: boolean; discordShowProgress: boolean; discordShowPaused: boolean; discordShowTimer: boolean; discordShowButtons: boolean; discordShowSpeed?: boolean; discordTitleInMemberList?: boolean;
   discordTextActivityType: 'playing' | 'watching' | 'listening' | 'competing'; discordTextStatus: 'playing' | 'reading' | 'watching' | 'mining' | 'custom'; discordCustomTextStatus: string;
@@ -825,6 +825,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           setActiveTab('anki');
           setActiveSubTab(initialSection);
           setHighlightedSection(initialSection);
+      } else if (initialSection.startsWith('player-') && ANIME_PLAYER_AVAILABLE) {
+          setActiveTab('player');
+          setActiveSubTab(initialSection);
+          setHighlightedSection(initialSection);
       } else if (initialSection.startsWith('epub-')) {
           setActiveTab('epub');
           setActiveSubTab(initialSection);
@@ -938,6 +942,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                           </div>}
                       </>
                   )}
+                  {ANIME_PLAYER_AVAILABLE && <SettingsNavButton active={activeTab === 'player'} icon={<IconPlayerTab />} label={isEnglish ? 'Media player' : 'Видеоплеер'} onClick={() => handleNav('player', 'player-main')} />}
                   <SettingsNavButton active={activeTab === 'jl'} icon={<IconTextTab />} label="Setsuna Flow" onClick={() => handleNav('jl', 'jl-main')} />
               </div>
 
@@ -1690,12 +1695,17 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                     <div id="player-mining" className={`modern-card ${highlightedSection === 'player-mining' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>
                         <div className="card-label" style={{ color: 'var(--text-main)' }}>{settings.appLanguage === 'en' ? 'Player card mining' : 'Майнинг карточек из плеера'}</div>
                         <label className="checkbox-label" style={{ marginBottom: '12px' }}><input type="checkbox" checked={settings.playerMiningReplayOnMine ?? true} onChange={(e) => updateSetting('playerMiningReplayOnMine', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Replay the mined subtitle segment' : 'Переигрывать замайненный отрезок по субтитрам'}</label>
-                        <label className="checkbox-label" style={{ marginBottom: '12px' }}><input type="checkbox" checked={settings.playerMiningUseClipForAnki ?? true} onChange={(e) => updateSetting('playerMiningUseClipForAnki', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Use latest player clip instead of dictionary audio' : 'Использовать последний клип плеера вместо словарной озвучки'}</label>
-                        <label className="checkbox-label" style={{ marginBottom: '15px' }}><input type="checkbox" checked={settings.playerMiningPreferVideo ?? false} onChange={(e) => updateSetting('playerMiningPreferVideo', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Cut video when ffmpeg is available' : 'Вырезать видео, если доступен ffmpeg'}</label>
+                        <label className="checkbox-label" style={{ marginBottom: '12px' }}><input type="checkbox" checked={settings.playerMiningUseClipForAnki ?? true} onChange={(e) => updateSetting('playerMiningUseClipForAnki', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Attach the subtitle scene to Anki' : 'Прикладывать сцену из реплики к карточке Anki'}</label>
+                        <label className="checkbox-label">{settings.appLanguage === 'en' ? 'Attachment' : 'Вложение'}
+                            <select className="modern-input" value={settings.playerCardFormat ?? 'video'} onChange={e => updateSetting('playerCardFormat', e.target.value as 'audio' | 'video')}>
+                                <option value="video">{settings.appLanguage === 'en' ? 'Video with original audio' : 'Видео с оригинальным звуком'}</option>
+                                <option value="audio">{settings.appLanguage === 'en' ? 'Original audio only' : 'Только оригинальный звук'}</option>
+                            </select>
+                        </label>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Lead-in before subtitle' : 'Запас до реплики'}
-                                <input type="number" min="0" max="3" step="0.05" className="modern-input" value={settings.playerMiningLeadIn ?? 0.15} onChange={(e) => updateSetting('playerMiningLeadIn', Number(e.target.value))} style={{ marginTop: 6 }} />
+                                <input type="number" min="0" max="30" step="0.05" className="modern-input" value={settings.playerCardFormat === 'audio' ? settings.playerMiningLeadIn : settings.playerSceneLeadIn ?? 5} onChange={(e) => updateSetting(settings.playerCardFormat === 'audio' ? 'playerMiningLeadIn' : 'playerSceneLeadIn', Math.min(30, Math.max(0, Number(e.target.value))))} style={{ marginTop: 6 }} />
                             </label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Lead-out after subtitle' : 'Запас после реплики'}
@@ -1703,7 +1713,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                             </label>
                         </div>
                         <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: 12 }}>
-                            {settings.appLanguage === 'en' ? 'Clip cutting is instant when ffmpeg is installed. Without it Setsuna still replays the segment and keeps the subtitle context.' : 'Нарезка работает быстро, если установлен ffmpeg. Без него Setsuna всё равно переигрывает реплику и сохраняет контекст субтитра.'}
+                            {settings.appLanguage === 'en' ? 'FFmpeg exports the clip. Set the lead-in in seconds to include the scene before the line.' : 'Для экспорта нужен FFmpeg. Запас до реплики задаётся в секундах и попадает в карточку вместе с репликой.'}
                         </div>
                     </div>
 
@@ -1715,8 +1725,8 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                 ['playerKeyBack', settings.appLanguage === 'en' ? 'Back' : 'Назад'],
                                 ['playerKeyForward', settings.appLanguage === 'en' ? 'Forward' : 'Вперёд'],
                                 ['playerKeyMine', settings.appLanguage === 'en' ? 'Mine clip' : 'Майнить клип'],
-                                ['playerKeyOffsetMinus', settings.appLanguage === 'en' ? 'Subs earlier' : 'Субтитры раньше'],
-                                ['playerKeyOffsetPlus', settings.appLanguage === 'en' ? 'Subs later' : 'Субтитры позже'],
+                                ['playerKeyOffsetMinus', settings.appLanguage === 'en' ? 'Subs later' : 'Субтитры позже'],
+                                ['playerKeyOffsetPlus', settings.appLanguage === 'en' ? 'Subs earlier' : 'Субтитры раньше'],
                             ].map(([key, label]) => (
                                 <label key={key} style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                     {label}

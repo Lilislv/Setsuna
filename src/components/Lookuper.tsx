@@ -1,3 +1,5 @@
+import { addPlayerNote, subtitleScenes } from "../features/player/mining";
+import type { PlayerScene } from "../features/player/model";
 import { createHoverScanQueue, findHoverTextPoint, sameHoverTextPoint, scanTextNodes, selectScanRange } from '../utils/hoverScan';
 ﻿import React, { useEffect, useState } from "react";
 import { invoke } from '@tauri-apps/api/core';
@@ -6,7 +8,7 @@ import { AppSettings } from "./SettingsModal";
 import { checkWordsStatusMulti, addNote, browseAnkiCards } from "../utils/anki";
 import { captureMobileScreen, hasMobileScreenCapture } from "../utils/mobileFiles";
 import { getTranslator } from "../utils/i18n";
-import { CaptureSourceBinding, PlayerMiningClip } from "../utils/constants";
+import { CaptureSourceBinding } from "../utils/constants";
 import { selectActiveLookupResult } from '../utils/lookupResults';
 import { isMobilePlatform } from '../utils/platform';
 import { withReadableCyrillic } from '../utils/cyrillicFace';
@@ -29,6 +31,7 @@ export interface LookupData {
     word: string;
     sentence: string;
     isKanjiLookup?: boolean;
+    playerScene?: PlayerScene;
     source?: 'internal' | 'external';
     screenPoint?: { x: number; y: number };
     externalScreenshot?: string | null;
@@ -48,7 +51,7 @@ export interface LookuperProps {
     onReplaceAt?: (index: number, data: LookupData) => void;
     onSlice?: (idx: number) => void; 
     settings?: AppSettings; 
-    playerClip?: PlayerMiningClip | null;
+
     captureSource?: CaptureSourceBinding | null;
     screenshotSource?: LookupScreenshotSource;
     ankiDeck?: string;
@@ -598,7 +601,7 @@ export const groupDictionaryEntries = (entries: any[], settings: any, isKanjiLoo
     return groupedEntries;
 };
 
-export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activeGrammarDesc, setActiveGrammarDesc, playAudio, audioFailed, playingAudio, isKanjidic, ankiStatus, onStatusChange, captureSource, playerClip, lookupData, screenshotSource }: any) => {
+export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activeGrammarDesc, setActiveGrammarDesc, playAudio, audioFailed, playingAudio, isKanjidic, ankiStatus, onStatusChange, captureSource, lookupData, screenshotSource }: any) => {
     const [isAdding, setIsAdding] = useState(false);
     // Synchronous guard: two quick clicks can both run before `isAdding` disables the button.
     const addingRef = useRef(false);
@@ -732,7 +735,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
         }
 
         // Screenshot capture errors should stop note creation before Anki is called.
-        if (withScreenshot) {
+        if (withScreenshot && !lookupData?.playerScene) {
             try {
                 let b64: string | null = null;
                 if (lookupData?.source === 'external') {
@@ -818,19 +821,15 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
             }
         }
 
-        const freshPlayerClip = settings?.playerMiningUseClipForAnki !== false && playerClip && Date.now() - playerClip.createdAt < 10 * 60 * 1000 ? playerClip : null;
-        const sentenceFurigana = sentence;
-        const res = await addNote(settings, { 
-            word: group.term, reading: plainReading, meaning: formattedMeaning, sentence: sentence, 
-            sentenceFurigana,
-            dictionary: dictName, pitch: pitchText, frequency: freqText, audioUrl: freshPlayerClip?.path ? undefined : audioUrl,
-            audioPath: freshPlayerClip?.path,
-            audioFilename: freshPlayerClip?.filename,
-            audioMediaType: freshPlayerClip?.mediaType,
-            playerSubtitle: freshPlayerClip?.subtitle,
-            screenshot: screenshotData
-        });
-        
+        const note = {
+            word: group.term, reading: plainReading, meaning: formattedMeaning, sentence,
+            sentenceFurigana: sentence, dictionary: dictName, pitch: pitchText, frequency: freqText,
+            audioUrl, screenshot: screenshotData,
+        };
+        const res = lookupData?.playerScene
+            ? await addPlayerNote(settings, note, lookupData.playerScene, withScreenshot)
+            : await addNote(settings, note);
+
         if (!res.error) {
             onStatusChange(group.term, group.reading, 'red');
             if (res.warning) alert(res.warning);
@@ -1122,7 +1121,7 @@ function LookupPage({ entries, english, children }: { entries: any[]; english: b
     </>;
 }
 
-export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt, onSlice, settings: baseSettings, captureSource, playerClip, screenshotSource = { kind: 'internal' }, ankiDeck, onClose, onSentenceLookup }: LookuperProps) {
+export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt, onSlice, settings: baseSettings, captureSource, screenshotSource = { kind: 'internal' }, ankiDeck, onClose, onSentenceLookup }: LookuperProps) {
   const settings = useMemo(
       () => baseSettings ? { ...baseSettings, ankiDeck: ankiDeck || baseSettings.ankiDeck } : baseSettings,
       [baseSettings, ankiDeck],
@@ -1287,6 +1286,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
               fullSentence += node.data;
           }
           if (absoluteCursor < 0) return;
+          const playerScene = subtitleScenes.get(point.container);
           const cursorCodePoint = codeUnitToCodePointOffset(fullSentence, absoluteCursor);
           const baseCodePoint = Math.max(0, cursorCodePoint - 600);
           const base = codePointToCodeUnitOffset(fullSentence, baseCodePoint);
@@ -1302,7 +1302,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
               selectScanRange(nodes, base + startUnit, entries.length ? endUnit - startUnit : 0);
               const current = scanLive.current;
               const parent = popup ? current.stack[popupIndex] : undefined;
-              const data: LookupData = { rect: point.rect, entries, word, sentence, source: parent?.source,
+              const data: LookupData = { rect: point.rect, entries, word, sentence, playerScene, source: parent?.source,
                   screenPoint: parent?.screenPoint, externalScreenshot: parent?.externalScreenshot };
               if (popup) current.onReplaceAt?.(popupIndex, data);
               else current.onReplace?.(data);
@@ -1387,6 +1387,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                       word,
                       sentence: parentLookup?.sentence || "",
                       isKanjiLookup: isKanji,
+                      playerScene: parentLookup?.playerScene,
                       source: parentLookup?.source,
                       screenPoint: parentLookup?.screenPoint,
                       externalScreenshot: parentLookup?.externalScreenshot,
@@ -1664,7 +1665,6 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                             isKanjidic={Object.keys(group.cleanDictionaries)[0]?.toUpperCase().includes("KANJI")}
                             ankiStatus={ankiStatuses[`${group.term}__${group.reading || ""}`] || 'loading'} onStatusChange={updateSingleStatus}
                             captureSource={captureSource}
-                            playerClip={playerClip}
                             lookupData={data}
                             screenshotSource={screenshotSource}
                         />

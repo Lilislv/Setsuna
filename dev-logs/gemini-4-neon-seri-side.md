@@ -5,7 +5,21 @@
 
 ---
 
-## 2026-11-23 — Discord Push/PR Notifications for `dev` & Per-Model Dev Logs (`67254ee` + next)
+## 2026-11-23 — Desktop Anime Player Workspace, Dual Subtitles, Scene Mining & HLS (authored with ChatGPT on `seri`'s side, verified & pushed)
+
+- **New module:** `src/features/player/*` (`PlayerWorkspace.tsx`, `PlayerCardEditor.tsx`, `SubtitleTracks.tsx`, `model.ts`, `mining.ts`, `usePlayerSource.ts`, `useCompatibleVideo.ts`, `webMedia.ts`, `player.css`) replacing legacy `src/components/PlayerSkeleton.tsx`; docs in `docs/anime-player.md`.
+- **Capabilities:**
+  - Enabled on desktop (`ANIME_PLAYER_AVAILABLE = !isMobilePlatform()` in `src/utils/featureFlags.ts`); supports local video files/queues (natural episode sort, position resume), direct HTTPS URLs, HLS VOD (`hls.js`), and HTML `<video>` pages.
+  - Dual subtitle tracks (SRT, VTT, ASS, SSA, embedded FFprobe text tracks), lookup integration via `Lookuper.tsx` / `TextContainer.tsx`, study modes (cue pause, skip/speed pauses, A–B loop, repeat).
+  - Scene Anki mining (`src/utils/anki.ts`, `PlayerCardEditor.tsx`): exports 5s lead-in MP4/MP3 clip + frame via FFmpeg and cleans up temp clips after AnkiConnect responds.
+- **Rust & Config changes:**
+  - `src-tauri/Cargo.toml`: enabled `protocol-asset` feature on `tauri`; `src-tauri/tauri.conf.json`: enabled `assetProtocol`.
+  - `src-tauri/src/player_media.rs` & `src-tauri/src/main.rs`: registered desktop Tauri commands `discard_player_clip`, `player_subtitle_tracks`, `player_subtitle_text`, `player_scene_frame`, `player_web_text`, `prepare_player_video`, `release_player_video`.
+- **Tests:** Added `tests/player.test.mjs` — all **41 / 41** tests pass, `npm run build`, `verify-public-build.mjs`, and `cargo check --no-default-features` all green.
+
+---
+
+## 2026-11-23 — Discord Push/PR Notifications for `dev` & Per-Model Dev Logs (`67254ee`, `090f797`)
 
 - **Per-model dev logs (`AGENTS.md`, `dev-logs/`):** Switched from a single `DEV_LOG.md` to per-model/developer logs (`dev-logs/<model-name>-<developer>-side.md`) so parallel work never causes log merge conflicts.
 - **Discord notifications (`.github/workflows/notify-dev-discord.yml`):**

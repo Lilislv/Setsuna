@@ -363,7 +363,6 @@ function ExternalLookupAgent() {
         ankiDeck={effectiveDeck}
         captureSource={captureSource}
         screenshotSource={screenshotSource}
-        playerClip={null}
       />
       {status && <div className="lookup-agent-status">{status}</div>}
     </main>

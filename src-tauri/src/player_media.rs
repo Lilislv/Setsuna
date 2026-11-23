@@ -1,7 +1,23 @@
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock,
+};
 use tauri::{AppHandle, Manager};
+
+fn media_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    command
+}
 
 #[derive(serde::Serialize)]
 pub struct PlayerClipResult {
@@ -89,7 +105,7 @@ fn find_ffmpeg_binary(app: &AppHandle) -> Option<PathBuf> {
 }
 
 fn ffmpeg_from_path_available() -> bool {
-    Command::new(ffmpeg_filename())
+    media_command(ffmpeg_filename())
         .arg("-version")
         .arg("-hide_banner")
         .output()
@@ -121,12 +137,49 @@ pub async fn extract_player_clip(
     start: f64,
     end: f64,
     prefer_video: bool,
+    audio_track: Option<u32>,
 ) -> Result<PlayerClipResult, String> {
-    if source_path.trim().is_empty() {
-        return Err("No source video path".to_string());
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let encoder = find_ffmpeg_binary(&app).unwrap_or_else(|| PathBuf::from(ffmpeg_filename()));
+        let directory = super::get_data_path(&app, "player_clips")?;
+        cut_clip(
+            encoder,
+            directory,
+            source_path,
+            start,
+            end,
+            prefer_video,
+            audio_track,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 
-    let duration = (end - start).clamp(0.1, 60.0);
+fn media_input(source: &str) -> Result<&'static str, String> {
+    if PathBuf::from(source).is_file() {
+        Ok("file,crypto")
+    } else if source.starts_with("https://") {
+        Ok("https,tls,tcp,crypto")
+    } else {
+        Err("Select a local media file or a direct HTTPS media URL".into())
+    }
+}
+
+fn cut_clip(
+    encoder: PathBuf,
+    clip_dir: PathBuf,
+    source_path: String,
+    start: f64,
+    end: f64,
+    prefer_video: bool,
+    audio_track: Option<u32>,
+) -> Result<PlayerClipResult, String> {
+    let protocols = media_input(&source_path)?;
+    if !start.is_finite() || !end.is_finite() || end <= start || start < 0.0 {
+        return Err("Invalid clip interval".into());
+    }
+    let duration = end - start;
     let source_name = PathBuf::from(&source_path)
         .file_stem()
         .and_then(|value| value.to_str())
@@ -140,42 +193,56 @@ pub async fn extract_player_clip(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis()
+            .as_nanos()
     );
 
-    let clip_dir = super::get_data_path(&app, "player_clips")?;
     if !clip_dir.exists() {
         std::fs::create_dir_all(&clip_dir).map_err(|e| e.to_string())?;
     }
     let output_path = clip_dir.join(&filename);
 
-    let ffmpeg_path = find_ffmpeg_binary(&app).unwrap_or_else(|| PathBuf::from(ffmpeg_filename()));
-    let mut command = Command::new(ffmpeg_path);
+    let mut command = media_command(encoder);
     command
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
+        .arg("-nostdin")
+        .arg("-protocol_whitelist")
+        .arg(protocols)
         .arg("-y")
         .arg("-ss")
         .arg(format!("{:.3}", start.max(0.0)))
-        .arg("-t")
-        .arg(format!("{:.3}", duration))
         .arg("-i")
-        .arg(&source_path);
+        .arg(&source_path)
+        .arg("-t")
+        .arg(format!("{:.3}", duration));
 
+    let audio_stream = format!("0:a:{}", audio_track.unwrap_or(0));
     if prefer_video {
-        command.arg("-map").arg("0:v:0").arg("-map").arg("0:a:0?");
+        command
+            .arg("-map")
+            .arg("0:v:0")
+            .arg("-map")
+            .arg(format!("{audio_stream}?"));
         command
             .arg("-c:v")
             .arg("libx264")
             .arg("-preset")
             .arg("veryfast")
             .arg("-crf")
-            .arg("24");
+            .arg("24")
+            .args([
+                "-vf",
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                "-pix_fmt",
+                "yuv420p",
+            ]);
         command.arg("-c:a").arg("aac").arg("-b:a").arg("128k");
         command.arg("-movflags").arg("+faststart");
     } else {
         command
+            .arg("-map")
+            .arg(audio_stream)
             .arg("-vn")
             .arg("-ac")
             .arg("2")
@@ -191,6 +258,7 @@ pub async fn extract_player_clip(
         .map_err(|e| format!("ffmpeg is not available. Put ffmpeg.exe into src-tauri/bin or install it into PATH. {}", e))?;
 
     if !output.status.success() {
+        let _ = std::fs::remove_file(&output_path);
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
             "ffmpeg failed to cut the player clip".to_string()
@@ -204,4 +272,390 @@ pub async fn extract_player_clip(
         filename,
         media_type: media_type.to_string(),
     })
+}
+
+#[tauri::command]
+pub fn discard_player_clip(app: AppHandle, filename: String) -> Result<(), String> {
+    if !filename.starts_with("setsuna_")
+        || !filename
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"_-.".contains(&c))
+        || !(filename.ends_with(".mp4") || filename.ends_with(".mp3"))
+    {
+        return Err("Invalid clip name".into());
+    }
+    std::fs::remove_file(super::get_data_path(&app, "player_clips")?.join(filename))
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct SubtitleTrack {
+    index: u32,
+    codec_name: Option<String>,
+    tags: Option<std::collections::HashMap<String, String>>,
+}
+
+#[tauri::command]
+pub async fn player_subtitle_tracks(
+    app: AppHandle,
+    source: String,
+) -> Result<Vec<SubtitleTrack>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let protocols = media_input(&source)?;
+        let name = if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        };
+        let probe = find_ffmpeg_binary(&app)
+            .map(|p| p.with_file_name(name))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from(name));
+        let output = media_command(probe)
+            .args([
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                protocols,
+                "-select_streams",
+                "s",
+                "-show_entries",
+                "stream=index,codec_name:stream_tags=language,title",
+                "-of",
+                "json",
+                "-i",
+                &source,
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
+        #[derive(serde::Deserialize)]
+        struct Streams {
+            streams: Vec<SubtitleTrack>,
+        }
+        let data: Streams = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+        Ok(data
+            .streams
+            .into_iter()
+            .filter(|s| {
+                matches!(
+                    s.codec_name.as_deref(),
+                    Some("subrip" | "ass" | "ssa" | "webvtt" | "mov_text" | "text")
+                )
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn player_subtitle_text(
+    app: AppHandle,
+    source: String,
+    index: u32,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let protocols = media_input(&source)?;
+        let ffmpeg = find_ffmpeg_binary(&app).unwrap_or_else(|| PathBuf::from(ffmpeg_filename()));
+        let output = media_command(ffmpeg)
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                protocols,
+                "-i",
+                &source,
+                "-map",
+                &format!("0:{index}"),
+                "-f",
+                "webvtt",
+                "pipe:1",
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
+        String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn player_scene_frame(
+    app: AppHandle,
+    source: String,
+    time: f64,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine;
+        let protocols = media_input(&source)?;
+        let ffmpeg = find_ffmpeg_binary(&app).unwrap_or_else(|| PathBuf::from(ffmpeg_filename()));
+        let output = media_command(ffmpeg)
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                protocols,
+                "-ss",
+                &format!("{:.3}", time.max(0.0)),
+                "-i",
+                &source,
+                "-map",
+                "0:v:0",
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale='min(iw,960)':-2",
+                "-f",
+                "image2pipe",
+                "-c:v",
+                "mjpeg",
+                "pipe:1",
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() || output.stdout.is_empty() {
+            return Err("Could not capture the video frame".into());
+        }
+        Ok(base64::engine::general_purpose::STANDARD.encode(output.stdout))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(serde::Serialize)]
+pub struct WebText {
+    url: String,
+    text: String,
+}
+
+#[tauri::command]
+pub async fn player_web_text(url: String) -> Result<WebText, String> {
+    let client = super::http_client::builder()
+        .https_only(true)
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+    let url = response.url().to_string();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if bytes.len() + chunk.len() > 8 * 1024 * 1024 {
+            return Err("Page or subtitle exceeds 8 MiB".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(WebText {
+        url,
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+fn video_jobs() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    static JOBS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+    JOBS.get_or_init(Mutex::default)
+}
+
+fn compatible_path(app: &AppHandle, token: &str) -> Result<PathBuf, String> {
+    if token.len() != 36 || !token.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') {
+        return Err("Invalid conversion identifier".into());
+    }
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("player-playback");
+    Ok(dir.join(format!("{token}.mp4")))
+}
+
+#[tauri::command]
+pub async fn prepare_player_video(
+    app: AppHandle,
+    source: String,
+    token: String,
+) -> Result<String, String> {
+    let target = compatible_path(&app, &token)?;
+    if !std::path::Path::new(&source).is_file() {
+        return Err("Choose a local video file".into());
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut jobs = video_jobs().lock().map_err(|e| e.to_string())?;
+        if jobs.contains_key(&token) || target.exists() {
+            return Err("Conversion already exists".into());
+        }
+        jobs.insert(token.clone(), cancel.clone());
+    }
+    let output = target.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        std::fs::create_dir_all(output.parent().unwrap()).map_err(|e| e.to_string())?;
+        let encoder = find_ffmpeg_binary(&app).unwrap_or_else(|| PathBuf::from(ffmpeg_filename()));
+        let mut child = media_command(encoder)
+            .args([
+                "-nostdin",
+                "-n",
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                "file,crypto",
+                "-i",
+                &source,
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0?",
+                "-sn",
+                "-vf",
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+            ])
+            .arg(&output)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Conversion cancelled".into());
+            }
+            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                if !status.success() {
+                    return Err(format!("FFmpeg conversion failed ({status})"));
+                }
+                app.asset_protocol_scope()
+                    .allow_file(&output)
+                    .map_err(|e| e.to_string())?;
+                return Ok(output.to_string_lossy().into_owned());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    video_jobs()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&token);
+    if result.is_err() {
+        let _ = std::fs::remove_file(target);
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn release_player_video(app: AppHandle, token: String) -> Result<(), String> {
+    let output = compatible_path(&app, &token)?;
+    if let Some(flag) = video_jobs().lock().map_err(|e| e.to_string())?.get(&token) {
+        flag.store(true, Ordering::Relaxed);
+        return Ok(());
+    }
+    // WebView2 can keep a movie open briefly after React detaches its video element.
+    for attempt in 0..6 {
+        match tokio::fs::remove_file(&output).await {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if attempt == 5 => return Err(e.to_string()),
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // This integration test needs ffmpeg and ffprobe on PATH.
+    #[test]
+    #[ignore]
+    fn player_scene_contains_requested_video_and_audio() {
+        let dir = std::env::temp_dir().join(format!("setsuna-player-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("fixture.mp4");
+        let ok = media_command(ffmpeg_filename())
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x90:rate=24:duration=10",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=duration=10",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let clip = cut_clip(
+            PathBuf::from(ffmpeg_filename()),
+            dir.clone(),
+            source.to_string_lossy().into_owned(),
+            1.0,
+            8.25,
+            true,
+            None,
+        )
+        .unwrap();
+        let info = media_command("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_name:format=duration",
+                "-of",
+                "json",
+                "-i",
+            ])
+            .arg(&clip.path)
+            .output()
+            .unwrap();
+        let meta: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
+        assert_eq!(meta["streams"][0]["codec_name"], "h264");
+        assert_eq!(meta["streams"][1]["codec_name"], "aac");
+        let duration: f64 = meta["format"]["duration"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((duration - 7.25).abs() < 0.1);
+        std::fs::remove_file(clip.path).unwrap();
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
 }

@@ -101,17 +101,6 @@ export interface Tab {
 
 /** Tabs that take no new text and can't be edited: archived ones and the ones following a room. */
 export const isTabLocked = (tab: Tab | null | undefined) => Boolean(tab?.archived || tab?.shared?.role === 'viewer');
-export interface PlayerMiningClip {
-    path?: string;
-    filename?: string;
-    mediaType?: 'audio' | 'video';
-    subtitle: string;
-    videoName: string;
-    start: number;
-    end: number;
-    createdAt: number;
-}
-
 export const defaultStats: TabStats = { chars: 0, words: 0, sentences: 0, time: 0 };
 export const EMPTY_LINES: string[] = [];
 
@@ -225,7 +214,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     playerMiningLeadIn: 0.15,
     playerMiningLeadOut: 0.25,
     playerMiningReplayOnMine: true,
-    playerMiningPreferVideo: false,
+    playerCardFormat: "video",
+    playerSceneLeadIn: 5,
     playerMiningUseClipForAnki: true,
     playerKeyPlayPause: 'Space',
     playerKeyBack: 'ArrowLeft',

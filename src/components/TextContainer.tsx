@@ -107,7 +107,7 @@ const SuppliedFuriganaLine = memo(({ text, supplied, searchQuery }: { text: stri
     return <>{highlightText(text, searchQuery)}</>;
 });
 
-const FuriganaLine = memo(({ text, mode, searchQuery, contextBefore = "", contextAfter = "" }: { text: string, mode: string, searchQuery: string, contextBefore?: string, contextAfter?: string }) => {
+export const FuriganaLine = memo(({ text, mode, searchQuery, contextBefore = "", contextAfter = "" }: { text: string, mode: string, searchQuery: string, contextBefore?: string, contextAfter?: string }) => {
     const [tokens, setTokens] = useState<any[] | null>(null);
 
     useEffect(() => {

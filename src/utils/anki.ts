@@ -670,21 +670,27 @@ export const addNote = async (settings: any, noteData: any) => {
             }
         } catch (error: any) { return { error: error?.message || String(error) }; }
     }
+    const sceneField = [settings.ankiFieldAudio, settings.ankiFieldMeaning, settings.ankiFieldSentence]
+        .find(field => field && field !== 'none');
+    if (noteData.playerScene && noteData.audioPath && !sceneField) {
+        return { error: settings.appLanguage === 'en' ? 'Select an audio, meaning or sentence field for the clip.' : 'Для клипа выбери поле озвучки, значения или предложения.' };
+    }
     if (localAudio && !bridge) {
         try {
             const storedName = await invokeAnki('storeMediaFile', { filename: localAudio.filename, data: localAudio.data });
             if (typeof storedName !== 'string' || !storedName) throw new Error('Anki did not store the recording');
             fields[settings.ankiFieldAudio] = `${fields[settings.ankiFieldAudio] || ''} [sound:${storedName}]`.trim();
         } catch (error: any) { return { error: error?.message || String(error) }; }
-    } else if (noteData.audioPath && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
+    } else if (noteData.audioPath && sceneField) {
         const filename = noteData.audioFilename || `setsuna_player_${safeWord}_${Date.now()}${noteData.audioMediaType === 'video' ? '.mp4' : '.mp3'}`;
         try {
-            await invokeAnki('storeMediaFile', {
+            const storedName = await invokeAnki('storeMediaFile', {
                 filename,
                 path: noteData.audioPath,
                 deleteExisting: true,
             });
-            fields[settings.ankiFieldAudio] = `${fields[settings.ankiFieldAudio] || ""} [sound:${filename}]`.trim();
+            if (typeof storedName !== 'string' || !storedName) throw new Error('Anki did not store the clip');
+            fields[sceneField] = `${fields[sceneField] || ""} [sound:${storedName}]`.trim();
         } catch (error: any) {
             return { error: error.message };
         }
@@ -699,16 +705,14 @@ export const addNote = async (settings: any, noteData: any) => {
         ];
     }
 
-    if (
-        noteData.screenshot &&
-        settings.ankiFieldScreenshot &&
-        settings.ankiFieldScreenshot !== 'none'
-    ) {
+    const pictureField = settings.ankiFieldScreenshot && settings.ankiFieldScreenshot !== 'none'
+        ? settings.ankiFieldScreenshot : noteData.playerScene ? sceneField : null;
+    if (noteData.screenshot && pictureField) {
         note.picture = [
             {
                 data: noteData.screenshot,
                 filename: `txthk_screen_${Date.now()}.jpg`,
-                fields: [settings.ankiFieldScreenshot],
+                fields: [pictureField],
             },
         ];
     }
