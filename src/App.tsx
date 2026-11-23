@@ -21,6 +21,7 @@ import EpubWorkspace from "./features/epub/EpubWorkspace";
 import type { EpubBookMetaPatch } from "./features/epub/EpubLibrary";
 import { setMemoryCover } from "./features/epub/epubCoverCache";
 import { restoreRetainedBookData } from "./features/epub/epubLibraryModel";
+import { useEpubSync } from "./features/epub/useEpubSync";
 import { openEpubBook, pruneEpubFiles, storeEpubFile } from "./features/epub/epubApi";
 import {
     isSupportedBookPath,
@@ -1785,6 +1786,7 @@ export default function App() {
                     chapterOffset,
                     progress: bookProgress,
                     lastOpenedAt: Date.now(),
+                    syncUpdatedAt: Date.now(),
                     lines: [],
                 },
             };
@@ -1813,6 +1815,7 @@ export default function App() {
                 epub: {
                     ...tab.epub,
                     bookmarks,
+                    syncUpdatedAt: Date.now(),
                     lines: [],
                 },
             };
@@ -1824,7 +1827,7 @@ export default function App() {
             if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
             return {
                 ...tab,
-                epub: { ...tab.epub, highlights, lines: [] },
+                epub: { ...tab.epub, highlights, syncUpdatedAt: Date.now(), lines: [] },
             };
         }));
     }, []);
@@ -1834,7 +1837,7 @@ export default function App() {
             if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
             return {
                 ...tab,
-                epub: { ...tab.epub, notes, lines: [] },
+                epub: { ...tab.epub, notes, syncUpdatedAt: Date.now(), lines: [] },
             };
         }));
     }, []);
@@ -1844,7 +1847,7 @@ export default function App() {
             if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
             return {
                 ...tab,
-                epub: { ...tab.epub, readingPoint, lines: [] },
+                epub: { ...tab.epub, readingPoint, syncUpdatedAt: Date.now(), lines: [] },
             };
         }));
     }, []);
@@ -1865,6 +1868,7 @@ export default function App() {
                     ...tab.epub,
                     ...patch,
                     progress: nextProgress,
+                    syncUpdatedAt: Date.now(),
                     ...(patch.manualStatus === "unread" ? { chapterIndex: 0, chapterOffset: 0, lastOpenedAt: 0 } : {}),
                 },
             };
@@ -2781,6 +2785,15 @@ export default function App() {
     };
 
     const [epubResumePromptId, setEpubResumePromptId] = useState<number | null>(null);
+    const epubSync = useEpubSync({
+        enabled: settings.epubAutoSync !== false,
+        uploadFiles: settings.epubSyncUploadFiles !== false,
+        activeInEpub: activeWorkspace === "epub",
+        tabs,
+        tabsRef,
+        setTabs,
+        allocateTabId,
+    });
     const openEpubWorkspace = () => {
         setLookupStack([]);
         const candidates = tabsRef.current
@@ -4127,6 +4140,19 @@ export default function App() {
                         onOpenFile={openEpubFilePicker}
                         onSelectBook={(tabId) => {
                             setLookupStack([]);
+                            const target = tabsRef.current.find((tab) => tab.id === tabId && tab.mode === "epub");
+                            if (target?.epub?.cloudOnly && target.epub.driveFileId) {
+                                void epubSync.downloadCloudBook(target).then((ok) => {
+                                    if (!ok) return;
+                                    setTabs((prev) => prev.map((tab) => (
+                                        tab.id === tabId && tab.epub
+                                            ? { ...tab, epub: { ...tab.epub, lastOpenedAt: Date.now() } }
+                                            : tab
+                                    )));
+                                    switchTab(tabId);
+                                });
+                                return;
+                            }
                             setTabs((prev) => prev.map((tab) => (
                                 tab.id === tabId && tab.epub
                                     ? { ...tab, epub: { ...tab.epub, lastOpenedAt: Date.now() } }
@@ -4149,6 +4175,12 @@ export default function App() {
                         onLookupToken={isMobileLayout ? runSentenceTokenLookup : undefined}
                         resumePromptBookId={epubResumePromptId}
                         onDismissResumePrompt={() => setEpubResumePromptId(null)}
+                        syncStatus={epubSync.status}
+                        lastSyncedAt={epubSync.lastSyncedAt}
+                        syncError={epubSync.error}
+                        downloadingBookId={epubSync.downloadingBookId}
+                        onSyncNow={() => void epubSync.syncNow({ forcePush: true })}
+                        onOpenCloudSettings={() => isMobileLayout ? openMobileSettingsPanel('') : openSettingsPanel("cloud-drive")}
                     />
                 )) : resolvedWorkspace === "player" ? (
                     <WorkspaceShell

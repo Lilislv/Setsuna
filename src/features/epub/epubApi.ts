@@ -28,3 +28,20 @@ export const searchEpubBook = async (path: string, query: string): Promise<EpubS
 export const loadEpubGallery = async (path: string): Promise<EpubGalleryImage[]> => {
     return invoke<EpubGalleryImage[]>("epub_gallery", { path });
 };
+
+export const uploadEpubToDrive = async (
+    accessToken: string,
+    path: string,
+    driveFileId: string,
+): Promise<number> => {
+    return invoke<number>("epub_drive_upload", { accessToken, path, driveFileId });
+};
+
+export const downloadEpubFromDrive = async (
+    accessToken: string,
+    driveFileId: string,
+    tabId: number,
+    ext: string,
+): Promise<string> => {
+    return invoke<string>("epub_drive_download", { accessToken, driveFileId, tabId, ext });
+};

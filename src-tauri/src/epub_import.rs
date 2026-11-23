@@ -3006,6 +3006,116 @@ fn epub_books_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     crate::get_data_path(app, "epub-books")
 }
 
+fn epub_drive_http_client() -> Result<reqwest::Client, String> {
+    crate::http_client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .read_timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))
+}
+
+#[tauri::command]
+pub async fn epub_drive_upload(
+    access_token: String,
+    path: String,
+    drive_file_id: String,
+) -> Result<u64, String> {
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| format!("Failed to read book file for Drive upload: {}", e))?;
+    let size = bytes.len() as u64;
+    if size == 0 {
+        return Err("Book file is empty".to_string());
+    }
+    if size > 60 * 1024 * 1024 {
+        return Err("Book file exceeds 60 MB sync limit".to_string());
+    }
+    let client = epub_drive_http_client()?;
+    let url = format!(
+        "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media",
+        drive_file_id
+    );
+    let res = client
+        .patch(&url)
+        .bearer_auth(&access_token)
+        .header("Content-Type", "application/octet-stream")
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| format!("EPUB Drive upload failed: {}", e.without_url()))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("EPUB Drive upload HTTP {}: {}", status, body));
+    }
+    Ok(size)
+}
+
+#[tauri::command]
+pub async fn epub_drive_download(
+    app: tauri::AppHandle,
+    access_token: String,
+    drive_file_id: String,
+    tab_id: i64,
+    ext: String,
+) -> Result<String, String> {
+    use tokio::io::AsyncWriteExt;
+    let safe_ext = match ext.trim().to_ascii_lowercase().as_str() {
+        "txt" => "txt",
+        "htmlz" => "htmlz",
+        _ => "epub",
+    };
+    let dir = epub_books_dir(&app)?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Failed to create epub-books folder: {}", e))?;
+    let dest = stored_book_path(&dir, tab_id, safe_ext);
+    let tmp = dest.with_extension(format!("{}.tmp", safe_ext));
+    let client = epub_drive_http_client()?;
+    let url = format!(
+        "https://www.googleapis.com/drive/v3/files/{}?alt=media",
+        drive_file_id
+    );
+    let mut res = client
+        .get(&url)
+        .bearer_auth(&access_token)
+        .send()
+        .await
+        .map_err(|e| format!("EPUB Drive download failed: {}", e.without_url()))?;
+    if !res.status().is_success() {
+        return Err(format!("EPUB Drive download HTTP {}", res.status()));
+    }
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(|e| format!("Failed to create temp book file: {}", e))?;
+    let mut total = 0u64;
+    while let Some(chunk) = res
+        .chunk()
+        .await
+        .map_err(|e| format!("EPUB Drive stream error: {}", e.without_url()))?
+    {
+        if let Err(err) = file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(format!("Failed to write book file: {}", err));
+        }
+        total += chunk.len() as u64;
+    }
+    if total == 0 {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err("Downloaded book file is empty".to_string());
+    }
+    file.sync_all().await.map_err(|e| e.to_string())?;
+    drop(file);
+    if dest.exists() {
+        let _ = tokio::fs::remove_file(&dest).await;
+    }
+    tokio::fs::rename(&tmp, &dest).await.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Failed to finalize downloaded book: {}", e)
+    })?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub async fn epub_store(
     app: tauri::AppHandle,

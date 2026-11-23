@@ -426,6 +426,12 @@ const translations = {
         "epub.resumePromptTitle": "Продолжить чтение?",
         "epub.resumeContinue": "Продолжить чтение",
         "epub.resumeLibrary": "Вернуться в библиотеку",
+        "epub.syncNow": "Синхр.",
+        "epub.syncing": "Синхронизация...",
+        "epub.synced": "Синхронизировано",
+        "epub.syncConnectDrive": "Подключить Drive",
+        "epub.cloudDownloadHint": "Книга в Google Drive — нажмите, чтобы скачать",
+        "epub.cloudDownloading": "Скачивание...",
     },
     en: {
         "common.close": "Close",
@@ -852,6 +858,12 @@ const translations = {
         "epub.resumePromptTitle": "Continue reading?",
         "epub.resumeContinue": "Continue reading",
         "epub.resumeLibrary": "Go to library",
+        "epub.syncNow": "Sync",
+        "epub.syncing": "Syncing...",
+        "epub.synced": "Synced",
+        "epub.syncConnectDrive": "Connect Drive",
+        "epub.cloudDownloadHint": "Stored in Google Drive — click to download",
+        "epub.cloudDownloading": "Downloading...",
     },
 } as const;
 

@@ -20,6 +20,8 @@ import {
     type LibraryStatusFilter,
 } from "./epubLibraryModel";
 
+import type { EpubSyncStatus } from "./useEpubSync";
+
 const UNKNOWN_AUTHOR_KEY = "__unknown__";
 
 export type EpubBookMetaPatch = Partial<
@@ -37,6 +39,12 @@ interface EpubLibraryProps {
     onRemoveBooks?: (tabIds: number[]) => void;
     onPatchBooks?: (tabIds: number[], patch: EpubBookMetaPatch) => void;
     onOpenStats?: () => void;
+    syncStatus?: EpubSyncStatus;
+    lastSyncedAt?: number | null;
+    syncError?: string | null;
+    downloadingBookId?: number | null;
+    onSyncNow?: () => void;
+    onOpenCloudSettings?: () => void;
 }
 
 function formatCompactChars(count: number): string {
@@ -56,6 +64,12 @@ export default function EpubLibrary({
     onRemoveBooks,
     onPatchBooks,
     onOpenStats,
+    syncStatus = "idle",
+    lastSyncedAt = null,
+    syncError = null,
+    downloadingBookId = null,
+    onSyncNow,
+    onOpenCloudSettings,
 }: EpubLibraryProps) {
     const t = getTranslator(language);
     const isEn = language === "en";
@@ -342,14 +356,17 @@ export default function EpubLibrary({
         const coverSrc = book.epub?.path ? coversByPath[book.epub.path] : null;
         const isSelected = selectedIds.has(book.id);
         const isCoverBlurred = Boolean(book.epub?.coverBlurred);
+        const isCloudOnly = Boolean(book.epub?.cloudOnly);
+        const isDownloading = downloadingBookId === book.id;
 
         return (
             <div
                 key={book.id}
-                className={`epub-book-card${isSelected ? " is-selected" : ""}${selectMode ? " is-selectable" : ""}`}
+                className={`epub-book-card${isSelected ? " is-selected" : ""}${selectMode ? " is-selectable" : ""}${isCloudOnly ? " is-cloud-only" : ""}`}
                 style={{ ["--i" as string]: Math.min(cardIdx, 20) }}
                 role="button"
                 tabIndex={0}
+                title={isCloudOnly ? t("epub.cloudDownloadHint") : undefined}
                 onClick={(event) => handleCardClick(book, event)}
                 onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -374,6 +391,11 @@ export default function EpubLibrary({
                             <span className="epub-cover-fallback-title">{title}</span>
                         </div>
                     )}
+                    {isDownloading && (
+                        <div className="epub-cover-downloading">
+                            <span>{t("epub.cloudDownloading")}</span>
+                        </div>
+                    )}
                     <div className="epub-book-cover-overlay">
                         <div className="epub-cover-left-badges">
                             {selectMode ? (
@@ -382,6 +404,9 @@ export default function EpubLibrary({
                                 </span>
                             ) : (
                                 <span className="epub-badge epub-badge-glass">{bookLang}</span>
+                            )}
+                            {isCloudOnly && (
+                                <span className="epub-badge epub-badge-cloud" title={t("epub.cloudDownloadHint")}>☁</span>
                             )}
                             {status === "completed" && (
                                 <span className="epub-badge epub-badge-done" title={t("epub.statusCompleted")}>✓</span>
@@ -494,6 +519,39 @@ export default function EpubLibrary({
                     </span>
                 </div>
                 <div className="epub-library-head-actions">
+                    {onSyncNow && (
+                        <button
+                            type="button"
+                            className={`epub-glass-btn epub-lib-action-btn epub-sync-btn is-${syncStatus}`}
+                            disabled={syncStatus === "syncing"}
+                            title={
+                                syncError
+                                    ? syncError
+                                    : syncStatus === "disconnected"
+                                        ? t("epub.syncConnectDrive")
+                                        : lastSyncedAt
+                                            ? `${t("epub.synced")}: ${new Date(lastSyncedAt).toLocaleTimeString()}`
+                                            : t("epub.syncNow")
+                            }
+                            onClick={() => {
+                                if (syncStatus === "disconnected" && onOpenCloudSettings) {
+                                    onOpenCloudSettings();
+                                } else {
+                                    onSyncNow();
+                                }
+                            }}
+                        >
+                            {syncStatus === "syncing"
+                                ? `↻ ${t("epub.syncing")}`
+                                : syncStatus === "disconnected"
+                                    ? `☁ ${t("epub.syncConnectDrive")}`
+                                    : syncStatus === "synced"
+                                        ? `☁ ✓`
+                                        : syncStatus === "error"
+                                            ? `☁ !`
+                                            : `☁ ${t("epub.syncNow")}`}
+                        </button>
+                    )}
                     {onOpenStats && (
                         <button
                             type="button"

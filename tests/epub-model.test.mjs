@@ -31,6 +31,10 @@ import {
     DEFAULT_EPUB_GOALS,
     evaluateGoalProgress,
 } from "../src/features/epub/epubTracker.ts";
+import {
+    mergeEpubBookEntries,
+    mergeManifestWithLocalTabs,
+} from "../src/features/epub/epubSyncModel.ts";
 
 test("A1: parses dc:language tags and falls back to kana/kanji ratio", () => {
     assert.equal(parseEpubLanguageTag("ja"), "ja");
@@ -275,4 +279,77 @@ test("EPUB reading tracker skip threshold, goal progress light, and streaks", ()
         { key: "2026-11-23", chars: 0, seconds: 0 }, // today not read yet -> streak still 2 from yesterday
     ]);
     assert.deepEqual(streak, { current: 2, best: 2 });
+});
+
+
+test("EPUB Drive sync merges newer phone reading position, union-merges annotations, and creates cloud-only books", () => {
+    const pcEntry = {
+        bookKey: "re:ゼロから始める異世界生活1",
+        title: "Re：ゼロから始める異世界生活 1",
+        chapterIndex: 3,
+        chapterOffset: 0.2,
+        progress: 0.15,
+        lastOpenedAt: 1000,
+        updatedAt: 1000,
+        bookmarks: [{ id: "bm-pc", label: "PC mark", chapterIndex: 2, paragraphIndex: 4, excerpt: "pc", createdAt: 900 }],
+        highlights: [{ id: "hl-pc", chapterIndex: 2, paragraphIndex: 4, text: "abc", color: "amber", createdAt: 950 }],
+        notes: [],
+        stats: { chars: 4000, words: 0, sentences: 0, time: 600 },
+        driveFileId: "drive-file-1",
+        fileExt: "epub",
+    };
+    const phoneEntry = {
+        bookKey: "re:ゼロから始める異世界生活1",
+        title: "Re：ゼロから始める異世界生活 1",
+        chapterIndex: 7,
+        chapterOffset: 0.65,
+        progress: 0.42,
+        lastOpenedAt: 5000,
+        updatedAt: 5000,
+        bookmarks: [{ id: "bm-phone", label: "Phone mark", chapterIndex: 7, paragraphIndex: 10, excerpt: "ph", createdAt: 4900 }],
+        highlights: [],
+        notes: [{ id: "n-phone", title: "Note", body: "Great scene", createdAt: 4800, updatedAt: 4800 }],
+        stats: { chars: 9500, words: 0, sentences: 0, time: 1400 },
+    };
+
+    const { merged, localChanged, remoteChanged } = mergeEpubBookEntries(pcEntry, phoneEntry);
+    assert.equal(localChanged, true);
+    assert.equal(remoteChanged, true);
+    // Phone read more recently -> PC jumps to phone's chapter 7 / 42%
+    assert.equal(merged.chapterIndex, 7);
+    assert.equal(merged.chapterOffset, 0.65);
+    assert.equal(merged.progress, 0.42);
+    // Union-merged annotations from both PC and phone
+    assert.equal(merged.bookmarks.length, 2);
+    assert.equal(merged.highlights.length, 1);
+    assert.equal(merged.notes.length, 1);
+    // Monotonic max stats & preserved Drive file ID
+    assert.equal(merged.stats.chars, 9500);
+    assert.equal(merged.driveFileId, "drive-file-1");
+
+    // Manifest merge adds a remote-only cloud book onto a fresh device
+    let nextId = 10;
+    const remoteManifest = {
+        schemaVersion: 1,
+        updatedAt: 6000,
+        books: {
+            "re:ゼロから始める異世界生活2": {
+                bookKey: "re:ゼロから始める異世界生活2",
+                title: "Re：ゼロから始める異世界生活 2",
+                chapterIndex: 4,
+                chapterOffset: 0.5,
+                progress: 0.3,
+                lastOpenedAt: 5500,
+                updatedAt: 5500,
+                driveFileId: "drive-file-2",
+                fileExt: "epub",
+            },
+        },
+    };
+    const res = mergeManifestWithLocalTabs([], remoteManifest, () => nextId++);
+    assert.equal(res.localChanged, true);
+    assert.equal(res.nextTabs.length, 1);
+    assert.equal(res.nextTabs[0].epub.cloudOnly, true);
+    assert.equal(res.nextTabs[0].epub.chapterIndex, 4);
+    assert.equal(res.nextTabs[0].epub.driveFileId, "drive-file-2");
 });

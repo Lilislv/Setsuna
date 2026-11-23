@@ -51,6 +51,10 @@ export interface EpubBookData {
     highlights?: EpubHighlight[];
     notes?: EpubBookNote[];
     readingPoint?: EpubReadingPoint | null;
+    driveFileId?: string;
+    fileExt?: 'epub' | 'txt' | 'htmlz';
+    cloudOnly?: boolean;
+    syncUpdatedAt?: number;
     lastOpenedAt?: number;
     lines: string[];
     html?: string;
@@ -209,6 +213,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     epubVerticalGrid: false,
     epubTextIndent: 'auto',
     epubAutoscrollSpeed: 38,
+    epubAutoSync: true,
+    epubSyncUploadFiles: true,
     epubImageMaxWidth: 720,
     playerRewindSeconds: 2,
     playerSubtitleStep: 0.1,

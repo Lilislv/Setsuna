@@ -19,6 +19,7 @@ import type {
     EpubReadingPoint,
 } from "./epubModel";
 import { loadEpubGoals, type EpubReadingGoals } from "./epubTracker";
+import type { EpubSyncStatus } from "./useEpubSync";
 import "./epub.css";
 
 const MAX_CACHED_CHAPTERS = 12;
@@ -61,6 +62,12 @@ interface EpubWorkspaceProps {
     onLookupToken?: LookupTokenHandler;
     resumePromptBookId?: number | null;
     onDismissResumePrompt?: () => void;
+    syncStatus?: EpubSyncStatus;
+    lastSyncedAt?: number | null;
+    syncError?: string | null;
+    downloadingBookId?: number | null;
+    onSyncNow?: () => void;
+    onOpenCloudSettings?: () => void;
 }
 
 export default function EpubWorkspace({
@@ -91,6 +98,12 @@ export default function EpubWorkspace({
     onLookupToken,
     resumePromptBookId = null,
     onDismissResumePrompt,
+    syncStatus = "idle",
+    lastSyncedAt = null,
+    syncError = null,
+    downloadingBookId = null,
+    onSyncNow,
+    onOpenCloudSettings,
 }: EpubWorkspaceProps) {
     const language = settings.appLanguage || "ru";
     const isEn = language === "en";
@@ -689,6 +702,12 @@ export default function EpubWorkspace({
                     onRemoveBooks={onRemoveBooks}
                     onPatchBooks={onPatchBooks}
                     onOpenStats={() => setStatsOpen(true)}
+                    syncStatus={syncStatus}
+                    lastSyncedAt={lastSyncedAt}
+                    syncError={syncError}
+                    downloadingBookId={downloadingBookId}
+                    onSyncNow={onSyncNow}
+                    onOpenCloudSettings={onOpenCloudSettings}
                 />
             )}
             {escMenuElement}
