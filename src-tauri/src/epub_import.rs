@@ -32,6 +32,15 @@ pub struct EpubChapterMeta {
     pub char_count: usize,
 }
 
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EpubTocItem {
+    pub title: String,
+    pub chapter_index: usize,
+    pub fragment: Option<String>,
+    pub start_char: usize,
+}
+
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EpubBookMeta {
@@ -46,6 +55,7 @@ pub struct EpubBookMeta {
     pub css_writing_mode: Option<String>,
     pub default_vertical: bool,
     pub chapters: Vec<EpubChapterMeta>,
+    pub toc: Vec<EpubTocItem>,
     pub cover: Option<String>,
     pub total_chars: usize,
 }
@@ -1424,11 +1434,11 @@ fn detect_chapter_css_writing_mode(chapter_html: &str, linked_css: &str) -> Opti
     None
 }
 
-fn collect_toc_titles(
+fn collect_toc_entries(
     zip: &mut ZipArchive<File>,
     manifest: &HashMap<String, ManifestItem>,
-) -> HashMap<String, String> {
-    let mut titles = HashMap::new();
+) -> Vec<(String, Option<String>, String)> {
+    let mut entries: Vec<(String, Option<String>, String)> = Vec::new();
 
     // 1. EPUB 3 Nav document (`properties="nav"`)
     if let Some(nav_item) = manifest.values().find(|item| {
@@ -1444,7 +1454,7 @@ fn collect_toc_titles(
                 .unwrap_or("");
             let mut in_toc_nav = false;
             let mut nav_depth = 0usize;
-            let mut current_href: Option<String> = None;
+            let mut current_href: Option<(String, Option<String>)> = None;
             let mut current_label = String::new();
 
             for token in tokenize_html(&nav_html) {
@@ -1472,16 +1482,21 @@ fn collect_toc_titles(
                             }
                         } else if in_toc_nav && name == "a" {
                             if closing {
-                                if let Some(href) = current_href.take() {
+                                if let Some((path, fragment)) = current_href.take() {
                                     let label = normalize_text(&current_label);
                                     if !label.is_empty() {
-                                        titles.entry(href).or_insert(label);
+                                        entries.push((path, fragment, label));
                                     }
                                 }
                                 current_label.clear();
                             } else if !is_self_closing_tag(tag) {
                                 if let Some(href) = xml_attr(tag, "href") {
-                                    current_href = Some(epub_join_path(nav_base, &href));
+                                    let fragment = href
+                                        .split_once('#')
+                                        .map(|(_, f)| f.trim().to_string())
+                                        .filter(|f| !f.is_empty());
+                                    let path = epub_join_path(nav_base, &href);
+                                    current_href = Some((path, fragment));
                                     current_label.clear();
                                 }
                             }
@@ -1497,8 +1512,8 @@ fn collect_toc_titles(
         }
     }
 
-    if !titles.is_empty() {
-        return titles;
+    if !entries.is_empty() {
+        return entries;
     }
 
     // 2. EPUB 2 NCX (`application/x-dtbncx+xml`)
@@ -1535,9 +1550,13 @@ fn collect_toc_titles(
                             }
                         } else if !closing && name == "content" {
                             if let Some(src) = xml_attr(tag, "src") {
+                                let fragment = src
+                                    .split_once('#')
+                                    .map(|(_, f)| f.trim().to_string())
+                                    .filter(|f| !f.is_empty());
                                 let target = epub_join_path(ncx_base, &src);
                                 if !last_label.is_empty() {
-                                    titles.entry(target).or_insert_with(|| last_label.clone());
+                                    entries.push((target, fragment, last_label.clone()));
                                     last_label.clear();
                                 }
                             }
@@ -1553,7 +1572,35 @@ fn collect_toc_titles(
         }
     }
 
+    entries
+}
+
+fn collect_toc_titles(
+    zip: &mut ZipArchive<File>,
+    manifest: &HashMap<String, ManifestItem>,
+) -> HashMap<String, String> {
+    let mut titles = HashMap::new();
+    for (path, _frag, label) in collect_toc_entries(zip, manifest) {
+        titles.entry(path).or_insert(label);
+    }
     titles
+}
+
+fn build_default_toc(chapters: &[EpubChapterMeta]) -> Vec<EpubTocItem> {
+    let mut running = 0usize;
+    chapters
+        .iter()
+        .map(|ch| {
+            let item = EpubTocItem {
+                title: ch.title.clone().unwrap_or_else(|| format!("Chapter {}", ch.index + 1)),
+                chapter_index: ch.index,
+                fragment: None,
+                start_char: running,
+            };
+            running += ch.char_count;
+            item
+        })
+        .collect()
 }
 
 fn build_sanitized_tag(
@@ -2267,6 +2314,7 @@ fn open_txt_book(path: &str) -> Result<EpubBookMeta, String> {
         .collect();
 
     let total_chars: usize = chapters.iter().map(|c| c.char_count).sum();
+    let toc = build_default_toc(&chapters);
 
     Ok(EpubBookMeta {
         title,
@@ -2280,6 +2328,7 @@ fn open_txt_book(path: &str) -> Result<EpubBookMeta, String> {
         css_writing_mode: None,
         default_vertical: false,
         chapters,
+        toc,
         cover: None,
         total_chars,
     })
@@ -2395,6 +2444,7 @@ fn open_htmlz_book(path: &str) -> Result<EpubBookMeta, String> {
         .collect();
 
     let total_chars: usize = chapters.iter().map(|c| c.char_count).sum();
+    let toc = build_default_toc(&chapters);
 
     Ok(EpubBookMeta {
         title,
@@ -2408,6 +2458,7 @@ fn open_htmlz_book(path: &str) -> Result<EpubBookMeta, String> {
         css_writing_mode: None,
         default_vertical: false,
         chapters,
+        toc,
         cover,
         total_chars,
     })
@@ -2585,7 +2636,11 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
         BookFormat::Epub => {}
     }
     let mut pkg = open_epub_package(&path)?;
-    let toc_titles = collect_toc_titles(&mut pkg.zip, &pkg.manifest);
+    let raw_toc_entries = collect_toc_entries(&mut pkg.zip, &pkg.manifest);
+    let mut toc_titles: HashMap<String, String> = HashMap::new();
+    for (p, _frag, label) in &raw_toc_entries {
+        toc_titles.entry(p.clone()).or_insert_with(|| label.clone());
+    }
     let author = author_from_opf(&pkg.opf);
     let (series, series_position) = series_from_opf(&pkg.opf);
     let metadata_languages = languages_from_opf(&pkg.opf);
@@ -2669,6 +2724,38 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
 
     let cover = extract_cover_data_url(&mut pkg);
 
+    // Build ordered Table of Contents from EPUB nav/NCX mapped onto spine chapter indices & character offsets
+    let mut chapter_starts: Vec<usize> = Vec::with_capacity(chapters.len());
+    let mut running_chars = 0usize;
+    for ch in &chapters {
+        chapter_starts.push(running_chars);
+        running_chars += ch.char_count;
+    }
+
+    let mut toc: Vec<EpubTocItem> = Vec::new();
+    for (toc_path, fragment, label) in raw_toc_entries {
+        let norm_target = toc_path.trim_start_matches('/');
+        if let Some(found_pos) = chapters.iter().position(|ch| ch.href.trim_start_matches('/') == norm_target) {
+            let ch = &chapters[found_pos];
+            let dup = toc.iter().any(|existing| {
+                existing.chapter_index == ch.index
+                    && existing.fragment == fragment
+                    && existing.title == label
+            });
+            if !dup {
+                toc.push(EpubTocItem {
+                    title: label,
+                    chapter_index: ch.index,
+                    fragment,
+                    start_char: chapter_starts[found_pos],
+                });
+            }
+        }
+    }
+    if toc.is_empty() {
+        toc = build_default_toc(&chapters);
+    }
+
     Ok(EpubBookMeta {
         title: pkg.title,
         author,
@@ -2681,6 +2768,7 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
         css_writing_mode,
         default_vertical,
         chapters,
+        toc,
         cover,
         total_chars,
     })

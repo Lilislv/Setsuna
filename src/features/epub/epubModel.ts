@@ -10,6 +10,13 @@ export interface EpubChapterMeta {
     charCount?: number;
 }
 
+export interface EpubTocItem {
+    title: string;
+    chapterIndex: number;
+    fragment?: string | null;
+    startChar: number;
+}
+
 export interface EpubBookMeta {
     title: string;
     author: string | null;
@@ -22,6 +29,7 @@ export interface EpubBookMeta {
     cssWritingMode: string | null;
     defaultVertical: boolean;
     chapters: EpubChapterMeta[];
+    toc?: EpubTocItem[];
     cover: string | null;
     totalChars?: number;
 }

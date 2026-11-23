@@ -412,6 +412,50 @@ export default function EpubReader({
     const chapterCount = chapters.length || tab.epub?.chapterCount || 1;
     const paragraphs = useMemo(() => chapter?.paragraphs || [], [chapter?.paragraphs]);
 
+    const tocItems = useMemo(() => {
+        if (bookMeta?.toc && bookMeta.toc.length > 0) {
+            return bookMeta.toc;
+        }
+        let running = 0;
+        return chapters.map((ch) => {
+            const item = {
+                title: ch.title || ch.href,
+                chapterIndex: ch.index,
+                fragment: null as string | null,
+                startChar: running,
+            };
+            running += ch.charCount || 0;
+            return item;
+        });
+    }, [bookMeta?.toc, chapters]);
+
+    const activeTocIdx = useMemo(() => {
+        let best = -1;
+        for (let i = 0; i < tocItems.length; i++) {
+            if (tocItems[i].chapterIndex <= chapterIndex) {
+                best = i;
+            }
+        }
+        return best;
+    }, [tocItems, chapterIndex]);
+
+    const activeTocTitle = activeTocIdx >= 0 ? tocItems[activeTocIdx]?.title : undefined;
+
+    const currentBookCharPos = useMemo(() => {
+        let before = 0;
+        for (let i = 0; i < Math.min(chapterIndex, chapters.length); i++) {
+            before += chapters[i]?.charCount || 0;
+        }
+        const curChars = chapters[chapterIndex]?.charCount || 0;
+        const frac = clamp01(tab.epub?.chapterOffset || 0);
+        return Math.round(before + curChars * frac);
+    }, [chapters, chapterIndex, tab.epub?.chapterOffset]);
+
+    const totalBookChars = useMemo(() => {
+        if (bookMeta?.totalChars && bookMeta.totalChars > 0) return bookMeta.totalChars;
+        return chapters.reduce((sum, ch) => sum + (ch.charCount || 0), 0);
+    }, [bookMeta?.totalChars, chapters]);
+
     // Front-matter cutoff for "after-toc" spoiler-safe blur mode
     const blurCutoffChapterIndex = useMemo(() => {
         if (blurImagesMode !== "after-toc") return -1;
@@ -1789,7 +1833,7 @@ export default function EpubReader({
                         <div className="epub-toolbar-title">
                             <span className="epub-toolbar-book">{tab.epub?.title || bookMeta?.title || tab.name}</span>
                             <span className="epub-toolbar-chapter">
-                                {chapter?.title || t("epub.chapterOf", { current: chapterIndex + 1, total: chapterCount })}
+                                {activeTocTitle || chapter?.title || t("epub.chapterOf", { current: chapterIndex + 1, total: chapterCount })}
                             </span>
                         </div>
                     </div>
@@ -2539,20 +2583,45 @@ export default function EpubReader({
 
                             {drawerTab === "toc" ? (
                                 <div className="epub-toc-list">
-                                    {chapters.map((item) => (
-                                        <button
-                                            key={item.id || item.index}
-                                            type="button"
-                                            className={`epub-toc-item${item.index === chapterIndex ? " is-active" : ""}`}
-                                            onClick={() => {
-                                                setTocOpen(false);
-                                                callbacksRef.current.onSelectChapter(item.index);
-                                            }}
-                                        >
-                                            <span className="epub-toc-num">{item.index + 1}.</span>
-                                            <span>{item.title || item.href}</span>
-                                        </button>
-                                    ))}
+                                    {tocItems.map((item, idx) => {
+                                        const isActive = idx === activeTocIdx;
+                                        const nextStart = idx + 1 < tocItems.length
+                                            ? tocItems[idx + 1].startChar
+                                            : totalBookChars;
+                                        const sectionLen = Math.max(1, nextStart - item.startChar);
+                                        const sectionPct = currentBookCharPos >= nextStart && nextStart > item.startChar
+                                            ? 100
+                                            : currentBookCharPos <= item.startChar
+                                                ? 0
+                                                : Math.min(100, Math.max(0, Math.round(((currentBookCharPos - item.startChar) / sectionLen) * 100)));
+                                        return (
+                                            <button
+                                                key={`${item.chapterIndex}-${item.fragment || ""}-${idx}`}
+                                                type="button"
+                                                className={`epub-toc-item epub-toc-card${isActive ? " is-active" : ""}`}
+                                                onClick={() => {
+                                                    setTocOpen(false);
+                                                    callbacksRef.current.onSelectChapter(item.chapterIndex, item.fragment || undefined);
+                                                }}
+                                            >
+                                                <div className="epub-toc-card-main">
+                                                    <span className="epub-toc-card-title">{item.title}</span>
+                                                    {totalBookChars > 0 && (
+                                                        <span className="epub-toc-card-sub">
+                                                            {language === "en"
+                                                                ? `Starts at ${item.startChar.toLocaleString()}`
+                                                                : `С символа ${item.startChar.toLocaleString()}`}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                {totalBookChars > 0 && (
+                                                    <span className={`epub-toc-card-pct${sectionPct >= 100 ? " is-done" : ""}`}>
+                                                        {sectionPct}%
+                                                    </span>
+                                                )}
+                                            </button>
+                                        );
+                                    })}
                                 </div>
                             ) : drawerTab === "bookmarks" ? (
                                 <div className="epub-bookmarks-pane">

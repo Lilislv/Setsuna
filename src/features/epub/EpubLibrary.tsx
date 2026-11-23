@@ -419,8 +419,8 @@ export default function EpubLibrary({
                     </div>
                 </div>
 
-                <div className="epub-book-info">
-                    <div className="epub-book-title" title={title}>{title}</div>
+                <div className="epub-book-card-body">
+                    <div className="epub-book-card-title" title={title}>{title}</div>
                     {prefs.showSeries && series && (
                         <div className="epub-book-series-tag" title={series}>
                             {series}
@@ -428,7 +428,7 @@ export default function EpubLibrary({
                         </div>
                     )}
                     {prefs.showAuthor && author && (
-                        <div className="epub-book-author" title={author}>{author}</div>
+                        <div className="epub-book-card-author" title={author}>{author}</div>
                     )}
                     {prefs.showTags && tags.length > 0 && (
                         <div className="epub-book-tags">
@@ -438,11 +438,11 @@ export default function EpubLibrary({
                         </div>
                     )}
                     {prefs.showProgress && (
-                        <div className="epub-book-progress-track">
-                            <div className="epub-book-progress-fill" style={{ width: `${progress}%` }} />
+                        <div className="epub-progress-track">
+                            <div className="epub-progress-fill" style={{ width: `${progress}%` }} />
                         </div>
                     )}
-                    <div className="epub-book-meta">
+                    <div className="epub-book-card-meta">
                         <span>{prefs.showProgress ? `${progress}%` : (chaptersCount > 0 ? t("epub.chaptersCount", { count: chaptersCount }) : "")}</span>
                         {prefs.showChars && totalChars > 0 ? (
                             <span>{formatCompactChars(totalChars)} {t("epub.charsShort")}</span>

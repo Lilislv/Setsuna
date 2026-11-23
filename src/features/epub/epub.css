@@ -78,12 +78,21 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 20px;
-    padding: 22px 28px 32px;
+    gap: 14px;
+    padding: 20px 24px 32px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+}
+
+.epub-library *,
+.epub-library *::before,
+.epub-library *::after {
+    box-sizing: border-box;
 }
 
 .epub-library::before,
@@ -1991,9 +2000,18 @@
 }
 
 .epub-lib-action-btn {
-    padding: 0 12px;
+    padding: 0 13px;
     height: 34px;
     font-size: 12.5px;
+    border-radius: 999px;
+    border: 1px solid var(--epub-glass-border);
+    background: color-mix(in srgb, var(--text-main) 6%, transparent);
+    color: var(--text-main);
+}
+
+.epub-lib-action-btn:hover {
+    background: color-mix(in srgb, var(--text-main) 12%, transparent);
+    border-color: var(--line-strong, var(--border-main));
 }
 
 .epub-library-shelves {
@@ -2001,7 +2019,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    margin-bottom: 12px;
+    margin-bottom: 0;
     flex-wrap: wrap;
 }
 
@@ -2856,3 +2874,64 @@ mark.epub-hl-rose { background: rgba(239, 111, 142, 0.3); }
 .epub-goal-dot.is-behind { background: #e86b6b; box-shadow: 0 0 6px rgba(232, 107, 107, 0.6); }
 .epub-goal-dot.is-mid { background: #f2b84b; box-shadow: 0 0 6px rgba(242, 184, 75, 0.6); }
 .epub-goal-dot.is-done { background: #4ad182; box-shadow: 0 0 8px rgba(74, 209, 130, 0.7); }
+
+
+/* Clean Chapter ToC Cards (matching real EPUB nav/NCX entries with char offsets & progress) */
+.epub-toc-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 11px 13px;
+    border-radius: 14px;
+    border: 1px solid var(--epub-glass-border);
+    background: color-mix(in srgb, var(--text-main) 3%, transparent);
+    text-align: left;
+}
+
+.epub-toc-card:hover {
+    background: color-mix(in srgb, var(--text-main) 8%, transparent);
+    border-color: var(--line-strong, var(--border-main));
+}
+
+.epub-toc-card.is-active {
+    background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    border-color: color-mix(in srgb, var(--accent-blue) 48%, transparent);
+}
+
+.epub-toc-card-main {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.epub-toc-card-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--text-main);
+    word-break: break-word;
+}
+
+.epub-toc-card-sub {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.epub-toc-card-pct {
+    flex-shrink: 0;
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-main) 8%, transparent);
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.epub-toc-card-pct.is-done {
+    background: color-mix(in srgb, var(--epub-accent) 20%, transparent);
+    color: var(--epub-accent);
+}
