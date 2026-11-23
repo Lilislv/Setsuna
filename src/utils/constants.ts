@@ -1,5 +1,6 @@
 import { AppSettings } from "../components/SettingsModal";
 import type { TabShare } from "./sharedReading";
+import type { EpubBookNote, EpubHighlight, EpubReadingPoint } from "../features/epub/epubModel";
 
 export interface TabStats { chars: number; words: number; sentences: number; time: number; }
 export interface ReadingSpeedSample {
@@ -31,6 +32,13 @@ export interface EpubBookmark {
 export interface EpubBookData {
     title: string;
     author?: string;
+    series?: string;
+    seriesPosition?: number | null;
+    tags?: string[];
+    manualStatus?: 'unread' | 'reading' | 'completed';
+    coverBlurred?: boolean;
+    totalChars?: number;
+    addedAt?: number;
     path?: string;
     language?: 'ja' | 'en';
     defaultVertical?: boolean;
@@ -40,6 +48,9 @@ export interface EpubBookData {
     chapterCount?: number;
     countedThrough?: string;
     bookmarks?: EpubBookmark[];
+    highlights?: EpubHighlight[];
+    notes?: EpubBookNote[];
+    readingPoint?: EpubReadingPoint | null;
     lastOpenedAt?: number;
     lines: string[];
     html?: string;
@@ -191,6 +202,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
     epubPagePadding: 24,
     epubShowImages: true,
     epubBlurImages: false,
+    epubBlurImagesMode: 'off',
+    epubFuriganaMode: 'show',
+    epubJustify: false,
+    epubPrettyWrap: true,
+    epubVerticalGrid: false,
+    epubTextIndent: 'auto',
+    epubAutoscrollSpeed: 38,
     epubImageMaxWidth: 720,
     playerRewindSeconds: 2,
     playerSubtitleStep: 0.1,

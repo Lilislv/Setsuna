@@ -29,13 +29,16 @@ pub struct EpubChapterMeta {
     pub id: String,
     pub href: String,
     pub title: Option<String>,
+    pub char_count: usize,
 }
 
-#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EpubBookMeta {
     pub title: String,
     pub author: Option<String>,
+    pub series: Option<String>,
+    pub series_position: Option<f64>,
     pub language: String,
     pub metadata_language: Option<String>,
     pub page_progression_direction: Option<String>,
@@ -44,6 +47,17 @@ pub struct EpubBookMeta {
     pub default_vertical: bool,
     pub chapters: Vec<EpubChapterMeta>,
     pub cover: Option<String>,
+    pub total_chars: usize,
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EpubGalleryImage {
+    pub chapter_index: usize,
+    pub chapter_title: Option<String>,
+    pub paragraph_index: usize,
+    pub src: String,
+    pub alt: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
@@ -916,6 +930,114 @@ fn primary_writing_mode_from_opf(opf: &str) -> Option<String> {
         idx += 1;
     }
     None
+}
+
+fn series_from_opf(opf: &str) -> (Option<String>, Option<f64>) {
+    let tokens = tokenize_html(opf);
+    let mut idx = 0;
+
+    let mut calibre_series: Option<String> = None;
+    let mut calibre_index: Option<f64> = None;
+
+    // EPUB 3 collections: (optional id, name)
+    let mut collections: Vec<(Option<String>, String)> = Vec::new();
+    let mut collection_types: HashMap<String, String> = HashMap::new();
+    let mut group_positions: HashMap<String, f64> = HashMap::new();
+    let mut unrefined_position: Option<f64> = None;
+
+    while idx < tokens.len() {
+        if let HtmlToken::Tag(tag) = tokens[idx] {
+            if !is_closing_tag(tag) && normalize_tag_name(tag) == "meta" {
+                let name = xml_attr(tag, "name").unwrap_or_default().to_lowercase();
+                if name == "calibre:series" {
+                    if let Some(content) = xml_attr(tag, "content") {
+                        let cleaned = decode_html_entities(&content).trim().to_string();
+                        if !cleaned.is_empty() {
+                            calibre_series = Some(cleaned);
+                        }
+                    }
+                } else if name == "calibre:series_index" {
+                    if let Some(content) = xml_attr(tag, "content") {
+                        if let Ok(parsed) = content.trim().parse::<f64>() {
+                            if parsed.is_finite() {
+                                calibre_index = Some(parsed);
+                            }
+                        }
+                    }
+                }
+
+                let prop = xml_attr(tag, "property").unwrap_or_default().to_lowercase();
+                if matches!(
+                    prop.as_str(),
+                    "belongs-to-collection" | "collection-type" | "group-position"
+                ) && !is_self_closing_tag(tag)
+                {
+                    let id = xml_attr(tag, "id").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                    let refines = xml_attr(tag, "refines")
+                        .map(|s| s.trim().trim_start_matches('#').to_string())
+                        .filter(|s| !s.is_empty());
+                    let mut val = String::new();
+                    idx += 1;
+                    while idx < tokens.len() {
+                        match tokens[idx] {
+                            HtmlToken::Tag(close)
+                                if is_closing_tag(close) && normalize_tag_name(close) == "meta" =>
+                            {
+                                break;
+                            }
+                            HtmlToken::Text(t) => val.push_str(t),
+                            _ => {}
+                        }
+                        idx += 1;
+                    }
+                    let cleaned = decode_html_entities(&val).trim().to_string();
+                    if !cleaned.is_empty() {
+                        if prop == "belongs-to-collection" {
+                            collections.push((id, cleaned));
+                        } else if prop == "collection-type" {
+                            if let Some(ref_id) = refines {
+                                collection_types.insert(ref_id, cleaned.to_lowercase());
+                            }
+                        } else if prop == "group-position" {
+                            if let Ok(parsed) = cleaned.parse::<f64>() {
+                                if parsed.is_finite() {
+                                    if let Some(ref_id) = refines {
+                                        group_positions.insert(ref_id, parsed);
+                                    } else if unrefined_position.is_none() {
+                                        unrefined_position = Some(parsed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        idx += 1;
+    }
+
+    // Prefer an EPUB 3 collection explicitly typed as "series", then any collection, then Calibre
+    if !collections.is_empty() {
+        let preferred = collections
+            .iter()
+            .find(|(id, _)| {
+                id.as_ref()
+                    .and_then(|k| collection_types.get(k))
+                    .map_or(false, |ct| ct == "series")
+            })
+            .or_else(|| collections.first());
+
+        if let Some((id, name)) = preferred {
+            let pos = id
+                .as_ref()
+                .and_then(|k| group_positions.get(k).copied())
+                .or(unrefined_position)
+                .or(calibre_index);
+            return (Some(name.clone()), pos);
+        }
+    }
+
+    (calibre_series, calibre_index)
 }
 
 fn cover_path_from_opf(opf: &str, manifest: &HashMap<String, ManifestItem>) -> Option<String> {
@@ -2122,22 +2244,35 @@ fn open_txt_book(path: &str) -> Result<EpubBookMeta, String> {
     let (language, metadata_language) = detect_book_language(&[], &sample);
 
     let chunk_count = (all_paragraphs.len() + TXT_PARAGRAPHS_PER_CHAPTER - 1) / TXT_PARAGRAPHS_PER_CHAPTER;
-    let chapters = (0..chunk_count.min(MAX_EPUB_CHAPTERS))
-        .map(|idx| EpubChapterMeta {
-            index: idx,
-            id: format!("txt-part-{}", idx + 1),
-            href: format!("part-{}.txt", idx + 1),
-            title: Some(if chunk_count == 1 {
-                title.clone()
-            } else {
-                format!("Part {}", idx + 1)
-            }),
+    let chapters: Vec<EpubChapterMeta> = (0..chunk_count.min(MAX_EPUB_CHAPTERS))
+        .map(|idx| {
+            let start = idx * TXT_PARAGRAPHS_PER_CHAPTER;
+            let end = (start + TXT_PARAGRAPHS_PER_CHAPTER).min(all_paragraphs.len());
+            let char_count: usize = all_paragraphs[start..end]
+                .iter()
+                .map(|p| p.chars().filter(|c| !c.is_whitespace()).count())
+                .sum();
+            EpubChapterMeta {
+                index: idx,
+                id: format!("txt-part-{}", idx + 1),
+                href: format!("part-{}.txt", idx + 1),
+                title: Some(if chunk_count == 1 {
+                    title.clone()
+                } else {
+                    format!("Part {}", idx + 1)
+                }),
+                char_count,
+            }
         })
         .collect();
+
+    let total_chars: usize = chapters.iter().map(|c| c.char_count).sum();
 
     Ok(EpubBookMeta {
         title,
         author: None,
+        series: None,
+        series_position: None,
         language: language.to_string(),
         metadata_language,
         page_progression_direction: None,
@@ -2146,6 +2281,7 @@ fn open_txt_book(path: &str) -> Result<EpubBookMeta, String> {
         default_vertical: false,
         chapters,
         cover: None,
+        total_chars,
     })
 }
 
@@ -2231,25 +2367,40 @@ fn open_htmlz_book(path: &str) -> Result<EpubBookMeta, String> {
     let (language, metadata_language) = detect_book_language(&metadata_languages, &plain);
     let cover = extract_htmlz_cover(&mut zip, &html_path, &raw_html);
 
+    let (series, series_position) = if opf.is_empty() { (None, None) } else { series_from_opf(&opf) };
     let sanitized_preview = sanitize_epub_html_inner(&raw_html, "", &html_path, None, None);
-    let total_paragraphs = extract_paragraphs(&sanitized_preview).len();
+    let preview_paragraphs = extract_paragraphs(&sanitized_preview);
+    let total_paragraphs = preview_paragraphs.len();
     let chunk_count = ((total_paragraphs.max(1)) + TXT_PARAGRAPHS_PER_CHAPTER - 1) / TXT_PARAGRAPHS_PER_CHAPTER;
-    let chapters = (0..chunk_count.min(MAX_EPUB_CHAPTERS))
-        .map(|idx| EpubChapterMeta {
-            index: idx,
-            id: format!("htmlz-part-{}", idx + 1),
-            href: html_path.clone(),
-            title: Some(if chunk_count == 1 {
-                title.clone()
-            } else {
-                format!("Part {}", idx + 1)
-            }),
+    let chapters: Vec<EpubChapterMeta> = (0..chunk_count.min(MAX_EPUB_CHAPTERS))
+        .map(|idx| {
+            let start = idx * TXT_PARAGRAPHS_PER_CHAPTER;
+            let end = (start + TXT_PARAGRAPHS_PER_CHAPTER).min(total_paragraphs);
+            let char_count: usize = preview_paragraphs[start..end]
+                .iter()
+                .map(|p| p.text.chars().filter(|c| !c.is_whitespace()).count())
+                .sum();
+            EpubChapterMeta {
+                index: idx,
+                id: format!("htmlz-part-{}", idx + 1),
+                href: html_path.clone(),
+                title: Some(if chunk_count == 1 {
+                    title.clone()
+                } else {
+                    format!("Part {}", idx + 1)
+                }),
+                char_count,
+            }
         })
         .collect();
+
+    let total_chars: usize = chapters.iter().map(|c| c.char_count).sum();
 
     Ok(EpubBookMeta {
         title,
         author,
+        series,
+        series_position,
         language: language.to_string(),
         metadata_language,
         page_progression_direction: None,
@@ -2258,6 +2409,7 @@ fn open_htmlz_book(path: &str) -> Result<EpubBookMeta, String> {
         default_vertical: false,
         chapters,
         cover,
+        total_chars,
     })
 }
 
@@ -2435,6 +2587,7 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
     let mut pkg = open_epub_package(&path)?;
     let toc_titles = collect_toc_titles(&mut pkg.zip, &pkg.manifest);
     let author = author_from_opf(&pkg.opf);
+    let (series, series_position) = series_from_opf(&pkg.opf);
     let metadata_languages = languages_from_opf(&pkg.opf);
     let page_progression_direction = page_progression_direction_from_opf(&pkg.opf);
     let primary_writing_mode = primary_writing_mode_from_opf(&pkg.opf);
@@ -2443,6 +2596,7 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
     let mut css_writing_mode: Option<String> = None;
     let mut text_sample = String::new();
     let mut chapters = Vec::new();
+    let mut total_chars: usize = 0;
 
     for (spine_idx, (id, item)) in pkg.spine.iter().enumerate() {
         let Ok(chapter_html) = zip_read_to_string(&mut pkg.zip, &item.path) else {
@@ -2472,15 +2626,15 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
             }
         }
 
-        if text_sample.chars().count() < LANGUAGE_SAMPLE_CHARS {
-            let (body, _, _) = html_body_parts(&chapter_html);
-            let plain = normalize_text(&body);
-            if !plain.is_empty() {
-                if !text_sample.is_empty() {
-                    text_sample.push(' ');
-                }
-                text_sample.push_str(&plain);
+        let (body, _, _) = html_body_parts(&chapter_html);
+        let plain = normalize_text(&body);
+        let chapter_char_count = plain.chars().filter(|c| !c.is_whitespace()).count();
+        total_chars += chapter_char_count;
+        if text_sample.chars().count() < LANGUAGE_SAMPLE_CHARS && !plain.is_empty() {
+            if !text_sample.is_empty() {
+                text_sample.push(' ');
             }
+            text_sample.push_str(&plain);
         }
 
         let resolved_title = toc_titles
@@ -2493,6 +2647,7 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
             id: id.clone(),
             href: item.path.clone(),
             title: resolved_title,
+            char_count: chapter_char_count,
         });
     }
 
@@ -2517,6 +2672,8 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
     Ok(EpubBookMeta {
         title: pkg.title,
         author,
+        series,
+        series_position,
         language: language.to_string(),
         metadata_language,
         page_progression_direction,
@@ -2525,6 +2682,7 @@ pub fn epub_open_impl(path: String) -> Result<EpubBookMeta, String> {
         default_vertical,
         chapters,
         cover,
+        total_chars,
     })
 }
 
@@ -2762,6 +2920,102 @@ pub async fn epub_cover(path: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || epub_cover_impl(path))
         .await
         .map_err(|e| format!("EPUB cover task failed: {}", e))?
+}
+
+pub fn epub_gallery_impl(path: String) -> Result<Vec<EpubGalleryImage>, String> {
+    const MAX_GALLERY_IMAGES: usize = 200;
+    let mut images = Vec::new();
+    let mut seen_srcs: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    match detect_book_format(&path) {
+        BookFormat::Txt => return Ok(images),
+        BookFormat::Htmlz => {
+            let file = File::open(&path).map_err(|e| format!("Failed to open HTMLZ: {}", e))?;
+            let mut zip = ZipArchive::new(file).map_err(|e| format!("HTMLZ zip error: {}", e))?;
+            let html_path = find_htmlz_entry(&mut zip, &["index.html", "index.xhtml", "index.htm"], &[".html", ".xhtml", ".htm"])
+                .ok_or_else(|| "HTMLZ archive has no HTML file.".to_string())?;
+            let raw_html = zip_read_to_string(&mut zip, &html_path)?;
+            let base = html_path.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
+            let mut image_cache = HashMap::new();
+            let sanitized = sanitize_epub_html_inner(&raw_html, base, &html_path, Some(&mut zip), Some(&mut image_cache));
+            let all_paragraphs = extract_paragraphs(&sanitized);
+            let chunk_count = ((all_paragraphs.len().max(1)) + TXT_PARAGRAPHS_PER_CHAPTER - 1) / TXT_PARAGRAPHS_PER_CHAPTER;
+            for (global_idx, p) in all_paragraphs.iter().enumerate() {
+                if images.len() >= MAX_GALLERY_IMAGES {
+                    break;
+                }
+                if p.kind == "image" {
+                    if let Some(src) = p.image_src.as_ref() {
+                        if seen_srcs.insert(src.clone()) {
+                            let chapter_index = global_idx / TXT_PARAGRAPHS_PER_CHAPTER;
+                            let paragraph_index = global_idx % TXT_PARAGRAPHS_PER_CHAPTER;
+                            images.push(EpubGalleryImage {
+                                chapter_index,
+                                chapter_title: if chunk_count == 1 { None } else { Some(format!("Part {}", chapter_index + 1)) },
+                                paragraph_index,
+                                src: src.clone(),
+                                alt: p.image_alt.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            return Ok(images);
+        }
+        BookFormat::Epub => {}
+    }
+
+    let mut pkg = open_epub_package(&path)?;
+    let toc_titles = collect_toc_titles(&mut pkg.zip, &pkg.manifest);
+    let mut image_cache: HashMap<String, String> = HashMap::new();
+    for (chapter_index, (_id, item)) in pkg.spine.iter().enumerate() {
+        if images.len() >= MAX_GALLERY_IMAGES {
+            break;
+        }
+        let Ok(chapter_html) = zip_read_to_string(&mut pkg.zip, &item.path) else {
+            continue;
+        };
+        let chapter_base = item.path.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
+        let sanitized = sanitize_epub_html_inner(
+            &chapter_html,
+            chapter_base,
+            &item.path,
+            Some(&mut pkg.zip),
+            Some(&mut image_cache),
+        );
+        let paragraphs = extract_paragraphs(&sanitized);
+        let chapter_title = toc_titles
+            .get(&item.path)
+            .cloned()
+            .or_else(|| chapter_title_from_html(&chapter_html, &item.href));
+        for p in &paragraphs {
+            if images.len() >= MAX_GALLERY_IMAGES {
+                break;
+            }
+            if p.kind == "image" {
+                if let Some(src) = p.image_src.as_ref() {
+                    if seen_srcs.insert(src.clone()) {
+                        images.push(EpubGalleryImage {
+                            chapter_index,
+                            chapter_title: chapter_title.clone(),
+                            paragraph_index: p.index,
+                            src: src.clone(),
+                            alt: p.image_alt.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(images)
+}
+
+#[tauri::command]
+pub async fn epub_gallery(path: String) -> Result<Vec<EpubGalleryImage>, String> {
+    tauri::async_runtime::spawn_blocking(move || epub_gallery_impl(path))
+        .await
+        .map_err(|e| format!("EPUB gallery task failed: {}", e))?
 }
 
 #[tauri::command]

@@ -92,7 +92,7 @@ mod japanese_deinflector;
 mod local_audio;
 mod player_media;
 use dictionary_import::{import_dictionaries, import_dictionary};
-use epub_import::{epub_chapter, epub_cover, epub_open, epub_prune, epub_search, epub_store, import_epub};
+use epub_import::{epub_chapter, epub_cover, epub_gallery, epub_open, epub_prune, epub_search, epub_store, import_epub};
 use japanese_tokenizer::segment_text as segment_japanese_text;
 use lookup_normalization::{japanese_lookup_variants, katakana_to_hiragana};
 use player_media::{extract_player_clip, get_ffmpeg_status};
@@ -6008,6 +6008,7 @@ fn main() {
             epub_prune,
             epub_open,
             epub_cover,
+            epub_gallery,
             epub_search,
             epub_chapter,
             get_diagnostics_log_path,

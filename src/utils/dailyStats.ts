@@ -85,6 +85,11 @@ export const recordDailySeconds = (tabId: number | string, seconds: number) => {
     if (seconds > 0) add(tabId, { seconds });
 };
 
+/** Records EPUB/book reading characters directly into daily stats. */
+export const recordDailyChars = (tabId: number | string, chars: number) => {
+    if (chars > 0) add(tabId, { chars: Math.round(chars) });
+};
+
 export const getDay = (key = dayKey()): DayRecord => load()[key] || { total: emptyCounts(), tabs: {} };
 
 /** The last `count` days, oldest first, including today. */

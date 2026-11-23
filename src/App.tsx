@@ -18,17 +18,22 @@ import { removeGarbageTags } from "./utils/textCleaner";
 import { DictEntry, LookupData } from "./components/Lookuper";
 import LookupSurface from "./features/lookup/LookupSurface";
 import EpubWorkspace from "./features/epub/EpubWorkspace";
+import type { EpubBookMetaPatch } from "./features/epub/EpubLibrary";
+import { restoreRetainedBookData } from "./features/epub/epubLibraryModel";
 import { openEpubBook, pruneEpubFiles, storeEpubFile } from "./features/epub/epubApi";
 import {
     isSupportedBookPath,
     type EpubBookMeta,
+    type EpubBookNote,
+    type EpubHighlight,
     type EpubOrientationSetting,
+    type EpubReadingPoint,
 } from "./features/epub/epubModel";
 import "./App.css";
 
 import { calculateStats } from "./utils/helpers";
 import { countLineStats, sumLineStats } from "./utils/textStats";
-import { recordDailyLine, recordDailySeconds } from "./utils/dailyStats";
+import { recordDailyChars, recordDailyLine, recordDailySeconds } from "./utils/dailyStats";
 import { cachedGlyphScale, glyphScaleFor } from "./utils/fontNormalize";
 import { appendSpeedSample } from "./utils/speedSamples";
 import { listTabHistoryIds, loadTabHistory, markTabHistorySaved, mergeTabHistory, pruneTabHistories, saveChangedTabHistories, slimTabForWorkspace, tailTabForCache } from "./utils/tabHistory";
@@ -1609,11 +1614,23 @@ export default function App() {
             const tabId = targetTabId ?? nextTabId.current++;
             const storedPath = await storeEpubFile(filePath, tabId);
 
+            const retained = restoreRetainedBookData(meta.title);
+
             setTabs((prev) => {
                 const exists = prev.some((tab) => tab.id === tabId);
                 const nextEpub = {
                     title: meta.title,
                     author: meta.author || undefined,
+                    series: retained?.epub?.series || meta.series || undefined,
+                    seriesPosition: retained?.epub?.seriesPosition ?? meta.seriesPosition ?? null,
+                    tags: retained?.epub?.tags,
+                    manualStatus: retained?.epub?.manualStatus,
+                    coverBlurred: retained?.epub?.coverBlurred,
+                    bookmarks: retained?.epub?.bookmarks,
+                    highlights: retained?.epub?.highlights,
+                    notes: retained?.epub?.notes,
+                    totalChars: meta.totalChars,
+                    addedAt: Date.now(),
                     path: storedPath,
                     language: meta.language,
                     defaultVertical: meta.defaultVertical,
@@ -1643,7 +1660,7 @@ export default function App() {
                         id: tabId,
                         name: meta.title,
                         lines: [],
-                        stats: { ...defaultStats },
+                        stats: retained?.stats ? { ...defaultStats, ...retained.stats } : { ...defaultStats },
                         status: "reading",
                         speedSamples: [],
                         mode: "epub",
@@ -1718,9 +1735,15 @@ export default function App() {
         setTabs((prev) => prev.map((tab) => {
             if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
             const nextAuthor = meta.author || undefined;
+            const nextSeries = tab.epub.series || meta.series || undefined;
+            const nextSeriesPos = tab.epub.seriesPosition ?? meta.seriesPosition ?? null;
+            const nextTotalChars = meta.totalChars ?? tab.epub.totalChars;
             if (
                 tab.epub.title === meta.title
                 && tab.epub.author === nextAuthor
+                && tab.epub.series === nextSeries
+                && (tab.epub.seriesPosition ?? null) === nextSeriesPos
+                && tab.epub.totalChars === nextTotalChars
                 && tab.epub.language === meta.language
                 && tab.epub.defaultVertical === meta.defaultVertical
                 && tab.epub.chapterCount === meta.chapters.length
@@ -1734,6 +1757,9 @@ export default function App() {
                     ...tab.epub,
                     title: meta.title,
                     author: nextAuthor,
+                    series: nextSeries,
+                    seriesPosition: nextSeriesPos,
+                    totalChars: nextTotalChars,
                     language: meta.language,
                     defaultVertical: meta.defaultVertical,
                     chapterCount: meta.chapters.length,
@@ -1788,6 +1814,106 @@ export default function App() {
             };
         }));
     }, []);
+
+    const handleEpubHighlightsChange = useCallback((tabId: number, highlights: EpubHighlight[]) => {
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            return {
+                ...tab,
+                epub: { ...tab.epub, highlights, lines: [] },
+            };
+        }));
+    }, []);
+
+    const handleEpubNotesChange = useCallback((tabId: number, notes: EpubBookNote[]) => {
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            return {
+                ...tab,
+                epub: { ...tab.epub, notes, lines: [] },
+            };
+        }));
+    }, []);
+
+    const handleEpubReadingPointChange = useCallback((tabId: number, readingPoint: EpubReadingPoint | null) => {
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            return {
+                ...tab,
+                epub: { ...tab.epub, readingPoint, lines: [] },
+            };
+        }));
+    }, []);
+
+    const handleEpubPatchBooks = useCallback((tabIds: number[], patch: EpubBookMetaPatch) => {
+        const idSet = new Set(tabIds);
+        setTabs((prev) => prev.map((tab) => {
+            if (!idSet.has(tab.id) || tab.mode !== "epub" || !tab.epub) return tab;
+            const nextProgress = patch.manualStatus === "completed"
+                ? 1
+                : patch.manualStatus === "unread"
+                    ? 0
+                    : tab.epub.progress;
+            return {
+                ...tab,
+                readerProgress: nextProgress,
+                epub: {
+                    ...tab.epub,
+                    ...patch,
+                    progress: nextProgress,
+                    ...(patch.manualStatus === "unread" ? { chapterIndex: 0, chapterOffset: 0, lastOpenedAt: 0 } : {}),
+                },
+            };
+        }));
+    }, []);
+
+    const handleEpubRecordStats = useCallback((tabId: number, deltaChars: number, deltaSeconds: number) => {
+        if (deltaChars > 0) recordDailyChars(tabId, deltaChars);
+        if (deltaSeconds > 0) recordDailySeconds(tabId, deltaSeconds);
+        if (deltaChars <= 0 && deltaSeconds <= 0) return;
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub") return tab;
+            const nextChars = (tab.stats?.chars || 0) + Math.max(0, deltaChars);
+            const nextTime = (tab.stats?.time || 0) + Math.max(0, deltaSeconds);
+            return {
+                ...tab,
+                stats: {
+                    ...tab.stats,
+                    chars: nextChars,
+                    time: nextTime,
+                },
+            };
+        }));
+    }, []);
+
+    const handleRemoveEpubBooks = useCallback((tabIds: number[]) => {
+        const idSet = new Set(tabIds);
+        const targets = tabsRef.current.filter((tab) => idSet.has(tab.id) && tab.mode === "epub");
+        if (targets.length === 0) return;
+        const label = targets.length === 1
+            ? (targets[0].epub?.title || targets[0].name)
+            : `${targets.length}`;
+        setConfirmDialog({
+            title: t("epub.removeBook"),
+            message: targets.length === 1
+                ? t("epub.removeBookConfirm", { title: label })
+                : (settings.appLanguage === "en"
+                    ? `Remove ${targets.length} selected books from the library?`
+                    : `Удалить выбранные книги (${targets.length}) из библиотеки?`),
+            onConfirm: () => {
+                const remainingTabs = tabsRef.current.filter((tab) => !idSet.has(tab.id));
+                const keepEpubIds = remainingTabs.filter((tab) => tab.mode === "epub").map((tab) => tab.id);
+                setTabs(remainingTabs);
+                if (idSet.has(activeTabIdRef.current)) {
+                    const nextBook = remainingTabs.find((tab) => tab.mode === "epub" && !tab.archived);
+                    const nextText = remainingTabs.find((tab) => !tab.archived && (!tab.mode || tab.mode === "text"));
+                    if (nextBook) switchTab(nextBook.id);
+                    else if (nextText) switchTab(nextText.id);
+                }
+                pruneEpubFiles(keepEpubIds).catch(() => {});
+            },
+        });
+    }, [switchTab, t, settings.appLanguage]);
 
     const handleRemoveEpubBook = useCallback((tabId: number) => {
         const target = tabsRef.current.find((tab) => tab.id === tabId && tab.mode === "epub");
@@ -4001,10 +4127,16 @@ export default function App() {
                             switchTab(tabId);
                         }}
                         onRemoveBook={handleRemoveEpubBook}
+                        onRemoveBooks={handleRemoveEpubBooks}
+                        onPatchBooks={handleEpubPatchBooks}
                         onUpdateBookMeta={handleEpubUpdateMeta}
                         onProgressChange={handleEpubProgress}
                         onChangeBookOrientation={handleEpubOrientationChange}
                         onChangeBookBookmarks={handleEpubBookmarksChange}
+                        onChangeBookHighlights={handleEpubHighlightsChange}
+                        onChangeBookNotes={handleEpubNotesChange}
+                        onChangeReadingPoint={handleEpubReadingPointChange}
+                        onRecordReadingStats={handleEpubRecordStats}
                         onUpdateSettings={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
                         onLookupToken={isMobileLayout ? runSentenceTokenLookup : undefined}
                     />

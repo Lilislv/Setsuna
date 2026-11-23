@@ -5,14 +5,19 @@ import { getTranslator } from "../../utils/i18n";
 import "../../components/WorkspaceShell.css";
 import { IconBookTab, IconHome, IconImport, IconSettings } from "../../components/Icons";
 import "../../components/AppMenu.css";
-import EpubLibrary from "./EpubLibrary";
+import EpubLibrary, { type EpubBookMetaPatch } from "./EpubLibrary";
 import EpubReader from "./EpubReader";
+import EpubStatsModal from "./EpubStatsModal";
 import { loadEpubChapter, loadEpubCover, openEpubBook } from "./epubApi";
 import type {
     EpubBookMeta,
+    EpubBookNote,
     EpubChapterContent,
+    EpubHighlight,
     EpubOrientationSetting,
+    EpubReadingPoint,
 } from "./epubModel";
+import { loadEpubGoals, type EpubReadingGoals } from "./epubTracker";
 import "./epub.css";
 
 const MAX_CACHED_CHAPTERS = 12;
@@ -42,10 +47,16 @@ interface EpubWorkspaceProps {
     onOpenFile: () => void;
     onSelectBook: (tabId: number) => void;
     onRemoveBook: (tabId: number) => void;
+    onRemoveBooks?: (tabIds: number[]) => void;
+    onPatchBooks?: (tabIds: number[], patch: EpubBookMetaPatch) => void;
     onUpdateBookMeta: (tabId: number, meta: EpubBookMeta) => void;
     onProgressChange: (tabId: number, chapterIndex: number, chapterOffset: number, bookProgress: number) => void;
     onChangeBookOrientation: (tabId: number, orientation: EpubOrientationSetting) => void;
     onChangeBookBookmarks?: (tabId: number, bookmarks: EpubBookmark[]) => void;
+    onChangeBookHighlights?: (tabId: number, highlights: EpubHighlight[]) => void;
+    onChangeBookNotes?: (tabId: number, notes: EpubBookNote[]) => void;
+    onChangeReadingPoint?: (tabId: number, point: EpubReadingPoint | null) => void;
+    onRecordReadingStats?: (tabId: number, deltaChars: number, deltaSeconds: number) => void;
     onUpdateSettings?: (patch: Partial<AppSettings>) => void;
     onLookupToken?: LookupTokenHandler;
 }
@@ -64,10 +75,16 @@ export default function EpubWorkspace({
     onOpenFile,
     onSelectBook,
     onRemoveBook,
+    onRemoveBooks,
+    onPatchBooks,
     onUpdateBookMeta,
     onProgressChange,
     onChangeBookOrientation,
     onChangeBookBookmarks,
+    onChangeBookHighlights,
+    onChangeBookNotes,
+    onChangeReadingPoint,
+    onRecordReadingStats,
     onUpdateSettings,
     onLookupToken,
 }: EpubWorkspaceProps) {
@@ -88,6 +105,8 @@ export default function EpubWorkspace({
     const [readerOverlayOpen, setReaderOverlayOpen] = useState(false);
     const [closeOverlaySignal, setCloseOverlaySignal] = useState(0);
     const [mobileImmersive, setMobileImmersive] = useState(false);
+    const [statsOpen, setStatsOpen] = useState(false);
+    const [readingGoals, setReadingGoals] = useState<EpubReadingGoals>(() => loadEpubGoals());
     const [escMenuMounted, setEscMenuMounted] = useState(false);
     const [escMenuVisible, setEscMenuVisible] = useState(false);
     const [escMenuEntering, setEscMenuEntering] = useState(false);
@@ -563,6 +582,21 @@ export default function EpubWorkspace({
                     onChangeBookBookmarks={(bookmarks) =>
                         onChangeBookBookmarks?.(activeBookTab.id, bookmarks)
                     }
+                    onChangeBookHighlights={(highlights) =>
+                        onChangeBookHighlights?.(activeBookTab.id, highlights)
+                    }
+                    onChangeBookNotes={(notes) =>
+                        onChangeBookNotes?.(activeBookTab.id, notes)
+                    }
+                    onChangeReadingPoint={(point) =>
+                        onChangeReadingPoint?.(activeBookTab.id, point)
+                    }
+                    onRecordReadingStats={(deltaChars, deltaSeconds) =>
+                        onRecordReadingStats?.(activeBookTab.id, deltaChars, deltaSeconds)
+                    }
+                    onOpenStats={() => setStatsOpen(true)}
+                    coverDataUrl={activeBookTab.epub?.path ? (coversByPath[activeBookTab.epub.path] ?? bookMeta?.cover ?? null) : (bookMeta?.cover ?? null)}
+                    goals={readingGoals}
                     onUpdateSettings={onUpdateSettings}
                     onLookupToken={onLookupToken}
                     onBackToLibrary={() => setViewMode("library")}
@@ -581,9 +615,20 @@ export default function EpubWorkspace({
                     onOpenFile={onOpenFile}
                     onSelectBook={handleSelectBook}
                     onRemoveBook={onRemoveBook}
+                    onRemoveBooks={onRemoveBooks}
+                    onPatchBooks={onPatchBooks}
+                    onOpenStats={() => setStatsOpen(true)}
                 />
             )}
             {escMenuElement}
+            <EpubStatsModal
+                open={statsOpen}
+                books={books}
+                language={language}
+                isMobile={isMobile}
+                onClose={() => setStatsOpen(false)}
+                onGoalsChange={setReadingGoals}
+            />
         </div>
     );
 

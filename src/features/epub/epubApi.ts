@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { EpubBookMeta, EpubChapterContent, EpubSearchHit } from "./epubModel";
+import type { EpubBookMeta, EpubChapterContent, EpubGalleryImage, EpubSearchHit } from "./epubModel";
 
 export const storeEpubFile = async (path: string, tabId: number): Promise<string> => {
     return invoke<string>("epub_store", { path, tabId });
@@ -23,4 +23,8 @@ export const loadEpubChapter = async (path: string, index: number): Promise<Epub
 
 export const searchEpubBook = async (path: string, query: string): Promise<EpubSearchHit[]> => {
     return invoke<EpubSearchHit[]>("epub_search", { path, query });
+};
+
+export const loadEpubGallery = async (path: string): Promise<EpubGalleryImage[]> => {
+    return invoke<EpubGalleryImage[]>("epub_gallery", { path });
 };

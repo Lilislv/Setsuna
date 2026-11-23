@@ -59,7 +59,7 @@ export interface AppSettings {
   mobileOverlayOpacity?: number; mobileOverlayTextColor?: string; mobileOverlayBackgroundColor?: string; mobileOverlayBorderColor?: string;
   mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
   mobileOverlayLocked?: boolean; mobileOverlayToolbarExpanded?: boolean;
-  epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'auto' | 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubPagePadding?: number; epubShowImages?: boolean; epubBlurImages?: boolean; epubImageMaxWidth?: number;
+  epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'auto' | 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubPagePadding?: number; epubShowImages?: boolean; epubBlurImages?: boolean; epubBlurImagesMode?: 'off' | 'after-toc' | 'all'; epubFuriganaMode?: 'show' | 'hover' | 'hide'; epubJustify?: boolean; epubPrettyWrap?: boolean; epubVerticalGrid?: boolean; epubTextIndent?: 'auto' | 'none' | 'indent'; epubAutoscrollSpeed?: number; epubImageMaxWidth?: number;
   playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerMiningPreferVideo: boolean; playerMiningUseClipForAnki: boolean;
   playerKeyPlayPause: string; playerKeyBack: string; playerKeyForward: string; playerKeyMine: string; playerKeyOffsetMinus: string; playerKeyOffsetPlus: string;
   discordEnabled: boolean; discordClientId: string; discordShowTab: boolean; discordShowStats: boolean; discordShowChars: boolean; discordShowWords: boolean; discordShowSentences: boolean; discordShowProgress: boolean; discordShowPaused: boolean; discordShowTimer: boolean; discordShowButtons: boolean; discordShowSpeed?: boolean; discordTitleInMemberList?: boolean;
@@ -1617,7 +1617,47 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                     <div id="epub-layout" className={`modern-card ${highlightedSection === 'epub-layout' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>
                         <div className="card-label" style={{ color: 'var(--text-main)' }}>{settings.appLanguage === 'en' ? 'Page layout and images' : 'Раскладка и картинки'}</div>
                         <label className="checkbox-label" style={{ marginBottom: 10 }}><input type="checkbox" checked={settings.epubShowImages ?? true} onChange={(e) => updateSetting('epubShowImages', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Show EPUB images' : 'Показывать картинки из EPUB'}</label>
-                        <label className="checkbox-label" style={{ marginBottom: 14 }}><input type="checkbox" checked={settings.epubBlurImages ?? false} onChange={(e) => updateSetting('epubBlurImages', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Blur illustrations until clicked (spoiler-safe)' : 'Размывать иллюстрации до клика (без спойлеров)'}</label>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px', marginBottom: 14 }}>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? 'Blur illustrations (spoiler-safe)' : 'Блюр иллюстраций (без спойлеров)'}
+                                <select
+                                    className="modern-select"
+                                    value={settings.epubBlurImagesMode || (settings.epubBlurImages ? 'all' : 'off')}
+                                    onChange={(e) => {
+                                        const mode = e.target.value as 'off' | 'after-toc' | 'all';
+                                        onSettingsChange({ ...settings, epubBlurImagesMode: mode, epubBlurImages: mode !== 'off' });
+                                    }}
+                                    style={{ marginTop: 6 }}
+                                >
+                                    <option value="off">{settings.appLanguage === 'en' ? 'Off' : 'Выкл'}</option>
+                                    <option value="after-toc">{settings.appLanguage === 'en' ? 'After ToC (keep cover clear)' : 'После оглавления (обложка без блюра)'}</option>
+                                    <option value="all">{settings.appLanguage === 'en' ? 'All illustrations' : 'Все иллюстрации'}</option>
+                                </select>
+                            </label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? 'Furigana' : 'Фуригана'}
+                                <select className="modern-select" value={settings.epubFuriganaMode || 'show'} onChange={(e) => updateSetting('epubFuriganaMode', e.target.value as any)} style={{ marginTop: 6 }}>
+                                    <option value="show">{settings.appLanguage === 'en' ? 'Show' : 'Показать'}</option>
+                                    <option value="hover">{settings.appLanguage === 'en' ? 'Show on hover' : 'По наведению'}</option>
+                                    <option value="hide">{settings.appLanguage === 'en' ? 'Hide' : 'Скрыть'}</option>
+                                </select>
+                            </label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? 'Paragraph indent' : 'Красная строка'}
+                                <select className="modern-select" value={settings.epubTextIndent || 'auto'} onChange={(e) => updateSetting('epubTextIndent', e.target.value as any)} style={{ marginTop: 6 }}>
+                                    <option value="auto">{settings.appLanguage === 'en' ? 'Auto' : 'Авто'}</option>
+                                    <option value="none">{settings.appLanguage === 'en' ? 'None' : 'Нет'}</option>
+                                    <option value="indent">{settings.appLanguage === 'en' ? '1em indent' : 'Отступ 1em'}</option>
+                                </select>
+                            </label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? 'Autoscroll speed (px/s)' : 'Скорость автоскролла (px/с)'}
+                                <input type="number" min="10" max="200" step="2" className="modern-input" value={settings.epubAutoscrollSpeed ?? 38} onChange={(e) => updateSetting('epubAutoscrollSpeed', Number(e.target.value))} style={{ marginTop: 6 }} />
+                            </label>
+                        </div>
+                        <label className="checkbox-label" style={{ marginBottom: 8 }}><input type="checkbox" checked={settings.epubJustify ?? false} onChange={(e) => updateSetting('epubJustify', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Justify text' : 'Выравнивание текста по ширине'}</label>
+                        <label className="checkbox-label" style={{ marginBottom: 8 }}><input type="checkbox" checked={settings.epubPrettyWrap ?? true} onChange={(e) => updateSetting('epubPrettyWrap', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Pretty text wrap' : 'Аккуратный перенос строк'}</label>
+                        <label className="checkbox-label" style={{ marginBottom: 14 }}><input type="checkbox" checked={settings.epubVerticalGrid ?? false} onChange={(e) => updateSetting('epubVerticalGrid', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Strict vertical column grid (Japanese)' : 'Строгая сетка колонок в вертикальном режиме'}</label>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px' }}>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Text column width' : 'Ширина текста'}<input type="number" min="420" max="1400" className="modern-input" value={settings.epubMaxWidth ?? 1040} onChange={(e) => updateSetting('epubMaxWidth', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Image max width' : 'Макс. ширина картинки'}<input type="number" min="240" max="1400" className="modern-input" value={settings.epubImageMaxWidth ?? 720} onChange={(e) => updateSetting('epubImageMaxWidth', Number(e.target.value))} style={{ marginTop: 6 }} /></label>

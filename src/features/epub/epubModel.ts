@@ -7,11 +7,14 @@ export interface EpubChapterMeta {
     id: string;
     href: string;
     title: string | null;
+    charCount?: number;
 }
 
 export interface EpubBookMeta {
     title: string;
     author: string | null;
+    series?: string | null;
+    seriesPosition?: number | null;
     language: EpubLanguage;
     metadataLanguage: string | null;
     pageProgressionDirection: string | null;
@@ -20,6 +23,50 @@ export interface EpubBookMeta {
     defaultVertical: boolean;
     chapters: EpubChapterMeta[];
     cover: string | null;
+    totalChars?: number;
+}
+
+export interface EpubGalleryImage {
+    chapterIndex: number;
+    chapterTitle: string | null;
+    paragraphIndex: number;
+    src: string;
+    alt: string | null;
+}
+
+export type EpubHighlightColor = "amber" | "emerald" | "sky" | "rose";
+export type EpubFuriganaMode = "show" | "hover" | "hide";
+export type EpubBlurImagesMode = "off" | "after-toc" | "all";
+export type EpubTextIndentMode = "auto" | "none" | "indent";
+
+export interface EpubHighlight {
+    id: string;
+    chapterIndex: number;
+    chapterTitle?: string;
+    paragraphIndex: number;
+    text: string;
+    color: EpubHighlightColor;
+    note?: string;
+    createdAt: number;
+}
+
+export interface EpubBookNote {
+    id: string;
+    title: string;
+    body: string;
+    chapterIndex?: number;
+    chapterTitle?: string;
+    paragraphIndex?: number;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface EpubReadingPoint {
+    chapterIndex: number;
+    paragraphIndex: number;
+    chapterTitle?: string;
+    excerpt?: string;
+    savedAt: number;
 }
 
 export interface EpubSearchHit {
@@ -200,6 +247,36 @@ export const computeBookProgress = (
     const safeChapter = Math.min(chapterCount - 1, Math.max(0, Math.floor(chapterIndex)));
     const safeFraction = clamp01(chapterFraction);
     return clamp01((safeChapter + safeFraction) / chapterCount);
+};
+
+/**
+ * Character-weighted book progress: weights each chapter by its actual character count
+ * so a short prologue doesn't count as 50% of the book. Falls back to `computeBookProgress`
+ * when chapter character counts are unavailable.
+ */
+export const computeWeightedBookProgress = (
+    chapterIndex: number,
+    chapters: readonly Pick<EpubChapterMeta, "charCount">[],
+    chapterFraction: number,
+): number => {
+    if (chapters.length === 0) return 0;
+    let total = 0;
+    for (const ch of chapters) {
+        if (typeof ch.charCount === "number" && ch.charCount > 0) {
+            total += ch.charCount;
+        }
+    }
+    if (total <= 0) {
+        return computeBookProgress(chapterIndex, chapters.length, chapterFraction);
+    }
+    const safeChapter = Math.min(chapters.length - 1, Math.max(0, Math.floor(chapterIndex)));
+    const safeFraction = clamp01(chapterFraction);
+    let before = 0;
+    for (let i = 0; i < safeChapter; i++) {
+        before += Math.max(0, chapters[i]?.charCount || 0);
+    }
+    const currentChars = Math.max(0, chapters[safeChapter]?.charCount || 0);
+    return clamp01((before + currentChars * safeFraction) / total);
 };
 
 export const parseCountedThrough = (marker: string | undefined | null): CountedPosition | null => {

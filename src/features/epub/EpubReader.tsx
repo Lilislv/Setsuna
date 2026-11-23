@@ -17,20 +17,37 @@ import { getTranslator } from "../../utils/i18n";
 import { TokenizedLine } from "../../components/TextContainer";
 import { IconBookTab, IconClose, IconImport, IconSearch } from "../../components/Icons";
 import FontPicker from "../../components/FontPicker";
+import { getDay, useDailyStatsVersion } from "../../utils/dailyStats";
 import { searchEpubBook } from "./epubApi";
+import EpubGalleryModal from "./EpubGalleryModal";
 import EpubGlassSelect from "./EpubGlassSelect";
+import EpubQuoteModal from "./EpubQuoteModal";
 import { buildEpubFontPresets } from "./epubFonts";
+import { applyParagraphHighlights } from "./epubHighlightDom";
 import {
     clamp01,
-    computeBookProgress,
+    computeWeightedBookProgress,
     resolveEpubHrefTarget,
     resolveEpubOrientation,
+    type EpubBlurImagesMode,
     type EpubBookMeta,
+    type EpubBookNote,
     type EpubChapterContent,
+    type EpubFuriganaMode,
+    type EpubHighlight,
+    type EpubHighlightColor,
     type EpubOrientationSetting,
     type EpubParagraph,
+    type EpubReadingPoint,
     type EpubSearchHit,
+    type EpubTextIndentMode,
 } from "./epubModel";
+import {
+    computeChapterParagraphDelta,
+    evaluateGoalProgress,
+    loadEpubGoals,
+    type EpubReadingGoals,
+} from "./epubTracker";
 
 type LookupMatch = { start: number; length: number };
 type LookupTokenHandler = (
@@ -58,6 +75,13 @@ interface EpubReaderProps {
     onProgressChange: (chapterIndex: number, chapterOffset: number, bookProgress: number) => void;
     onChangeBookOrientation: (orientation: EpubOrientationSetting) => void;
     onChangeBookBookmarks?: (bookmarks: EpubBookmark[]) => void;
+    onChangeBookHighlights?: (highlights: EpubHighlight[]) => void;
+    onChangeBookNotes?: (notes: EpubBookNote[]) => void;
+    onChangeReadingPoint?: (point: EpubReadingPoint | null) => void;
+    onRecordReadingStats?: (deltaChars: number, deltaSeconds: number) => void;
+    onOpenStats?: () => void;
+    coverDataUrl?: string | null;
+    goals?: EpubReadingGoals;
     onUpdateSettings?: (patch: Partial<AppSettings>) => void;
     onLookupToken?: LookupTokenHandler;
     onBackToLibrary: () => void;
@@ -212,6 +236,13 @@ export default function EpubReader({
     onProgressChange,
     onChangeBookOrientation,
     onChangeBookBookmarks,
+    onChangeBookHighlights,
+    onChangeBookNotes,
+    onChangeReadingPoint,
+    onRecordReadingStats,
+    onOpenStats,
+    coverDataUrl,
+    goals: externalGoals,
     onUpdateSettings,
     onLookupToken,
     onBackToLibrary,
@@ -250,9 +281,21 @@ export default function EpubReader({
     };
 
     const [tocOpen, setTocOpen] = useState(false);
-    const [drawerTab, setDrawerTab] = useState<"toc" | "bookmarks">("toc");
+    const [drawerTab, setDrawerTab] = useState<"toc" | "bookmarks" | "notes">("toc");
     const [appearanceOpen, setAppearanceOpen] = useState(false);
     const [searchOpen, setSearchOpen] = useState(false);
+    const [galleryOpen, setGalleryOpen] = useState(false);
+    const [quoteModalText, setQuoteModalText] = useState<string | null>(null);
+    const [zenMode, setZenMode] = useState(false);
+    const [settingReadingPoint, setSettingReadingPoint] = useState(false);
+    const [positionFrozen, setPositionFrozen] = useState(false);
+    const [trackingPaused, setTrackingPaused] = useState(false);
+    const [autoscrollActive, setAutoscrollActive] = useState(false);
+    const [selectionPill, setSelectionPill] = useState<{ x: number; y: number; text: string; paragraphIndex: number } | null>(null);
+    const [noteTitleInput, setNoteTitleInput] = useState("");
+    const [noteBodyInput, setNoteBodyInput] = useState("");
+    const [editingHighlightId, setEditingHighlightId] = useState<string | null>(null);
+    const [editingHighlightNote, setEditingHighlightNote] = useState("");
     const [searchQuery, setSearchQuery] = useState("");
     const [searchHits, setSearchHits] = useState<EpubSearchHit[]>([]);
     const [searching, setSearching] = useState(false);
@@ -274,6 +317,18 @@ export default function EpubReader({
 
     const bookPath = tab.epub?.path || "";
     const bookmarks = useMemo(() => tab.epub?.bookmarks || [], [tab.epub?.bookmarks]);
+    const highlights = useMemo(() => tab.epub?.highlights || [], [tab.epub?.highlights]);
+    const notes = useMemo(() => tab.epub?.notes || [], [tab.epub?.notes]);
+    const readingPoint = tab.epub?.readingPoint || null;
+    const statsVersion = useDailyStatsVersion();
+    const activeGoals = useMemo(() => externalGoals || loadEpubGoals(), [externalGoals, statsVersion]);
+    const lastActivityAtRef = useRef(Date.now());
+    const pendingSecondsRef = useRef(0);
+    const lastTrackedParaRef = useRef<{ chapterIdx: number; paragraphIdx: number } | null>(null);
+    const positionFrozenRef = useRef(false);
+    positionFrozenRef.current = positionFrozen;
+    const onRecordStatsRef = useRef(onRecordReadingStats);
+    onRecordStatsRef.current = onRecordReadingStats;
 
     useEffect(() => () => {
         if (topHideTimerRef.current !== null) window.clearTimeout(topHideTimerRef.current);
@@ -343,11 +398,56 @@ export default function EpubReader({
     const useTwoPageSpread = canUseSpread && spreadEnabled;
     const epubTheme = settings.epubTheme || "app";
     const showImages = settings.epubShowImages ?? true;
-    const blurImages = settings.epubBlurImages ?? false;
+    const blurImagesMode: EpubBlurImagesMode =
+        settings.epubBlurImagesMode
+        || (settings.epubBlurImages ? "all" : "off");
+    const furiganaMode: EpubFuriganaMode = settings.epubFuriganaMode || "show";
+    const justifyText = settings.epubJustify ?? false;
+    const prettyWrap = settings.epubPrettyWrap ?? true;
+    const verticalGrid = settings.epubVerticalGrid ?? false;
+    const textIndent: EpubTextIndentMode = settings.epubTextIndent || "auto";
+    const autoscrollSpeed = settings.epubAutoscrollSpeed ?? 38;
     const chapters = useMemo(() => bookMeta?.chapters || [], [bookMeta?.chapters]);
     const chapterIndex = chapter?.index ?? tab.epub?.chapterIndex ?? 0;
     const chapterCount = chapters.length || tab.epub?.chapterCount || 1;
     const paragraphs = useMemo(() => chapter?.paragraphs || [], [chapter?.paragraphs]);
+
+    // Front-matter cutoff for "after-toc" spoiler-safe blur mode
+    const blurCutoffChapterIndex = useMemo(() => {
+        if (blurImagesMode !== "after-toc") return -1;
+        let tocIdx = -1;
+        for (let i = 0; i < Math.min(chapters.length, 8); i++) {
+            const label = `${chapters[i]?.title || ""} ${chapters[i]?.href || ""}`.toLowerCase();
+            if (/toc|contents|nav|cover|titlepage|front|目次|表紙|口絵/.test(label)) {
+                tocIdx = i;
+            }
+        }
+        return tocIdx >= 0 ? tocIdx : Math.min(1, Math.max(0, chapters.length - 1));
+    }, [blurImagesMode, chapters]);
+
+    const blurActiveInChapter = blurImagesMode === "all"
+        || (blurImagesMode === "after-toc" && chapterIndex > blurCutoffChapterIndex);
+
+    const chapterHighlightsMap = useMemo(() => {
+        const map = new Map<number, EpubHighlight[]>();
+        for (const hl of highlights) {
+            if (hl.chapterIndex !== chapterIndex) continue;
+            const list = map.get(hl.paragraphIndex);
+            if (list) list.push(hl);
+            else map.set(hl.paragraphIndex, [hl]);
+        }
+        return map;
+    }, [highlights, chapterIndex]);
+
+    const todayTotals = useMemo(() => getDay().total, [statsVersion]);
+    const goalSummary = useMemo(
+        () => evaluateGoalProgress(todayTotals.chars, todayTotals.seconds, activeGoals, trackingPaused || positionFrozen),
+        [todayTotals.chars, todayTotals.seconds, activeGoals, trackingPaused, positionFrozen],
+    );
+
+    const computeAccurateProgress = useCallback((chIdx: number, fraction: number) => {
+        return computeWeightedBookProgress(chIdx, chapters, fraction);
+    }, [chapters]);
 
     const fontSize = settings.epubFontSize ?? 21;
     const lineHeight = settings.epubLineHeight ?? 1.65;
@@ -477,14 +577,18 @@ export default function EpubReader({
     }, [isMobile, lookupOpen, lookupActive, escMenuOpen, evaluateHoverZones]);
 
     useEffect(() => {
-        onOverlayStateChange?.(tocOpen || searchOpen || appearanceOpen);
-    }, [tocOpen, searchOpen, appearanceOpen, onOverlayStateChange]);
+        onOverlayStateChange?.(tocOpen || searchOpen || appearanceOpen || galleryOpen || Boolean(quoteModalText));
+    }, [tocOpen, searchOpen, appearanceOpen, galleryOpen, quoteModalText, onOverlayStateChange]);
 
     useEffect(() => {
         if (!closeOverlaySignal) return;
         setTocOpen(false);
         setSearchOpen(false);
         setAppearanceOpen(false);
+        setGalleryOpen(false);
+        setQuoteModalText(null);
+        setSelectionPill(null);
+        setSettingReadingPoint(false);
     }, [closeOverlaySignal]);
 
     const handleStageMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
@@ -519,8 +623,106 @@ export default function EpubReader({
         }, CHROME_HIDE_DELAY_MS);
     }, [isMobile]);
 
-    const topChromeVisible = !lookupActive && !escMenuOpen && ((isMobile && !immersive) || topHover || tocOpen || appearanceOpen || searchOpen);
-    const bottomChromeVisible = !lookupActive && !escMenuOpen && ((isMobile && !immersive) || bottomHover);
+    const topChromeVisible = !zenMode && !lookupActive && !escMenuOpen && ((isMobile && !immersive) || topHover || tocOpen || appearanceOpen || searchOpen);
+    const bottomChromeVisible = !zenMode && !lookupActive && !escMenuOpen && ((isMobile && !immersive) || bottomHover || autoscrollActive || positionFrozen);
+
+    // Smart reading timer with lookup-aware idle auto-pause
+    useEffect(() => {
+        const markActive = () => {
+            lastActivityAtRef.current = Date.now();
+        };
+        window.addEventListener("pointerdown", markActive, { passive: true });
+        window.addEventListener("keydown", markActive, { passive: true });
+        window.addEventListener("wheel", markActive, { passive: true });
+        return () => {
+            window.removeEventListener("pointerdown", markActive);
+            window.removeEventListener("keydown", markActive);
+            window.removeEventListener("wheel", markActive);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (lookupOpen) {
+            lastActivityAtRef.current = Date.now();
+        }
+    }, [lookupOpen]);
+
+    useEffect(() => {
+        if (!chapter || loading || trackingPaused || positionFrozen || escMenuOpen || galleryOpen || Boolean(quoteModalText)) {
+            return;
+        }
+        const idleLimitMs = Math.max(15, activeGoals.idlePauseSeconds || 60) * 1000;
+        const interval = window.setInterval(() => {
+            if (document.hidden) return;
+            const idleMs = Date.now() - lastActivityAtRef.current;
+            if (!lookupOpen && idleMs > idleLimitMs) {
+                return;
+            }
+            pendingSecondsRef.current += 1;
+            if (pendingSecondsRef.current >= 5) {
+                const secs = pendingSecondsRef.current;
+                pendingSecondsRef.current = 0;
+                onRecordStatsRef.current?.(0, secs);
+            }
+        }, 1000);
+        return () => {
+            window.clearInterval(interval);
+            if (pendingSecondsRef.current > 0) {
+                const secs = pendingSecondsRef.current;
+                pendingSecondsRef.current = 0;
+                onRecordStatsRef.current?.(0, secs);
+            }
+        };
+    }, [chapter?.index, loading, trackingPaused, positionFrozen, escMenuOpen, galleryOpen, quoteModalText, lookupOpen, activeGoals.idlePauseSeconds]);
+
+    // Continuous scroll Autoscroll loop (auto-pauses on lookup / modals / Zen off unaffected)
+    useEffect(() => {
+        if (!autoscrollActive || isPaged || !chapter || loading) return;
+        if (lookupActive || escMenuOpen || tocOpen || appearanceOpen || searchOpen || galleryOpen || Boolean(quoteModalText)) {
+            return;
+        }
+        let rafId = 0;
+        let lastTime = performance.now();
+        const tick = (now: number) => {
+            const dt = Math.min(0.1, (now - lastTime) / 1000);
+            lastTime = now;
+            const el = surfaceRef.current;
+            if (el) {
+                const px = autoscrollSpeed * dt;
+                if (isVertical) {
+                    const max = Math.max(0, el.scrollWidth - el.clientWidth);
+                    if (Math.abs(el.scrollLeft) >= max - 1) {
+                        setAutoscrollActive(false);
+                        return;
+                    }
+                    el.scrollLeft -= px;
+                } else {
+                    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+                    if (el.scrollTop >= max - 1) {
+                        setAutoscrollActive(false);
+                        return;
+                    }
+                    el.scrollTop += px;
+                }
+                lastActivityAtRef.current = Date.now();
+            }
+            rafId = requestAnimationFrame(tick);
+        };
+        rafId = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(rafId);
+    }, [autoscrollActive, isPaged, isVertical, autoscrollSpeed, chapter, loading, lookupActive, escMenuOpen, tocOpen, appearanceOpen, searchOpen, galleryOpen, quoteModalText]);
+
+    // Reset autoscroll if user switches to paged mode
+    useEffect(() => {
+        if (isPaged && autoscrollActive) {
+            setAutoscrollActive(false);
+        }
+    }, [isPaged, autoscrollActive]);
+
+    // Reset tracked paragraph baseline when book or chapter changes
+    useEffect(() => {
+        lastTrackedParaRef.current = chapter ? { chapterIdx: chapter.index, paragraphIdx: 0 } : null;
+    }, [tab.id, chapter?.index]);
 
     const setSpreadPreference = useCallback((next: boolean) => {
         setSpreadEnabled(next);
@@ -685,8 +887,10 @@ export default function EpubReader({
                 const total = Math.max(1, pageRanges.length);
                 const reachedPage = useTwoPageSpread ? Math.min(total - 1, foundPage + 1) : foundPage;
                 const fraction = total <= 1 ? 1 : clamp01(reachedPage / (total - 1));
-                const bookProgress = computeBookProgress(chapterIndex, chapterCount, fraction);
-                callbacksRef.current.onProgressChange(chapterIndex, fraction, bookProgress);
+                if (!positionFrozenRef.current) {
+                    const bookProgress = computeAccurateProgress(chapterIndex, fraction);
+                    callbacksRef.current.onProgressChange(chapterIndex, fraction, bookProgress);
+                }
             }
             flashParagraphHighlight(targetParagraphIdx);
             return;
@@ -842,25 +1046,69 @@ export default function EpubReader({
                 : { current: metrics.currentPage, total: metrics.totalPages },
         );
         if (restoringRef.current) return;
+        lastActivityAtRef.current = Date.now();
 
         const now = Date.now();
         if (now - lastProgressSentRef.current < PROGRESS_THROTTLE_MS) return;
         lastProgressSentRef.current = now;
 
-        const bookProgress = computeBookProgress(chapter.index, chapterCount, metrics.fraction);
-        callbacksRef.current.onProgressChange(chapter.index, metrics.fraction, bookProgress);
-    }, [isHorizontalPaged, chapter, chapterCount, getScrollMetrics]);
+        if (!positionFrozenRef.current) {
+            const bookProgress = computeAccurateProgress(chapter.index, metrics.fraction);
+            callbacksRef.current.onProgressChange(chapter.index, metrics.fraction, bookProgress);
+
+            if (!trackingPaused && paragraphs.length > 0) {
+                const approxPara = Math.min(paragraphs.length - 1, Math.floor(metrics.fraction * paragraphs.length));
+                const prev = lastTrackedParaRef.current;
+                if (prev && prev.chapterIdx === chapter.index && approxPara > prev.paragraphIdx) {
+                    const delta = computeChapterParagraphDelta(
+                        paragraphs,
+                        prev.paragraphIdx,
+                        approxPara,
+                        activeGoals.skipThresholdChars,
+                    );
+                    if (delta !== null && delta > 0) {
+                        onRecordStatsRef.current?.(delta, 0);
+                    }
+                    lastTrackedParaRef.current = { chapterIdx: chapter.index, paragraphIdx: approxPara };
+                } else {
+                    lastTrackedParaRef.current = { chapterIdx: chapter.index, paragraphIdx: approxPara };
+                }
+            }
+        }
+    }, [isHorizontalPaged, chapter, computeAccurateProgress, getScrollMetrics, trackingPaused, paragraphs, activeGoals.skipThresholdChars]);
 
     const goToHorizontalPage = useCallback((nextIdx: number) => {
         if (!chapter) return;
         const total = Math.max(1, pageRanges.length);
         const clamped = Math.min(total - 1, Math.max(0, nextIdx));
         setCurrentPageIdx(clamped);
+        lastActivityAtRef.current = Date.now();
         const reachedPage = useTwoPageSpread ? Math.min(total - 1, clamped + 1) : clamped;
         const fraction = total <= 1 ? 1 : clamp01(reachedPage / (total - 1));
-        const bookProgress = computeBookProgress(chapter.index, chapterCount, fraction);
-        callbacksRef.current.onProgressChange(chapter.index, fraction, bookProgress);
-    }, [chapter, chapterCount, pageRanges.length, useTwoPageSpread]);
+        if (!positionFrozenRef.current) {
+            const bookProgress = computeAccurateProgress(chapter.index, fraction);
+            callbacksRef.current.onProgressChange(chapter.index, fraction, bookProgress);
+
+            if (!trackingPaused && pageRanges[reachedPage]) {
+                const endPara = Math.max(0, pageRanges[reachedPage].end - 1);
+                const prev = lastTrackedParaRef.current;
+                if (prev && prev.chapterIdx === chapter.index && endPara > prev.paragraphIdx) {
+                    const delta = computeChapterParagraphDelta(
+                        paragraphs,
+                        prev.paragraphIdx,
+                        endPara,
+                        activeGoals.skipThresholdChars,
+                    );
+                    if (delta !== null && delta > 0) {
+                        onRecordStatsRef.current?.(delta, 0);
+                    }
+                    lastTrackedParaRef.current = { chapterIdx: chapter.index, paragraphIdx: endPara };
+                } else {
+                    lastTrackedParaRef.current = { chapterIdx: chapter.index, paragraphIdx: endPara };
+                }
+            }
+        }
+    }, [chapter, pageRanges, useTwoPageSpread, computeAccurateProgress, trackingPaused, paragraphs, activeGoals.skipThresholdChars]);
 
     const turnPage = useCallback((direction: 1 | -1) => {
         if (!chapter) return;
@@ -975,6 +1223,126 @@ export default function EpubReader({
         onChangeBookBookmarks(bookmarks.filter((item) => item.id !== id));
     }, [onChangeBookBookmarks, bookmarks]);
 
+    const handleSaveReadingPoint = useCallback((targetParagraph?: EpubParagraph | null) => {
+        if (!chapter || !onChangeReadingPoint) return;
+        const target = targetParagraph ?? getCurrentVisibleParagraph();
+        const paragraphIndex = target?.index ?? 0;
+        const rawExcerpt = (target?.text || chapter.title || "").replace(/\s+/g, " ").trim();
+        const excerpt = rawExcerpt.length > 90 ? `${rawExcerpt.slice(0, 90)}…` : rawExcerpt;
+        const chapterTitle = chapter.title || t("epub.chapterOf", { current: chapter.index + 1, total: chapterCount });
+        onChangeReadingPoint({
+            chapterIndex: chapter.index,
+            paragraphIndex,
+            chapterTitle,
+            excerpt,
+            savedAt: Date.now(),
+        });
+        const fraction = paragraphs.length <= 1 ? 0 : clamp01(paragraphIndex / (paragraphs.length - 1));
+        const bookProgress = computeAccurateProgress(chapter.index, fraction);
+        callbacksRef.current.onProgressChange(chapter.index, fraction, bookProgress);
+        flashParagraphHighlight(paragraphIndex);
+        setSettingReadingPoint(false);
+    }, [chapter, onChangeReadingPoint, getCurrentVisibleParagraph, t, chapterCount, paragraphs.length, computeAccurateProgress, flashParagraphHighlight]);
+
+    const handleAddHighlight = useCallback((color: EpubHighlightColor, openNote = false) => {
+        if (!chapter || !selectionPill || !onChangeBookHighlights) return;
+        const chapterTitle = chapter.title || t("epub.chapterOf", { current: chapter.index + 1, total: chapterCount });
+        const nextHl: EpubHighlight = {
+            id: `hl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            chapterIndex: chapter.index,
+            chapterTitle,
+            paragraphIndex: selectionPill.paragraphIndex,
+            text: selectionPill.text,
+            color,
+            createdAt: Date.now(),
+        };
+        onChangeBookHighlights([nextHl, ...highlights]);
+        setSelectionPill(null);
+        window.getSelection()?.removeAllRanges();
+        if (openNote) {
+            setEditingHighlightId(nextHl.id);
+            setEditingHighlightNote("");
+            setDrawerTab("notes");
+            setTocOpen(true);
+        }
+    }, [chapter, selectionPill, onChangeBookHighlights, t, chapterCount, highlights]);
+
+    const handleSaveHighlightNote = useCallback((id: string) => {
+        if (!onChangeBookHighlights) return;
+        const noteText = editingHighlightNote.trim();
+        onChangeBookHighlights(
+            highlights.map((hl) => (hl.id === id ? { ...hl, note: noteText || undefined } : hl)),
+        );
+        setEditingHighlightId(null);
+        setEditingHighlightNote("");
+    }, [onChangeBookHighlights, editingHighlightNote, highlights]);
+
+    const handleDeleteHighlight = useCallback((id: string) => {
+        if (!onChangeBookHighlights) return;
+        onChangeBookHighlights(highlights.filter((hl) => hl.id !== id));
+    }, [onChangeBookHighlights, highlights]);
+
+    const handleAddBookNote = useCallback(() => {
+        if (!onChangeBookNotes) return;
+        const body = noteBodyInput.trim();
+        const title = noteTitleInput.trim();
+        if (!body && !title) return;
+        const target = getCurrentVisibleParagraph();
+        const chapterTitle = chapter
+            ? (chapter.title || t("epub.chapterOf", { current: chapter.index + 1, total: chapterCount }))
+            : undefined;
+        const now = Date.now();
+        const nextNote: EpubBookNote = {
+            id: `note-${now}-${Math.random().toString(36).slice(2, 7)}`,
+            title: title || chapterTitle || t("epub.notes"),
+            body,
+            chapterIndex: chapter?.index,
+            chapterTitle,
+            paragraphIndex: target?.index,
+            createdAt: now,
+            updatedAt: now,
+        };
+        onChangeBookNotes([nextNote, ...notes]);
+        setNoteTitleInput("");
+        setNoteBodyInput("");
+    }, [onChangeBookNotes, noteBodyInput, noteTitleInput, getCurrentVisibleParagraph, chapter, t, chapterCount, notes]);
+
+    const handleDeleteBookNote = useCallback((id: string) => {
+        if (!onChangeBookNotes) return;
+        onChangeBookNotes(notes.filter((n) => n.id !== id));
+    }, [onChangeBookNotes, notes]);
+
+    const handleSurfaceMouseUp = useCallback(() => {
+        if (!onChangeBookHighlights || settingReadingPoint) return;
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) {
+            setSelectionPill(null);
+            return;
+        }
+        const selectedText = sel.toString().trim();
+        if (!selectedText || selectedText.length > 800) {
+            setSelectionPill(null);
+            return;
+        }
+        const range = sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+        const anchorEl = range?.commonAncestorContainer instanceof Element
+            ? range.commonAncestorContainer
+            : range?.commonAncestorContainer?.parentElement;
+        const paraEl = anchorEl?.closest<HTMLElement>("[data-paragraph-index]");
+        const stage = stageRef.current;
+        if (!paraEl || !stage || !surfaceRef.current?.contains(paraEl)) {
+            setSelectionPill(null);
+            return;
+        }
+        const paragraphIndex = Number(paraEl.dataset.paragraphIndex);
+        if (!Number.isFinite(paragraphIndex)) return;
+        const selRect = range!.getBoundingClientRect();
+        const stageRect = stage.getBoundingClientRect();
+        const x = Math.min(stageRect.width - 140, Math.max(140, selRect.left + selRect.width / 2 - stageRect.left));
+        const y = Math.max(54, selRect.top - stageRect.top - 12);
+        setSelectionPill({ x, y, text: selectedText, paragraphIndex });
+    }, [onChangeBookHighlights, settingReadingPoint]);
+
     useEffect(() => {
         const el = surfaceRef.current;
         if (!el) return;
@@ -1022,16 +1390,76 @@ export default function EpubReader({
 
             if (event.ctrlKey || event.metaKey || event.altKey) return;
             const target = event.target as HTMLElement | null;
-            if (event.key === "Escape" && (tocOpen || appearanceOpen || searchOpen)) {
+            if (event.key === "Escape" && (tocOpen || appearanceOpen || searchOpen || settingReadingPoint || selectionPill)) {
                 if (document.querySelector(".font-picker-overlay")) return;
                 event.preventDefault();
                 setTocOpen(false);
                 setAppearanceOpen(false);
                 setSearchOpen(false);
+                setSettingReadingPoint(false);
+                setSelectionPill(null);
                 return;
             }
             if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
-            if (tocOpen || appearanceOpen || searchOpen || escMenuOpen) return;
+            if (tocOpen || appearanceOpen || searchOpen || escMenuOpen || galleryOpen || Boolean(quoteModalText)) return;
+
+            if (event.code === "KeyZ" && !event.shiftKey) {
+                event.preventDefault();
+                setZenMode((prev) => !prev);
+                return;
+            }
+            if (event.code === "KeyT" && !event.shiftKey && onChangeReadingPoint) {
+                event.preventDefault();
+                setSettingReadingPoint((prev) => !prev);
+                return;
+            }
+            if (event.code === "KeyO" && !event.shiftKey && onChangeReadingPoint) {
+                event.preventDefault();
+                handleSaveReadingPoint();
+                return;
+            }
+            if (event.code === "KeyR" && !event.shiftKey && readingPoint) {
+                event.preventDefault();
+                jumpToLocation(readingPoint.chapterIndex, readingPoint.paragraphIndex);
+                return;
+            }
+            if (event.code === "KeyE" && !event.shiftKey) {
+                event.preventDefault();
+                setPositionFrozen((prev) => !prev);
+                return;
+            }
+            if (event.code === "KeyP" && !event.shiftKey) {
+                event.preventDefault();
+                setTrackingPaused((prev) => !prev);
+                return;
+            }
+            if (event.code === "KeyB" && onChangeBookBookmarks) {
+                event.preventDefault();
+                if (event.shiftKey) {
+                    handleAddBookmark();
+                } else {
+                    setDrawerTab("bookmarks");
+                    setTocOpen(true);
+                }
+                return;
+            }
+            if (!isPaged) {
+                if (event.code === "KeyS" && !event.shiftKey) {
+                    event.preventDefault();
+                    setAutoscrollActive((prev) => !prev);
+                    return;
+                }
+                if (event.code === "KeyA" && !event.shiftKey && onUpdateSettings) {
+                    event.preventDefault();
+                    onUpdateSettings({ epubAutoscrollSpeed: Math.max(10, autoscrollSpeed - 8) });
+                    return;
+                }
+                if (event.code === "KeyD" && !event.shiftKey && onUpdateSettings) {
+                    event.preventDefault();
+                    onUpdateSettings({ epubAutoscrollSpeed: Math.min(200, autoscrollSpeed + 8) });
+                    return;
+                }
+            }
 
             if (event.key === "ArrowLeft") {
                 event.preventDefault();
@@ -1053,15 +1481,50 @@ export default function EpubReader({
         };
         window.addEventListener("keydown", onKeyDown, { capture: true });
         return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-    }, [isVertical, isPaged, tocOpen, appearanceOpen, searchOpen, escMenuOpen, turnPage]);
+    }, [
+        isVertical,
+        isPaged,
+        tocOpen,
+        appearanceOpen,
+        searchOpen,
+        escMenuOpen,
+        galleryOpen,
+        quoteModalText,
+        settingReadingPoint,
+        selectionPill,
+        onChangeReadingPoint,
+        handleSaveReadingPoint,
+        readingPoint,
+        jumpToLocation,
+        onChangeBookBookmarks,
+        handleAddBookmark,
+        onUpdateSettings,
+        autoscrollSpeed,
+        turnPage,
+    ]);
 
     // Internal EPUB link clicks + edge-click page turning + mobile empty-area tap to toggle full-screen reading
     const handleContentClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
         const hadOpenPopover = appearanceOpen || searchOpen;
         if (appearanceOpen) setAppearanceOpen(false);
         if (searchOpen) setSearchOpen(false);
+        if (selectionPill) setSelectionPill(null);
 
         const target = event.target as HTMLElement | null;
+
+        if (settingReadingPoint) {
+            const paraNode = target?.closest<HTMLElement>("[data-paragraph-index]");
+            if (paraNode) {
+                const idx = Number(paraNode.dataset.paragraphIndex);
+                const found = paragraphs.find((p) => p.index === idx);
+                if (found) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handleSaveReadingPoint(found);
+                    return;
+                }
+            }
+        }
         const link = target?.closest<HTMLAnchorElement>("a[data-epub-href]");
         if (link) {
             event.preventDefault();
@@ -1100,7 +1563,7 @@ export default function EpubReader({
                 onToggleImmersive?.();
             }
         }
-    }, [chapters, appearanceOpen, searchOpen, tocOpen, lookupOpen, isMobile, isPaged, isVertical, turnPage, onToggleImmersive]);
+    }, [chapters, appearanceOpen, searchOpen, tocOpen, lookupOpen, isMobile, isPaged, isVertical, turnPage, onToggleImmersive, selectionPill, settingReadingPoint, paragraphs, handleSaveReadingPoint]);
 
     const isSwipePaged = isHorizontalPaged || (isVertical && isPaged);
 
@@ -1201,7 +1664,7 @@ export default function EpubReader({
 
         if (p.kind === "image") {
             if (!showImages || !p.imageSrc) return null;
-            const isBlurred = blurImages && !revealedImages[p.index];
+            const isBlurred = blurActiveInChapter && !revealedImages[p.index];
             return (
                 <EpubImageBlock
                     key={p.index}
@@ -1212,13 +1675,20 @@ export default function EpubReader({
                     alt={p.imageAlt || ""}
                     blurred={isBlurred}
                     revealLabel={revealImageLabel}
-                    onToggleReveal={blurImages ? toggleImageReveal : undefined}
+                    onToggleReveal={blurActiveInChapter ? toggleImageReveal : undefined}
                 />
             );
         }
 
         const isHighlighted = highlightedParagraph === p.index;
-        const blockClass = `text-line epub-block epub-block-${p.kind}${isHighlighted ? " is-highlighted" : ""}`;
+        const isPinnedPoint = readingPoint !== null
+            && readingPoint.chapterIndex === chapterIndex
+            && readingPoint.paragraphIndex === p.index;
+        const blockClass = `text-line epub-block epub-block-${p.kind}${isHighlighted ? " is-highlighted" : ""}${isPinnedPoint ? " is-reading-point" : ""}${settingReadingPoint ? " is-pick-point" : ""}`;
+        const paraHighlights = chapterHighlightsMap.get(p.index);
+        const renderedHtml = paraHighlights && paraHighlights.length > 0
+            ? applyParagraphHighlights(p.html, paraHighlights)
+            : p.html;
 
         if (isMobile && onLookupToken) {
             return (
@@ -1246,16 +1716,20 @@ export default function EpubReader({
                 id={p.id || undefined}
                 anchorIds={p.anchorIds.join(" ") || undefined}
                 className={blockClass}
-                html={p.html}
+                html={renderedHtml}
             />
         );
     }, [
         showImages,
-        blurImages,
+        blurActiveInChapter,
         revealedImages,
         revealImageLabel,
         toggleImageReveal,
         highlightedParagraph,
+        readingPoint,
+        chapterIndex,
+        settingReadingPoint,
+        chapterHighlightsMap,
         isMobile,
         onLookupToken,
         settings.furiganaMode,
@@ -1365,7 +1839,7 @@ export default function EpubReader({
                             <button
                                 type="button"
                                 className={`epub-glass-btn epub-glass-circle${tocOpen && drawerTab === "bookmarks" ? " is-active" : ""}`}
-                                title={t("epub.bookmarks")}
+                                title={`${t("epub.bookmarks")} (B)`}
                                 aria-label={t("epub.bookmarks")}
                                 onClick={() => {
                                     setAppearanceOpen(false);
@@ -1379,6 +1853,72 @@ export default function EpubReader({
                                 }}
                             >
                                 <IconBookmarkSvg />
+                            </button>
+                        )}
+
+                        {(onChangeBookHighlights || onChangeBookNotes) && (
+                            <button
+                                type="button"
+                                className={`epub-glass-btn epub-glass-circle${tocOpen && drawerTab === "notes" ? " is-active" : ""}`}
+                                title={t("epub.notes")}
+                                aria-label={t("epub.notes")}
+                                onClick={() => {
+                                    setAppearanceOpen(false);
+                                    setSearchOpen(false);
+                                    if (tocOpen && drawerTab === "notes") {
+                                        setTocOpen(false);
+                                    } else {
+                                        setDrawerTab("notes");
+                                        setTocOpen(true);
+                                    }
+                                }}
+                            >
+                                ✎
+                            </button>
+                        )}
+
+                        {bookPath && (
+                            <button
+                                type="button"
+                                className={`epub-glass-btn epub-glass-circle${galleryOpen ? " is-active" : ""}`}
+                                title={t("epub.gallery")}
+                                aria-label={t("epub.gallery")}
+                                onClick={() => {
+                                    setTocOpen(false);
+                                    setAppearanceOpen(false);
+                                    setSearchOpen(false);
+                                    setGalleryOpen(true);
+                                }}
+                            >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                                    <circle cx="8.5" cy="8.5" r="1.5" />
+                                    <path d="M21 15l-5-5L5 21" />
+                                </svg>
+                            </button>
+                        )}
+
+                        {!isMobile && onChangeReadingPoint && (
+                            <button
+                                type="button"
+                                className={`epub-glass-btn epub-glass-circle${settingReadingPoint ? " is-active" : ""}`}
+                                title={t("epub.readingPoint")}
+                                aria-label={t("epub.readingPoint")}
+                                onClick={() => setSettingReadingPoint((prev) => !prev)}
+                            >
+                                ⌖
+                            </button>
+                        )}
+
+                        {!isMobile && (
+                            <button
+                                type="button"
+                                className={`epub-glass-btn epub-glass-circle${zenMode ? " is-active" : ""}`}
+                                title={t("epub.zenMode")}
+                                aria-label={t("epub.zenMode")}
+                                onClick={() => setZenMode((prev) => !prev)}
+                            >
+                                ⛶
                             </button>
                         )}
 
@@ -1617,14 +2157,140 @@ export default function EpubReader({
                             </div>
                         )}
 
+                        <div className="epub-pop-slider-group">
+                            <div className="epub-pop-slider-head">
+                                <span className="epub-pop-label">{t("epub.paragraphSpacing")}</span>
+                                <span className="epub-pop-val">{paragraphGap}px</span>
+                            </div>
+                            <input
+                                type="range"
+                                min={0}
+                                max={40}
+                                step={2}
+                                value={paragraphGap}
+                                onChange={(event) => onUpdateSettings({ epubParagraphSpacing: Number(event.target.value) })}
+                            />
+                        </div>
+
+                        <div className="epub-pop-slider-group">
+                            <div className="epub-pop-slider-head">
+                                <span className="epub-pop-label">{t("epub.pagePadding")}</span>
+                                <span className="epub-pop-val">{effectivePadding}px</span>
+                            </div>
+                            <input
+                                type="range"
+                                min={8}
+                                max={80}
+                                step={4}
+                                value={effectivePadding}
+                                onChange={(event) => onUpdateSettings({ epubPagePadding: Number(event.target.value) })}
+                            />
+                        </div>
+
+                        {isJapaneseBook && (
+                            <div className="epub-pop-row">
+                                <span className="epub-pop-label">{t("epub.furigana")}</span>
+                                <div className="epub-segmented">
+                                    {(["show", "hover", "hide"] as const).map((mode) => (
+                                        <button
+                                            key={mode}
+                                            type="button"
+                                            className={`epub-seg-btn${furiganaMode === mode ? " is-active" : ""}`}
+                                            onClick={() => onUpdateSettings({ epubFuriganaMode: mode })}
+                                        >
+                                            {mode === "show" ? t("epub.furiganaShow")
+                                                : mode === "hover" ? t("epub.furiganaHover")
+                                                    : t("epub.furiganaHide")}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="epub-pop-row">
+                            <span className="epub-pop-label">{t("epub.blurMode")}</span>
+                            <div className="epub-segmented">
+                                {(["off", "after-toc", "all"] as const).map((mode) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        className={`epub-seg-btn${blurImagesMode === mode ? " is-active" : ""}`}
+                                        onClick={() => onUpdateSettings({
+                                            epubBlurImagesMode: mode,
+                                            epubBlurImages: mode !== "off",
+                                        })}
+                                    >
+                                        {mode === "off" ? t("epub.blurOff")
+                                            : mode === "after-toc" ? t("epub.blurAfterToc")
+                                                : t("epub.blurAll")}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="epub-pop-row">
+                            <span className="epub-pop-label">{t("epub.textIndent")}</span>
+                            <div className="epub-segmented">
+                                {(["auto", "none", "indent"] as const).map((mode) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        className={`epub-seg-btn${textIndent === mode ? " is-active" : ""}`}
+                                        onClick={() => onUpdateSettings({ epubTextIndent: mode })}
+                                    >
+                                        {mode === "auto" ? t("epub.indentAuto")
+                                            : mode === "none" ? t("epub.indentNone")
+                                                : t("epub.indentEm")}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
                         <label className="epub-pop-row epub-pop-check-row">
-                            <span className="epub-pop-label">{t("epub.blurImages")}</span>
+                            <span className="epub-pop-label">{t("epub.justify")}</span>
                             <input
                                 type="checkbox"
-                                checked={blurImages}
-                                onChange={(event) => onUpdateSettings({ epubBlurImages: event.target.checked })}
+                                checked={justifyText}
+                                onChange={(event) => onUpdateSettings({ epubJustify: event.target.checked })}
                             />
                         </label>
+
+                        <label className="epub-pop-row epub-pop-check-row">
+                            <span className="epub-pop-label">{t("epub.prettyWrap")}</span>
+                            <input
+                                type="checkbox"
+                                checked={prettyWrap}
+                                onChange={(event) => onUpdateSettings({ epubPrettyWrap: event.target.checked })}
+                            />
+                        </label>
+
+                        {isJapaneseBook && isVertical && (
+                            <label className="epub-pop-row epub-pop-check-row">
+                                <span className="epub-pop-label">{t("epub.verticalGrid")}</span>
+                                <input
+                                    type="checkbox"
+                                    checked={verticalGrid}
+                                    onChange={(event) => onUpdateSettings({ epubVerticalGrid: event.target.checked })}
+                                />
+                            </label>
+                        )}
+
+                        {!isPaged && (
+                            <div className="epub-pop-slider-group">
+                                <div className="epub-pop-slider-head">
+                                    <span className="epub-pop-label">{t("epub.autoscrollSpeed")}</span>
+                                    <span className="epub-pop-val">{autoscrollSpeed} px/s</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min={10}
+                                    max={200}
+                                    step={4}
+                                    value={autoscrollSpeed}
+                                    onChange={(event) => onUpdateSettings({ epubAutoscrollSpeed: Number(event.target.value) })}
+                                />
+                            </div>
+                        )}
 
                         <div className="epub-pop-row epub-pop-themes-row">
                             <span className="epub-pop-label">{t("epub.theme")}</span>
@@ -1718,9 +2384,15 @@ export default function EpubReader({
                         data-epub-orientation={resolvedOrientation}
                         data-epub-mode={isPaged ? "paged" : "scroll"}
                         data-epub-spread={useTwoPageSpread ? "true" : "false"}
+                        data-epub-furigana={furiganaMode}
+                        data-epub-justify={justifyText ? "true" : "false"}
+                        data-epub-pretty-wrap={prettyWrap ? "true" : "false"}
+                        data-epub-vertical-grid={verticalGrid ? "true" : "false"}
+                        data-epub-indent={textIndent}
                         style={surfaceStyle}
                         onScroll={handleScroll}
                         onClick={handleContentClick}
+                        onMouseUp={handleSurfaceMouseUp}
                         onTouchStart={handleSurfaceTouchStart}
                         onTouchEnd={handleSurfaceTouchEnd}
                     >
@@ -1777,6 +2449,53 @@ export default function EpubReader({
                     </div>
                 )}
 
+                {settingReadingPoint && (
+                    <div className="epub-point-banner" onClick={(e) => e.stopPropagation()}>
+                        <span>⌖ {t("epub.readingPointHint")}</span>
+                        <button type="button" className="epub-glass-btn" onClick={() => setSettingReadingPoint(false)}>
+                            {t("common.close")}
+                        </button>
+                    </div>
+                )}
+
+                {selectionPill && (
+                    <div
+                        className="epub-selection-pill"
+                        style={{ left: `${selectionPill.x}px`, top: `${selectionPill.y}px` }}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {(["amber", "emerald", "sky", "rose"] as const).map((color) => (
+                            <button
+                                key={color}
+                                type="button"
+                                className={`epub-hl-dot epub-hl-dot-${color}`}
+                                title={t("epub.highlights")}
+                                onClick={() => handleAddHighlight(color, false)}
+                            />
+                        ))}
+                        <span className="epub-pill-divider" aria-hidden="true" />
+                        <button
+                            type="button"
+                            className="epub-glass-btn"
+                            onClick={() => handleAddHighlight("amber", true)}
+                        >
+                            {t("epub.notes")}
+                        </button>
+                        <button
+                            type="button"
+                            className="epub-glass-btn"
+                            onClick={() => {
+                                setQuoteModalText(selectionPill.text);
+                                setSelectionPill(null);
+                                window.getSelection()?.removeAllRanges();
+                            }}
+                        >
+                            {t("epub.quoteImage")}
+                        </button>
+                    </div>
+                )}
+
                 {tocOpen && (
                     <div className="epub-toc-backdrop" onClick={() => setTocOpen(false)}>
                         <aside className="epub-toc-drawer" onClick={(event) => event.stopPropagation()}>
@@ -1796,6 +2515,15 @@ export default function EpubReader({
                                             onClick={() => setDrawerTab("bookmarks")}
                                         >
                                             {t("epub.bookmarks")}{bookmarks.length > 0 ? ` (${bookmarks.length})` : ""}
+                                        </button>
+                                    )}
+                                    {(onChangeBookHighlights || onChangeBookNotes) && (
+                                        <button
+                                            type="button"
+                                            className={`epub-seg-btn${drawerTab === "notes" ? " is-active" : ""}`}
+                                            onClick={() => setDrawerTab("notes")}
+                                        >
+                                            {t("epub.notes")}{(highlights.length + notes.length) > 0 ? ` (${highlights.length + notes.length})` : ""}
                                         </button>
                                     )}
                                 </div>
@@ -1826,7 +2554,7 @@ export default function EpubReader({
                                         </button>
                                     ))}
                                 </div>
-                            ) : (
+                            ) : drawerTab === "bookmarks" ? (
                                 <div className="epub-bookmarks-pane">
                                     <form
                                         className="epub-bookmark-add-form"
@@ -1914,6 +2642,147 @@ export default function EpubReader({
                                         </div>
                                     )}
                                 </div>
+                            ) : (
+                                <div className="epub-bookmarks-pane epub-notes-pane">
+                                    {onChangeBookNotes && (
+                                        <form
+                                            className="epub-note-add-form"
+                                            onSubmit={(event) => {
+                                                event.preventDefault();
+                                                handleAddBookNote();
+                                            }}
+                                        >
+                                            <input
+                                                type="text"
+                                                className="epub-bookmark-input"
+                                                value={noteTitleInput}
+                                                onChange={(event) => setNoteTitleInput(event.target.value)}
+                                                placeholder={t("epub.noteTitlePlaceholder")}
+                                            />
+                                            <textarea
+                                                className="epub-note-textarea"
+                                                rows={2}
+                                                value={noteBodyInput}
+                                                onChange={(event) => setNoteBodyInput(event.target.value)}
+                                                placeholder={t("epub.noteBodyPlaceholder")}
+                                            />
+                                            <button type="submit" className="btn-primary epub-bookmark-add-btn">
+                                                {t("epub.addNote")}
+                                            </button>
+                                        </form>
+                                    )}
+
+                                    {highlights.length === 0 && notes.length === 0 ? (
+                                        <div className="epub-bookmarks-empty">{t("epub.noNotes")}</div>
+                                    ) : (
+                                        <div className="epub-toc-list">
+                                            {highlights.map((hl) => (
+                                                <div key={hl.id} className={`epub-bookmark-card epub-hl-card epub-hl-card-${hl.color}`}>
+                                                    <button
+                                                        type="button"
+                                                        className="epub-bookmark-jump"
+                                                        onClick={() => {
+                                                            setTocOpen(false);
+                                                            jumpToLocation(hl.chapterIndex, hl.paragraphIndex);
+                                                        }}
+                                                    >
+                                                        <span className="epub-hl-card-quote">“{hl.text}”</span>
+                                                        <span className="epub-bookmark-meta">
+                                                            {hl.chapterTitle || t("epub.chapterOf", { current: hl.chapterIndex + 1, total: chapterCount })}
+                                                        </span>
+                                                        {hl.note && editingHighlightId !== hl.id && (
+                                                            <span className="epub-bookmark-excerpt">{hl.note}</span>
+                                                        )}
+                                                    </button>
+                                                    {editingHighlightId === hl.id && (
+                                                        <form
+                                                            className="epub-bookmark-rename-form"
+                                                            onSubmit={(e) => {
+                                                                e.preventDefault();
+                                                                handleSaveHighlightNote(hl.id);
+                                                            }}
+                                                        >
+                                                            <input
+                                                                type="text"
+                                                                className="epub-bookmark-input"
+                                                                autoFocus
+                                                                value={editingHighlightNote}
+                                                                onChange={(e) => setEditingHighlightNote(e.target.value)}
+                                                                onBlur={() => handleSaveHighlightNote(hl.id)}
+                                                                placeholder={t("epub.noteBodyPlaceholder")}
+                                                            />
+                                                        </form>
+                                                    )}
+                                                    <div className="epub-bookmark-actions">
+                                                        <button
+                                                            type="button"
+                                                            className="epub-glass-btn epub-bookmark-act-btn"
+                                                            title={t("epub.quoteImage")}
+                                                            onClick={() => {
+                                                                setTocOpen(false);
+                                                                setQuoteModalText(hl.text);
+                                                            }}
+                                                        >
+                                                            ⎙
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="epub-glass-btn epub-bookmark-act-btn"
+                                                            title={t("epub.notes")}
+                                                            onClick={() => {
+                                                                setEditingHighlightId(hl.id);
+                                                                setEditingHighlightNote(hl.note || "");
+                                                            }}
+                                                        >
+                                                            ✎
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="epub-glass-btn epub-bookmark-act-btn is-danger"
+                                                            title={t("common.close")}
+                                                            onClick={() => handleDeleteHighlight(hl.id)}
+                                                        >
+                                                            <IconClose />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+
+                                            {notes.map((note) => (
+                                                <div key={note.id} className="epub-bookmark-card">
+                                                    <button
+                                                        type="button"
+                                                        className="epub-bookmark-jump"
+                                                        onClick={() => {
+                                                            if (typeof note.chapterIndex === "number") {
+                                                                setTocOpen(false);
+                                                                jumpToLocation(note.chapterIndex, note.paragraphIndex ?? 0);
+                                                            }
+                                                        }}
+                                                    >
+                                                        <span className="epub-bookmark-title">{note.title}</span>
+                                                        {note.chapterTitle && (
+                                                            <span className="epub-bookmark-meta">{note.chapterTitle}</span>
+                                                        )}
+                                                        {note.body && (
+                                                            <span className="epub-bookmark-excerpt">{note.body}</span>
+                                                        )}
+                                                    </button>
+                                                    <div className="epub-bookmark-actions">
+                                                        <button
+                                                            type="button"
+                                                            className="epub-glass-btn epub-bookmark-act-btn is-danger"
+                                                            title={t("common.close")}
+                                                            onClick={() => handleDeleteBookNote(note.id)}
+                                                        >
+                                                            <IconClose />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
                             )}
                         </aside>
                     </div>
@@ -1983,8 +2852,103 @@ export default function EpubReader({
                         >
                             »
                         </button>
+
+                        {!isPaged && (
+                            <>
+                                <span className="epub-pill-divider" aria-hidden="true" />
+                                <button
+                                    type="button"
+                                    className={`epub-glass-btn${autoscrollActive ? " is-active" : ""}`}
+                                    title={`${t("epub.autoscroll")} (S / A / D)`}
+                                    onClick={() => setAutoscrollActive((prev) => !prev)}
+                                >
+                                    {autoscrollActive ? "⏸" : "▶"} {!isMobile && <span>{autoscrollSpeed}</span>}
+                                </button>
+                            </>
+                        )}
+
+                        {readingPoint && (
+                            <button
+                                type="button"
+                                className="epub-glass-btn epub-glass-circle"
+                                title={t("epub.returnToPoint")}
+                                onClick={() => jumpToLocation(readingPoint.chapterIndex, readingPoint.paragraphIndex)}
+                            >
+                                ↩
+                            </button>
+                        )}
+
+                        <button
+                            type="button"
+                            className={`epub-glass-btn epub-glass-circle${positionFrozen ? " is-active" : ""}`}
+                            title={t("epub.freezePos")}
+                            onClick={() => setPositionFrozen((prev) => !prev)}
+                        >
+                            ❄
+                        </button>
+
+                        <button
+                            type="button"
+                            className={`epub-glass-btn epub-glass-circle${trackingPaused ? " is-active" : ""}`}
+                            title={t("epub.pauseTracking")}
+                            onClick={() => setTrackingPaused((prev) => !prev)}
+                        >
+                            {trackingPaused ? "▶" : "⏱"}
+                        </button>
+
+                        {onOpenStats && (
+                            <button
+                                type="button"
+                                className="epub-glass-btn epub-goal-pill-btn"
+                                title={`${t("epub.statsTitle")} · ${Math.round(goalSummary.overallPct * 100)}%`}
+                                onClick={onOpenStats}
+                            >
+                                <span className={`epub-goal-dot is-${goalSummary.status}`} />
+                            </button>
+                        )}
                     </div>
                 </div>
+
+                {/* Unobtrusive Goal Progress Light when bottom chrome is hidden */}
+                {!zenMode && !bottomChromeVisible && !lookupActive && !escMenuOpen && activeGoals.enabled && onOpenStats && (
+                    <button
+                        type="button"
+                        className="epub-goal-corner-dot"
+                        title={`${t("epub.statsTitle")} · ${Math.round(goalSummary.overallPct * 100)}%`}
+                        aria-label={t("epub.statsTitle")}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenStats();
+                        }}
+                    >
+                        <span className={`epub-goal-dot is-${goalSummary.status}`} />
+                    </button>
+                )}
+
+                <EpubGalleryModal
+                    open={galleryOpen}
+                    bookPath={bookPath}
+                    bookTitle={tab.epub?.title || bookMeta?.title || tab.name}
+                    language={language}
+                    onClose={() => setGalleryOpen(false)}
+                    onJumpToImage={(chIdx, paraIdx) => jumpToLocation(chIdx, paraIdx)}
+                />
+
+                <EpubQuoteModal
+                    open={Boolean(quoteModalText)}
+                    quote={quoteModalText || ""}
+                    bookTitle={tab.epub?.title || bookMeta?.title || tab.name}
+                    author={tab.epub?.author || bookMeta?.author || undefined}
+                    chapterTitle={chapter?.title || undefined}
+                    coverDataUrl={coverDataUrl}
+                    fontFamily={settings.epubFontFamily || settings.fontFamily || "serif"}
+                    initialTheme={epubTheme === "paper" || epubTheme === "ttu-light" ? "paper"
+                        : epubTheme === "sepia" || epubTheme === "ttu-ecru" ? "sepia"
+                            : epubTheme === "ttu-black" ? "black"
+                                : "dark"}
+                    language={language}
+                    onClose={() => setQuoteModalText(null)}
+                />
             </div>
         </div>
     );
