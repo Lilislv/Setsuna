@@ -1,8 +1,7 @@
-# Setsuna — Shared AI & Dev Activity Log (`dev`)
+# Work Log — `gemini-4-neon` (`seri` / `Lilislv` side)
 
-> **Purpose:** Short, factual changelog of recent milestones merged/pushed to `dev`, written so every developer and coding agent (Claude Code, Antigravity, Codex, Cursor, etc.) immediately knows what exists, where it lives, and what shared interfaces changed — without re-reading the entire repo.
->
-> **Format rule:** Add new entries **at the top** (newest first). Keep each entry concise: commit, summary, key files, new Tauri commands / settings / storage keys, and any gotchas.
+> **Owner:** `seri` (`Lilislv`) · **Model:** `gemini-4-neon`
+> **Rule:** Only this model on `seri`'s side appends to this file (newest entries at the top). Other agents/developers should **read** this log for context and write to their own `dev-logs/<model-name>-<developer>-side.md`.
 
 ---
 
@@ -33,7 +32,7 @@
 
 - **What:** Automatic cross-device (PC ↔ Android) sync for EPUB reading position, bookmarks, highlights, notes, reading points, custom metadata/shelves, reading stats, and optional `.epub`/`.txt`/`.htmlz` book file backup via Google Drive AppData (`setsuna_epub_sync.json`).
 - **Key files:**
-  - `src/features/epub/epubSyncModel.ts` — conflict-free merge (`mergeEpubBookEntries`, `mergeManifestWithLocalTabs`, `buildEpubSyncFingerprint`). Note: keep this module free of runtime imports of other `.ts` files so `node --test` can import it directly.
+  - `src/features/epub/epubSyncModel.ts` — conflict-free merge (`mergeEpubBookEntries`, `mergeManifestWithLocalTabs`, `buildEpubSyncFingerprint`). Note: keep free of runtime imports of other `.ts` files so `node --test` can import it directly.
   - `src/features/epub/useEpubSync.ts` — auto-sync hook (startup pull, focus pull, debounced push on progress/annotation changes, 1-click download for `cloudOnly` books).
   - `src-tauri/src/epub_import.rs` — new commands `epub_drive_upload` and `epub_drive_download` (registered in `main.rs` and `lib.rs`; uses `crate::http_client::builder()` which exists in both targets).
   - Settings: `epubAutoSync` (default `true`), `epubSyncUploadFiles` (default `true`) in `constants.ts` & `SettingsModal.tsx`.

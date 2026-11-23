@@ -12,11 +12,16 @@ This repository is actively developed in parallel by two people (often with AI c
 - **`dev`** — **shared integration branch.** All active features from both developers meet here.
 - **Feature branches** (e.g. `feature/epub`, `feature/ai`, `feature/shared-reading`) — branch off `dev`, keep them short-lived or sync them with `dev` frequently, and merge back into `dev` once working.
 
-### Sync Routine (for agents & humans)
+### Sync Routine & Per-Model Work Logs (for agents & humans)
+
+Each AI model keeps **its own** markdown work log inside `dev-logs/` so parallel work never causes log merge conflicts:
+
+- **Filename format:** `dev-logs/<model-name>-<developer>-side.md` (lowercase kebab-case)
+  - Examples: `dev-logs/gemini-4-neon-seri-side.md`, `dev-logs/claude-opus-4-lambdawesta-side.md`, `dev-logs/gpt-5-codex-lambdawesta-side.md`
+- **Ownership rule:** Only append to **your own** `<model-name>-<developer>-side.md` file (create it if it doesn't exist yet). **Never edit** another model's or developer's log file.
 
 **Before starting a new task or large edit:**
-1. Read `DEV_LOG.md` (top entries) to see what the other developer or other AI agents recently changed on `dev`.
-2. Fetch and merge latest `dev`:
+1. Fetch and merge latest `dev`:
 ```bash
 git fetch origin
 # If working in a fork, fetch upstream instead:
@@ -26,10 +31,11 @@ If `origin/dev` (or `upstream/dev`) has new commits, merge them into your curren
 ```bash
 git merge origin/dev
 ```
+2. Check `dev-logs/*.md` and read the top entries of the **other** developer's / models' logs to see what was recently added or changed on `dev`.
 
 **After finishing a working milestone:**
 1. Run the verification checks (Section 4).
-2. Add a concise entry at the **top** of `DEV_LOG.md` (commit/feature summary, touched modules, new Tauri commands/settings/storage keys, and any gotchas for other agents).
+2. Add a concise entry at the **top** of **your own** `dev-logs/<model-name>-<developer>-side.md` (newest first: date, commit/feature summary, touched modules, new Tauri commands/settings/storage keys, and any gotchas for other agents).
 3. Commit with a clear conventional message (`feat:`, `fix:`, `refactor:`, `docs:`).
 4. Push to `dev` (if collaborator) or to your feature branch and open/update a PR into `dev`.
 
