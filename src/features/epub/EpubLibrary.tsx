@@ -365,7 +365,8 @@ export default function EpubLibrary({
                             className={`epub-book-cover-img${isCoverBlurred ? " is-blurred" : ""}`}
                             src={coverSrc}
                             alt={title}
-                            loading="lazy"
+                            loading={cardIdx < 16 ? "eager" : "lazy"}
+                            decoding="sync"
                         />
                     ) : (
                         <div className="epub-book-cover-fallback" aria-hidden="true">

@@ -19,6 +19,7 @@ import { DictEntry, LookupData } from "./components/Lookuper";
 import LookupSurface from "./features/lookup/LookupSurface";
 import EpubWorkspace from "./features/epub/EpubWorkspace";
 import type { EpubBookMetaPatch } from "./features/epub/EpubLibrary";
+import { setMemoryCover } from "./features/epub/epubCoverCache";
 import { restoreRetainedBookData } from "./features/epub/epubLibraryModel";
 import { openEpubBook, pruneEpubFiles, storeEpubFile } from "./features/epub/epubApi";
 import {
@@ -1613,6 +1614,9 @@ export default function App() {
             const meta = await openEpubBook(filePath);
             const tabId = targetTabId ?? nextTabId.current++;
             const storedPath = await storeEpubFile(filePath, tabId);
+            if (meta.cover) {
+                setMemoryCover(storedPath, meta.cover);
+            }
 
             const retained = restoreRetainedBookData(meta.title);
 
@@ -2776,12 +2780,16 @@ export default function App() {
         }
     };
 
+    const [epubResumePromptId, setEpubResumePromptId] = useState<number | null>(null);
     const openEpubWorkspace = () => {
         setLookupStack([]);
-        const current = tabsRef.current.find((tab) => tab.id === activeTabIdRef.current);
-        if (!current || current.mode !== "epub") {
-            const firstBook = tabsRef.current.find((tab) => tab.mode === "epub" && !tab.archived);
-            if (firstBook) switchTab(firstBook.id);
+        const candidates = tabsRef.current
+            .filter((tab) => tab.mode === "epub" && !tab.archived && ((tab.epub?.lastOpenedAt || 0) > 0 || (tab.epub?.progress || 0) > 0))
+            .sort((a, b) => (b.epub?.lastOpenedAt || 0) - (a.epub?.lastOpenedAt || 0));
+        if (candidates.length > 0) {
+            setEpubResumePromptId(candidates[0].id);
+        } else {
+            setEpubResumePromptId(null);
         }
         setActiveWorkspace("epub");
     };
@@ -4139,6 +4147,8 @@ export default function App() {
                         onRecordReadingStats={handleEpubRecordStats}
                         onUpdateSettings={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
                         onLookupToken={isMobileLayout ? runSentenceTokenLookup : undefined}
+                        resumePromptBookId={epubResumePromptId}
+                        onDismissResumePrompt={() => setEpubResumePromptId(null)}
                     />
                 )) : resolvedWorkspace === "player" ? (
                     <WorkspaceShell

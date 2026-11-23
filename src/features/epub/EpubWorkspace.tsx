@@ -9,6 +9,7 @@ import EpubLibrary, { type EpubBookMetaPatch } from "./EpubLibrary";
 import EpubReader from "./EpubReader";
 import EpubStatsModal from "./EpubStatsModal";
 import { loadEpubChapter, loadEpubCover, openEpubBook } from "./epubApi";
+import { getInitialCoverSnapshot, hasCachedCover, setMemoryCover } from "./epubCoverCache";
 import type {
     EpubBookMeta,
     EpubBookNote,
@@ -22,7 +23,6 @@ import "./epub.css";
 
 const MAX_CACHED_CHAPTERS = 12;
 const ESC_MENU_CLOSE_MS = 180;
-const coverCache = new Map<string, string | null>();
 
 type LookupMatch = { start: number; length: number };
 type LookupTokenHandler = (
@@ -59,6 +59,8 @@ interface EpubWorkspaceProps {
     onRecordReadingStats?: (tabId: number, deltaChars: number, deltaSeconds: number) => void;
     onUpdateSettings?: (patch: Partial<AppSettings>) => void;
     onLookupToken?: LookupTokenHandler;
+    resumePromptBookId?: number | null;
+    onDismissResumePrompt?: () => void;
 }
 
 export default function EpubWorkspace({
@@ -87,12 +89,16 @@ export default function EpubWorkspace({
     onRecordReadingStats,
     onUpdateSettings,
     onLookupToken,
+    resumePromptBookId = null,
+    onDismissResumePrompt,
 }: EpubWorkspaceProps) {
     const language = settings.appLanguage || "ru";
     const isEn = language === "en";
     const t = getTranslator(language);
 
-    const [viewMode, setViewMode] = useState<"library" | "reader">(activeBookTab ? "reader" : "library");
+    const [viewMode, setViewMode] = useState<"library" | "reader">(
+        resumePromptBookId ? "library" : (activeBookTab ? "reader" : "library"),
+    );
     const [bookMeta, setBookMeta] = useState<EpubBookMeta | null>(null);
     const [chapter, setChapter] = useState<EpubChapterContent | null>(null);
     const [loading, setLoading] = useState(false);
@@ -113,13 +119,7 @@ export default function EpubWorkspace({
     const escMenuPanelRef = useRef<HTMLDivElement>(null);
     const pendingMenuActionRef = useRef<(() => void) | null>(null);
 
-    const [coversByPath, setCoversByPath] = useState<Record<string, string | null>>(() => {
-        const initial: Record<string, string | null> = {};
-        coverCache.forEach((value, key) => {
-            initial[key] = value;
-        });
-        return initial;
-    });
+    const [coversByPath, setCoversByPath] = useState<Record<string, string | null>>(() => getInitialCoverSnapshot());
 
     const metaCacheRef = useRef<Map<string, EpubBookMeta>>(new Map());
     const chapterCacheRef = useRef<Map<string, EpubChapterContent>>(new Map());
@@ -255,59 +255,93 @@ export default function EpubWorkspace({
         return () => window.removeEventListener("popstate", handlePopState);
     }, [isMobile, standaloneMobile]);
 
-    // Lazily load cover thumbnails (and backfill author metadata if missing) for library books
+    // Sync any newly cached covers from importEpubPath into state immediately
+    useEffect(() => {
+        const snap = getInitialCoverSnapshot();
+        setCoversByPath((prev) => {
+            let changed = false;
+            const next = { ...prev };
+            for (const tab of books) {
+                const p = tab.epub?.path;
+                if (p && p in snap && !(p in next)) {
+                    next[p] = snap[p];
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
+    }, [books]);
+
+    // Phase 1: Instant parallel cover loading (never blocked by full-book metadata scans)
+    useEffect(() => {
+        if (viewMode !== "library") return;
+        const missingCoverPaths: string[] = [];
+        const seen = new Set<string>();
+        for (const tab of books) {
+            if (tab.archived || !tab.epub?.path) continue;
+            const path = tab.epub.path;
+            if (seen.has(path) || hasCachedCover(path)) continue;
+            seen.add(path);
+            missingCoverPaths.push(path);
+        }
+
+        if (missingCoverPaths.length === 0) return;
+        let cancelled = false;
+
+        void (async () => {
+            const CONCURRENCY = 6;
+            let cursor = 0;
+            const worker = async () => {
+                while (!cancelled) {
+                    const idx = cursor++;
+                    if (idx >= missingCoverPaths.length) return;
+                    const path = missingCoverPaths[idx];
+                    const cover = await loadEpubCover(path).catch(() => null);
+                    setMemoryCover(path, cover);
+                    if (!cancelled) {
+                        setCoversByPath((prev) => (prev[path] === cover ? prev : { ...prev, [path]: cover }));
+                    }
+                }
+            };
+            await Promise.all(
+                Array.from({ length: Math.min(CONCURRENCY, missingCoverPaths.length) }, () => worker()),
+            );
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [viewMode, books]);
+
+    // Phase 2: Background metadata backfill (author/series/totalChars) without blocking covers
     useEffect(() => {
         if (viewMode !== "library") return;
         const targets = books
             .filter((tab) => !tab.archived && tab.epub?.path)
-            .filter((tab) => !coverCache.has(tab.epub!.path!) || tab.epub!.author === undefined);
+            .filter((tab) => (tab.epub!.author === undefined || tab.epub!.totalChars === undefined) && !metaCacheRef.current.has(tab.epub!.path!));
 
         if (targets.length === 0) return;
         let cancelled = false;
 
         void (async () => {
-            const uniqueTargets: Tab[] = [];
-            const seenPaths = new Set<string>();
             for (const tab of targets) {
+                if (cancelled) return;
                 const path = tab.epub!.path!;
-                if (seenPaths.has(path)) continue;
-                seenPaths.add(path);
-                uniqueTargets.push(tab);
-            }
-
-            const CONCURRENCY = 4;
-            let cursor = 0;
-            const worker = async () => {
-                while (!cancelled) {
-                    const idx = cursor++;
-                    if (idx >= uniqueTargets.length) return;
-                    const tab = uniqueTargets[idx];
-                    const path = tab.epub!.path!;
-
-                    if (tab.epub!.author === undefined && !metaCacheRef.current.has(path)) {
-                        const meta = await openEpubBook(path).catch(() => null);
-                        if (meta) {
-                            metaCacheRef.current.set(path, meta);
-                            coverCache.set(path, meta.cover ?? null);
-                            if (!cancelled) {
-                                setCoversByPath((prev) => ({ ...prev, [path]: meta.cover ?? null }));
-                                onUpdateBookMeta(tab.id, meta);
-                            }
-                            continue;
+                if (metaCacheRef.current.has(path)) continue;
+                const meta = await openEpubBook(path).catch(() => null);
+                if (meta) {
+                    metaCacheRef.current.set(path, meta);
+                    if (meta.cover && !hasCachedCover(path)) {
+                        setMemoryCover(path, meta.cover);
+                        if (!cancelled) {
+                            setCoversByPath((prev) => ({ ...prev, [path]: meta.cover }));
                         }
                     }
-                    if (!coverCache.has(path)) {
-                        const cover = await loadEpubCover(path).catch(() => null);
-                        coverCache.set(path, cover);
-                        if (!cancelled) {
-                            setCoversByPath((prev) => ({ ...prev, [path]: cover }));
-                        }
+                    if (!cancelled) {
+                        onUpdateBookMeta(tab.id, meta);
                     }
                 }
-            };
-            await Promise.all(
-                Array.from({ length: Math.min(CONCURRENCY, uniqueTargets.length) }, () => worker()),
-            );
+            }
         })();
 
         return () => {
@@ -374,7 +408,7 @@ export default function EpubWorkspace({
                     if (loadGenerationRef.current !== generation) return;
                     metaCacheRef.current.set(bookPath, meta);
                     if (meta.cover !== undefined) {
-                        coverCache.set(bookPath, meta.cover ?? null);
+                        setMemoryCover(bookPath, meta.cover ?? null);
                         setCoversByPath((prev) => ({ ...prev, [bookPath]: meta!.cover ?? null }));
                     }
                     onUpdateBookMeta(activeBookTab.id, meta);
@@ -568,6 +602,28 @@ export default function EpubWorkspace({
         </div>
     ) : null;
 
+    const resumeBook = resumePromptBookId
+        ? books.find((b) => b.id === resumePromptBookId && !b.archived) || null
+        : null;
+
+    useEffect(() => {
+        if (!resumeBook) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                onDismissResumePrompt?.();
+            } else if (event.key === "Enter") {
+                event.preventDefault();
+                event.stopPropagation();
+                onDismissResumePrompt?.();
+                handleSelectBook(resumeBook.id);
+            }
+        };
+        window.addEventListener("keydown", onKeyDown, true);
+        return () => window.removeEventListener("keydown", onKeyDown, true);
+    }, [resumeBook, onDismissResumePrompt, handleSelectBook]);
+
     const content = (
         <div className={`epub-workspace${isMobile ? " is-mobile" : ""}`}>
             {viewMode === "reader" && activeBookTab ? (
@@ -636,6 +692,64 @@ export default function EpubWorkspace({
                 />
             )}
             {escMenuElement}
+            {resumeBook && (
+                <div className="epub-modal-backdrop" onClick={() => onDismissResumePrompt?.()}>
+                    <div className="epub-modal-card epub-resume-modal" onClick={(e) => e.stopPropagation()}>
+                        <div className="epub-resume-body">
+                            <div className="epub-resume-cover-wrap">
+                                {resumeBook.epub?.path && coversByPath[resumeBook.epub.path] ? (
+                                    <img
+                                        src={coversByPath[resumeBook.epub.path]!}
+                                        alt={resumeBook.epub?.title || resumeBook.name}
+                                        className="epub-resume-cover"
+                                    />
+                                ) : (
+                                    <div className="epub-resume-cover-fallback">
+                                        <IconBookTab />
+                                    </div>
+                                )}
+                            </div>
+                            <div className="epub-resume-info">
+                                <span className="epub-resume-kicker">{t("epub.resumePromptTitle")}</span>
+                                <h3 className="epub-resume-title">{resumeBook.epub?.title || resumeBook.name}</h3>
+                                {resumeBook.epub?.author && (
+                                    <span className="epub-resume-author">{resumeBook.epub.author}</span>
+                                )}
+                                <div className="epub-resume-progress">
+                                    <div className="epub-progress-track">
+                                        <div
+                                            className="epub-progress-fill"
+                                            style={{ width: `${Math.round(Math.min(1, Math.max(0, resumeBook.epub?.progress || 0)) * 100)}%` }}
+                                        />
+                                    </div>
+                                    <span className="epub-resume-pct">
+                                        {Math.round(Math.min(1, Math.max(0, resumeBook.epub?.progress || 0)) * 100)}%
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="epub-resume-actions">
+                            <button
+                                type="button"
+                                className="epub-glass-btn epub-lib-action-btn"
+                                onClick={() => onDismissResumePrompt?.()}
+                            >
+                                {t("epub.resumeLibrary")}
+                            </button>
+                            <button
+                                type="button"
+                                className="btn-primary epub-resume-continue-btn"
+                                onClick={() => {
+                                    onDismissResumePrompt?.();
+                                    handleSelectBook(resumeBook.id);
+                                }}
+                            >
+                                {t("epub.resumeContinue")} «{resumeBook.epub?.title || resumeBook.name}»
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <EpubStatsModal
                 open={statsOpen}
                 books={books}

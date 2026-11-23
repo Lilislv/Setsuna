@@ -423,6 +423,9 @@ const translations = {
         "epub.goalSkipThreshold": "Порог скачка (симв.)",
         "epub.activityHeatmap": "Активность чтения",
         "epub.charsShort": "симв.",
+        "epub.resumePromptTitle": "Продолжить чтение?",
+        "epub.resumeContinue": "Продолжить чтение",
+        "epub.resumeLibrary": "Вернуться в библиотеку",
     },
     en: {
         "common.close": "Close",
@@ -846,6 +849,9 @@ const translations = {
         "epub.goalSkipThreshold": "Skip threshold (chars)",
         "epub.activityHeatmap": "Reading activity",
         "epub.charsShort": "ch",
+        "epub.resumePromptTitle": "Continue reading?",
+        "epub.resumeContinue": "Continue reading",
+        "epub.resumeLibrary": "Go to library",
     },
 } as const;
 

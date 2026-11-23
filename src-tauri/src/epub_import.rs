@@ -1175,25 +1175,7 @@ fn read_cover_thumbnail_bytes(zip: &mut ZipArchive<File>, path: &str) -> Option<
     if bytes.is_empty() {
         return None;
     }
-    // Skip slow CPU decode/resize for already-compact cover images (WebView scales on GPU)
-    if bytes.len() <= 350_000 {
-        return Some((bytes, mime));
-    }
-    if let Ok(decoded) = image::load_from_memory(&bytes) {
-        let resized = if decoded.width() > 420 || decoded.height() > 630 {
-            decoded.resize(420, 630, image::imageops::FilterType::Triangle)
-        } else {
-            decoded
-        };
-        let rgb = resized.to_rgb8();
-        let mut out = std::io::Cursor::new(Vec::new());
-        if image::DynamicImage::ImageRgb8(rgb)
-            .write_to(&mut out, image::ImageFormat::Jpeg)
-            .is_ok()
-        {
-            return Some((out.into_inner(), "image/jpeg"));
-        }
-    }
+    // Return raw cover bytes directly without slow CPU re-encoding (WebView decodes & caches compact thumbs on GPU)
     Some((bytes, mime))
 }
 
