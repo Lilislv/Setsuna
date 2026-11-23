@@ -15,6 +15,8 @@ This repository is actively developed in parallel by two people (often with AI c
 ### Sync Routine (for agents & humans)
 
 **Before starting a new task or large edit:**
+1. Read `DEV_LOG.md` (top entries) to see what the other developer or other AI agents recently changed on `dev`.
+2. Fetch and merge latest `dev`:
 ```bash
 git fetch origin
 # If working in a fork, fetch upstream instead:
@@ -27,8 +29,9 @@ git merge origin/dev
 
 **After finishing a working milestone:**
 1. Run the verification checks (Section 4).
-2. Commit with a clear conventional message (`feat:`, `fix:`, `refactor:`, `docs:`).
-3. Push to `dev` (if collaborator) or to your feature branch and open/update a PR into `dev`.
+2. Add a concise entry at the **top** of `DEV_LOG.md` (commit/feature summary, touched modules, new Tauri commands/settings/storage keys, and any gotchas for other agents).
+3. Commit with a clear conventional message (`feat:`, `fix:`, `refactor:`, `docs:`).
+4. Push to `dev` (if collaborator) or to your feature branch and open/update a PR into `dev`.
 
 ### Hard Git Safety Rules
 - **NEVER** force-push (`git push --force` / `--force-with-lease`) to `main` or `dev`.
