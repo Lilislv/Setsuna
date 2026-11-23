@@ -419,3 +419,15 @@
     .settings-content-inner .modern-input { min-height: 34px; padding-top: 6px; padding-bottom: 6px; }
     .settings-content-inner div[style*="margin-bottom: 15px"] { margin-bottom: 10px !important; }
 }
+
+/* Dictionary rows (Lookup → Dictionaries) */
+.dict-row-grip { display: inline-flex; padding: 4px 2px; color: var(--text-muted); cursor: grab; touch-action: none; opacity: 0.7; }
+.dict-row-grip:hover { opacity: 1; }
+.dict-row-actions { display: flex; gap: 4px; margin-right: 2px; }
+:is(.settings-window, .mobile-settings-sheet) .dict-row-btn { width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: var(--surface-2, var(--hover-bg)); color: var(--text-main); cursor: pointer; transition: background-color 0.15s, color 0.15s; }
+:is(.settings-window, .mobile-settings-sheet) .dict-row-btn:hover:not(:disabled) { background: var(--menu-raised, var(--hover-bg)); }
+:is(.settings-window, .mobile-settings-sheet) .dict-row-btn:disabled { opacity: 0.3; cursor: default; }
+:is(.settings-window, .mobile-settings-sheet) .dict-row-btn.is-danger { color: var(--danger, #ff6b6b); background: color-mix(in srgb, var(--danger, #ff6b6b) 12%, transparent); }
+:is(.settings-window, .mobile-settings-sheet) .dict-row-update { padding: 4px 10px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--accent-blue) 14%, transparent); color: var(--accent-blue); font-size: 12px; white-space: nowrap; cursor: pointer; }
+:is(.settings-window, .mobile-settings-sheet) .dict-row-update:disabled { opacity: 0.6; cursor: default; }
+:is(.settings-window, .mobile-settings-sheet) .dict-row-danger-button { padding: 6px 12px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--danger, #ff6b6b) 14%, transparent); color: var(--danger, #ff6b6b); font-size: 13px; cursor: pointer; }

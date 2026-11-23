@@ -75,6 +75,8 @@ use windows::Win32::UI::Accessibility::{
     TextUnit_Word, UIA_TextPatternId,
 };
 
+mod ai_assistant;
+mod dictionary_share;
 mod core;
 mod dictionary_import;
 mod epub_import;
@@ -5818,6 +5820,7 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
             "tray_show" => show_main_from_tray(app),
             "tray_quit" => {
                 APP_EXIT_REQUESTED.store(true, Ordering::SeqCst);
+                ai_assistant::shutdown(app);
                 app.exit(0);
             }
             _ => {}
@@ -5980,6 +5983,19 @@ fn main() {
             yatsu::get_yatsu_request,
             #[cfg(feature = "private-reader")]
             yatsu::highlight_yatsu_match,
+            dictionary_share::share_dictionaries,
+            dictionary_share::receive_shared_dictionaries,
+            dictionary_share::inspect_shared_dictionaries,
+            ai_assistant::ai_status,
+            ai_assistant::ai_download_model,
+            ai_assistant::ai_cancel_download,
+            ai_assistant::ai_delete_model,
+            ai_assistant::ai_set_models_dir,
+            ai_assistant::ai_stop,
+            ai_assistant::ai_chat,
+            ai_assistant::ai_cancel,
+            ai_assistant::ai_history_load,
+            ai_assistant::ai_history_save,
             text_stats::count_text_stats,
             system_fonts::list_system_fonts,
             local_audio::inspect_local_audio_database,
@@ -6011,6 +6027,7 @@ fn main() {
             tab_lines::save_tab_lines,
             tab_lines::load_tab_lines,
             tab_lines::prune_tab_lines,
+            tab_lines::list_tab_lines,
             save_workspace_state,
             load_workspace_state,
             get_data_file_path,
@@ -6083,6 +6100,8 @@ fn main() {
             #[cfg(feature = "private-reader")]
             app.manage(yatsu::YatsuState::default());
             start_diagnostics_logger(app.handle().clone());
+            app.manage(ai_assistant::AiState::default());
+            ai_assistant::start_idle_reaper(app.handle().clone());
 
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {

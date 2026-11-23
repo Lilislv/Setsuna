@@ -11,6 +11,9 @@ installAutoHideScrollbars();
 import "./styles/motion.css";
 import "./App.css";
 import "./jl-popup.css";
+import { disableNativeContextMenu } from "./utils/nativeContextMenu";
+
+disableNativeContextMenu();
 
 const SETTINGS_KEY = "txthk-settings";
 

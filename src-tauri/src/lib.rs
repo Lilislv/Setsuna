@@ -12,6 +12,7 @@ mod japanese_deinflector;
 mod local_audio;
 mod flow_timer;
 mod drive_download;
+mod dictionary_share;
 #[cfg(target_os = "android")]
 mod android_lookup;
 
@@ -1214,6 +1215,9 @@ pub fn run() {
             dictionary_engine::clear_database,
             dictionary_engine::delete_dictionaries,
             dictionary_engine::lookup_word,
+            dictionary_share::share_dictionaries,
+            dictionary_share::receive_shared_dictionaries,
+            dictionary_share::inspect_shared_dictionaries,
             dictionary_engine::scan_cursor,
             start_oauth_server,
             get_dictionary_storage_info,
@@ -1241,6 +1245,7 @@ pub fn run() {
             tab_lines::save_tab_lines,
             tab_lines::load_tab_lines,
             tab_lines::prune_tab_lines,
+            tab_lines::list_tab_lines,
             save_workspace_state,
             load_workspace_state,
             stop_capture_agent_server,

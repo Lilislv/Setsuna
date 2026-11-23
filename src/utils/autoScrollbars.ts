@@ -6,6 +6,32 @@
  */
 const HIDE_DELAY_MS = 900;
 const EDGE_PX = 18;
+const FADE_IN_MS = 160;
+const FADE_OUT_MS = 320;
+
+// Scrollbar pseudo-elements can't be transitioned, so the thumb's opacity is a
+// custom property (--sb-alpha, read by styles/design.css) stepped per frame.
+const fades = new WeakMap<HTMLElement, { value: number; frame: number }>();
+const fade = (element: Element | null) => {
+    if (!(element instanceof HTMLElement)) return;
+    const target = element.classList.contains('is-scrolling') || element.classList.contains('is-near-scrollbar') ? 1 : 0;
+    const state = fades.get(element) ?? { value: 0, frame: 0 };
+    fades.set(element, state);
+    cancelAnimationFrame(state.frame);
+    if (state.value === target) return;
+    let last = performance.now();
+    const step = (now: number) => {
+        const elapsed = now - last;
+        last = now;
+        state.value = target > state.value
+            ? Math.min(target, state.value + elapsed / FADE_IN_MS)
+            : Math.max(target, state.value - elapsed / FADE_OUT_MS);
+        if (state.value === 0) element.style.removeProperty('--sb-alpha');
+        else element.style.setProperty('--sb-alpha', state.value.toFixed(3));
+        if (state.value !== target) state.frame = requestAnimationFrame(step);
+    };
+    state.frame = requestAnimationFrame(step);
+};
 
 let installed = false;
 
@@ -22,8 +48,12 @@ export function installAutoHideScrollbars() {
     const timers = new WeakMap<Element, number>();
     const flash = (element: Element) => {
         element.classList.add('is-scrolling');
+        fade(element);
         window.clearTimeout(timers.get(element));
-        timers.set(element, window.setTimeout(() => element.classList.remove('is-scrolling'), HIDE_DELAY_MS));
+        timers.set(element, window.setTimeout(() => {
+            element.classList.remove('is-scrolling');
+            fade(element);
+        }, HIDE_DELAY_MS));
     };
 
     document.addEventListener('scroll', (event) => {
@@ -39,8 +69,12 @@ export function installAutoHideScrollbars() {
 
     const setNear = (element: HTMLElement | null) => {
         if (element === near) return;
-        if (near && near !== dragging) near.classList.remove('is-near-scrollbar');
+        if (near && near !== dragging) {
+            near.classList.remove('is-near-scrollbar');
+            fade(near);
+        }
         element?.classList.add('is-near-scrollbar');
+        fade(element);
         near = element;
     };
 
@@ -77,7 +111,10 @@ export function installAutoHideScrollbars() {
     const endDrag = () => {
         const element = dragging;
         dragging = null;
-        if (element && element !== near) element.classList.remove('is-near-scrollbar');
+        if (element && element !== near) {
+            element.classList.remove('is-near-scrollbar');
+            fade(element);
+        }
     };
     document.addEventListener('pointerup', endDrag, { capture: true, passive: true });
     window.addEventListener('blur', endDrag);

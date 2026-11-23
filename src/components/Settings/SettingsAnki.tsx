@@ -361,7 +361,19 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
                 settings.ankiFieldWord && settings.ankiFieldWord !== "none" && ankiFields.includes(settings.ankiFieldWord)
                 && settings.ankiFieldMeaning && settings.ankiFieldMeaning !== "none" && ankiFields.includes(settings.ankiFieldMeaning),
             );
-            if (configured) return;
+            if (configured) {
+                // A field from the previous note type (e.g. DefinitionPicture after
+                // switching back to Lapis) would silently drop that data: remap it.
+                const stale: Partial<AppSettings> = {};
+                (Object.keys(preset) as Array<keyof typeof preset>).forEach((key) => {
+                    const value = settings[key] as string | undefined;
+                    if (value && value !== "none" && !ankiFields.includes(value)) (stale as any)[key] = preset[key];
+                });
+                if (Object.keys(stale).length === 0) return;
+                if (updateMultipleSettings) updateMultipleSettings(stale);
+                else Object.entries(stale).forEach(([key, value]) => updateSetting(key as keyof AppSettings, value as any));
+                return;
+            }
         }
 
         if (updateMultipleSettings) updateMultipleSettings(preset);

@@ -3,7 +3,10 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = import.meta.env.VITE_GOOGLE_CLIENT_SECRET || '';
-const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+// drive.appdata: private backups. drive.file: dictionary packs shared by code
+// (the app only ever sees files it created itself).
+const SCOPE = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file';
+export const DRIVE_SHARE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:1337';
 const BACKUP_PREFIX = 'setsuna_backup_';
 const LEGACY_BACKUP_PREFIX = 'txthk_backup_';
@@ -367,6 +370,89 @@ export async function getAccessToken(refreshToken: string) {
     });
     const data = await parseGoogleJson(res, 'Access token refresh failed');
     return data.access_token as string;
+}
+
+/** Access token plus the scopes the user actually granted. */
+export async function getAccessTokenInfo(refreshToken: string): Promise<{ token: string; scopes: string[] }> {
+    assertGoogleOAuthConfigured();
+    const body = new URLSearchParams({
+        client_id: CLIENT_ID,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+    });
+    body.set('client_secret', CLIENT_SECRET);
+    const res = await driveFetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+    });
+    const data = await parseGoogleJson(res, 'Access token refresh failed');
+    return { token: data.access_token as string, scopes: String(data.scope || '').split(/\s+/).filter(Boolean) };
+}
+
+export type DictionaryShareFile = { id: string; name: string; size?: string; createdTime?: string; description?: string; mimeType?: string };
+
+/** Dictionary packs this user shared (files created by Setsuna in their Drive). */
+export async function listDictionaryShares(accessToken: string): Promise<DictionaryShareFile[]> {
+    const params = new URLSearchParams({
+        q: "appProperties has { key='setsunaShare' and value='1' } and trashed=false",
+        orderBy: 'createdTime desc',
+        pageSize: '100',
+        fields: 'files(id,name,size,createdTime,description,mimeType)',
+    });
+    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const data = await parseGoogleJson(res, 'Shared dictionaries list failed');
+    return data.files || [];
+}
+
+/** Dictionary parts: each dictionary is stored once and reused by every share. */
+export async function listDictionaryParts(accessToken: string): Promise<DictionaryShareFile[]> {
+    const files: DictionaryShareFile[] = [];
+    let pageToken = '';
+    do {
+        const params = new URLSearchParams({
+            q: "appProperties has { key='setsunaPart' and value='1' } and trashed=false",
+            pageSize: '1000',
+            fields: 'nextPageToken,files(id,name,size,createdTime)',
+        });
+        if (pageToken) params.set('pageToken', pageToken);
+        const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const data = await parseGoogleJson(res, 'Dictionary parts list failed');
+        files.push(...(data.files || []));
+        pageToken = data.nextPageToken || '';
+    } while (pageToken);
+    return files;
+}
+
+/**
+ * Deletes dictionary parts that no remaining share lists. Run after a share is
+ * deleted, so stopping one share never breaks another that uses the same parts.
+ */
+export async function cleanupUnusedDictionaryParts(accessToken: string): Promise<number> {
+    const shares = await listDictionaryShares(accessToken);
+    const used = new Set<string>();
+    for (const share of shares) {
+        if (share.mimeType !== 'application/json') continue;
+        const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(share.id)}?alt=media`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        // If a list can't be read, keep every part rather than risk breaking it.
+        if (!res.ok) return 0;
+        const manifest = await res.json().catch(() => null);
+        if (!manifest || !Array.isArray(manifest.dictionaries)) return 0;
+        for (const entry of manifest.dictionaries) if (entry?.file) used.add(String(entry.file));
+    }
+    let removed = 0;
+    for (const part of await listDictionaryParts(accessToken)) {
+        if (used.has(part.id)) continue;
+        await deleteDriveFile(accessToken, part.id);
+        removed += 1;
+    }
+    return removed;
 }
 
 export const loadStoredGoogleRefreshToken = () => invoke<string | null>('load_google_refresh_token');

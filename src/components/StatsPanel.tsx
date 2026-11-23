@@ -315,9 +315,9 @@ const StatsPanel = memo(function StatsPanel({
                             background: isPaused ? 'var(--bg-side)' : 'var(--accent-blue)',
                             border: `1px solid ${isPaused ? 'var(--border-main)' : 'var(--accent-blue)'}`,
                             color: isPaused ? 'var(--text-muted)' : '#fff',
-                            borderRadius: '4px', padding: '6px', fontSize: '11px', cursor: 'pointer',
-                            fontWeight: 'bold', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                            letterSpacing: '1px'
+                            borderRadius: '999px', padding: '6px', fontSize: '11px', cursor: 'pointer',
+                            fontWeight: 600, transition: 'background-color 0.2s, color 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                            letterSpacing: '0.4px'
                         }}
                     >
                         {pauseButton}
@@ -341,9 +341,9 @@ const StatsPanel = memo(function StatsPanel({
                         background: isPaused ? 'var(--bg-side)' : 'var(--accent-blue)',
                         border: `1px solid ${isPaused ? 'var(--border-main)' : 'var(--accent-blue)'}`,
                         color: isPaused ? 'var(--text-muted)' : '#fff',
-                        borderRadius: '6px', padding: '6px 16px', fontSize: '12px', cursor: 'pointer',
-                        fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', transition: 'all 0.2s',
-                        letterSpacing: '1px'
+                        borderRadius: '999px', padding: '6px 16px', fontSize: '12px', cursor: 'pointer',
+                        fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px', transition: 'background-color 0.2s, color 0.2s',
+                        letterSpacing: '0.4px'
                     }}
                 >
                     {pauseButton}

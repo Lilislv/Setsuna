@@ -104,5 +104,9 @@ export const mergeTabHistory = (tab: Tab, history: StoredHistory | null): Tab =>
 };
 
 /** Removes history files of tabs that were deleted. */
-export const pruneTabHistories = (tabs: Tab[]) =>
-    invoke<number>('prune_tab_lines', { keepIds: tabs.map((tab) => tab.id) }).catch(() => 0);
+/** Deletes the history files of explicitly deleted tabs only (never of tabs that are just missing). */
+export const pruneTabHistories = (tabs: Tab[], deletedIds: number[]) =>
+    invoke<number>('prune_tab_lines', { keepIds: tabs.map((tab) => tab.id), deleteIds: deletedIds }).catch(() => 0);
+
+/** Ids of every tab that has a history file. */
+export const listTabHistoryIds = () => invoke<number[]>('list_tab_lines').catch(() => [] as number[]);

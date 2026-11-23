@@ -5,11 +5,14 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { getTranslator } from '../utils/i18n';
 import { tokenizeLookupText } from '../utils/appRuntime';
+import { IconSparkle } from './Icons';
 
 const IconCopy = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>;
 const IconCheck = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4CAF50" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>;
 const IconDelete = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>;
 const IconEdit = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>;
+const IconChecklist = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 6h10"></path><path d="M10 12h10"></path><path d="M10 18h10"></path><path d="m3 6 1.5 1.5L7 5"></path><path d="m3 12 1.5 1.5L7 11"></path><path d="m3 18 1.5 1.5L7 17"></path></svg>;
+const MAX_AI_SELECTION = 40;
 const IconArrowDown = () => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>;
 const jpSerifFallback = "'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif";
 const MAX_FURIGANA_CACHE = 500;
@@ -310,7 +313,7 @@ export const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode =
     })}</>;
 };
 
-const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana, onDelete, onEdit, furiganaMode, searchQuery, isActiveSearchMatch, contextBefore = "", contextAfter = "", language = 'ru', onLookupToken, onTokenTap, activeToken }: any) {
+const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana, onDelete, onEdit, furiganaMode, searchQuery, isActiveSearchMatch, contextBefore = "", contextAfter = "", language = 'ru', onLookupToken, onTokenTap, activeToken, onExplain, onStartSelect, selectMode = false, selected = false, onToggleSelect, readOnly = false }: any) {
     const [isHovered, setIsHovered] = useState(false);
     const [isCopied, setIsCopied] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -324,14 +327,17 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
         }
     };
 
-    const btnStyle = { background: 'var(--hover-bg)', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', transition: '0.2s' };
+    const btnStyle = { background: 'var(--surface-2, var(--hover-bg))', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', width: '30px', height: '30px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '9px', transition: 'background-color 0.15s, color 0.15s' };
 
-    const bgColor = isActiveSearchMatch 
+    const bgColor = selected
+        ? 'rgba(79, 166, 255, 0.16)'
+        : isActiveSearchMatch
         ? 'rgba(79, 166, 255, 0.15)' 
         : (isHovered || isEditing ? 'var(--hover-bg)' : 'transparent');
+    const showActions = !selectMode && (isHovered || isEditing || isActiveSearchMatch);
 
     return (
-        <div className="text-line-wrapper" data-line-index={index} data-raw-text={line} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', margin: 0, padding: '6px 10px', borderRadius: '8px', backgroundColor: bgColor, transition: 'background-color 0.2s', position: 'relative' }}>
+        <div className={`text-line-wrapper${selectMode ? ' is-selectable' : ''}${selected ? ' is-selected' : ''}`} data-line-index={index} data-raw-text={line} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} onClickCapture={selectMode ? (e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect?.(index); } : undefined} style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', margin: 0, padding: '6px 10px', borderRadius: '8px', backgroundColor: bgColor, boxShadow: selected ? 'inset 0 0 0 1px rgba(79, 166, 255, 0.55)' : selectMode && isHovered ? 'inset 0 0 0 1px var(--border-main)' : 'none', cursor: selectMode ? 'pointer' : undefined, userSelect: selectMode ? 'none' : undefined, transition: 'background-color 0.2s, box-shadow 0.2s', position: 'relative' }}>
             
             <div 
                 ref={textRef}
@@ -392,9 +398,11 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
                 )}
             </div>
 
-            <span className="text-line-actions" contentEditable={false} style={{ opacity: isHovered || isEditing || isActiveSearchMatch ? 1 : 0, pointerEvents: isHovered || isEditing || isActiveSearchMatch ? 'auto' : 'none', display: 'inline-flex', alignSelf: 'flex-end', flexShrink: 0, gap: '6px', marginTop: '4px', transition: 'opacity 0.2s' }}>
+            <span className="text-line-actions" contentEditable={false} style={{ opacity: showActions ? 1 : 0, pointerEvents: showActions ? 'auto' : 'none', display: 'inline-flex', alignSelf: 'flex-end', flexShrink: 0, gap: '6px', marginTop: '4px', transition: 'opacity 0.2s' }}>
+                {!isEditing && onExplain && <button onClick={() => onExplain(index)} style={{ ...btnStyle, color: 'var(--accent-blue)' }} title={language === 'en' ? 'Explain with AI' : 'Объяснить (ИИ)'}><IconSparkle size={16} /></button>}
+                {!isEditing && onStartSelect && <button onClick={() => onStartSelect(index)} style={btnStyle} title={language === 'en' ? 'Pick several lines to explain together' : 'Выбрать несколько строк для объяснения'}><IconChecklist /></button>}
                 {!isEditing && <button onClick={handleCopy} style={btnStyle} title={t('common.copy')}>{isCopied ? <IconCheck /> : <IconCopy />}</button>}
-                <button 
+                {!readOnly && <button 
                     onClick={() => {
                         if (isEditing) textRef.current?.blur();
                         else { setIsEditing(true); setTimeout(() => textRef.current?.focus(), 50); }
@@ -403,15 +411,43 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
                     title={t('common.edit')}
                 >
                     <IconEdit />
-                </button>
-                {!isEditing && <button onClick={() => onDelete(index)} style={{ ...btnStyle, color: '#ff6b6b', background: 'rgba(255, 107, 107, 0.1)' }} title={t('common.delete')}><IconDelete /></button>}
+                </button>}
+                {!isEditing && !readOnly && <button onClick={() => onDelete(index)} style={{ ...btnStyle, color: 'var(--danger, #ff6b6b)', background: 'color-mix(in srgb, var(--danger, #ff6b6b) 12%, transparent)' }} title={t('common.delete')}><IconDelete /></button>}
             </span>
         </div>
     );
 });
 
-const TextContainer = memo(function TextContainer({ contentKey, lines = [], lineFurigana = [], isFlashing = false, onDelete, onEdit, furiganaMode, autoScrollOffset = 80, searchQuery = "", activeSearchLineIdx = -1, searchTrigger = 0, panelPosition = 'bottom', language = 'ru', textOrientation = 'horizontal', readerProgress = 0, onReaderProgress, onLookupToken, lookupActive = false }: any) {
+const TextContainer = memo(function TextContainer({ contentKey, lines = [], lineFurigana = [], isFlashing = false, onDelete, onEdit, furiganaMode, autoScrollOffset = 80, searchQuery = "", activeSearchLineIdx = -1, searchTrigger = 0, panelPosition = 'bottom', language = 'ru', textOrientation = 'horizontal', readerProgress = 0, onReaderProgress, onLookupToken, lookupActive = false, onExplainLines, readOnly = false }: any) {
   const parentRef = useRef<HTMLDivElement>(null);
+  // AI explanations: one line from its button, or several picked in selection mode.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedLines, setSelectedLines] = useState<number[]>([]);
+  const explainLine = useCallback((index: number) => onExplainLines?.([index]), [onExplainLines]);
+  const startSelect = useCallback((index: number) => { setSelectMode(true); setSelectedLines([index]); }, []);
+  const toggleSelectLine = useCallback((index: number) => {
+      setSelectedLines((prev) => prev.includes(index)
+          ? prev.filter((value) => value !== index)
+          : prev.length >= MAX_AI_SELECTION ? prev : [...prev, index]);
+  }, []);
+  const cancelSelect = useCallback(() => { setSelectMode(false); setSelectedLines([]); }, []);
+  const explainSelected = useCallback(() => {
+      if (!selectedLines.length) return;
+      onExplainLines?.([...selectedLines].sort((a, b) => a - b));
+      setSelectMode(false);
+      setSelectedLines([]);
+  }, [onExplainLines, selectedLines]);
+  useEffect(() => {
+      if (!selectMode) return;
+      const onKey = (event: KeyboardEvent) => {
+          if (event.key === 'Escape') { event.stopPropagation(); cancelSelect(); }
+          else if (event.key === 'Enter') { event.preventDefault(); explainSelected(); }
+      };
+      window.addEventListener('keydown', onKey, true);
+      return () => window.removeEventListener('keydown', onKey, true);
+  }, [selectMode, cancelSelect, explainSelected]);
+  useEffect(() => { if (!onExplainLines) cancelSelect(); }, [onExplainLines, cancelSelect]);
+  useEffect(() => { cancelSelect(); }, [contentKey, cancelSelect]);
   // Which word is currently looked up — held highlighted while the popup is open, cleared on close.
   const [activeToken, setActiveToken] = useState<{ line: number; start: number; length: number } | null>(null);
   const lookupRequestRef = useRef(0);
@@ -859,6 +895,12 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
                             onLookupToken={onLookupToken}
                             onTokenTap={handleTokenTap}
                             activeToken={activeToken}
+                            onExplain={onExplainLines ? explainLine : undefined}
+                            onStartSelect={onExplainLines ? startSelect : undefined}
+                            selectMode={selectMode}
+                            selected={selectMode && selectedLines.includes(index)}
+                            onToggleSelect={toggleSelectLine}
+                            readOnly={readOnly}
                         />
                     )}
                 </div>
@@ -866,6 +908,21 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
         })}
         {virtualPaddingBottom > 0 && <div aria-hidden="true" style={{ height: `${virtualPaddingBottom}px` }} />}
       </div>
+
+      {selectMode && (
+          <div className="ai-select-bar" role="toolbar" aria-label={language === 'en' ? 'Pick lines' : 'Выбор строк'}>
+              <span className="ai-select-count">
+                  {language === 'en'
+                      ? `${selectedLines.length} ${selectedLines.length === 1 ? 'line' : 'lines'} picked`
+                      : `Выбрано строк: ${selectedLines.length}`}
+                  {selectedLines.length >= MAX_AI_SELECTION && <em>{language === 'en' ? ` (max ${MAX_AI_SELECTION})` : ` (максимум ${MAX_AI_SELECTION})`}</em>}
+              </span>
+              <button type="button" className="ai-select-primary" disabled={!selectedLines.length} onClick={explainSelected}>
+                  <IconSparkle size={15} /> {language === 'en' ? 'Explain together' : 'Объяснить вместе'}
+              </button>
+              <button type="button" className="ai-select-cancel" onClick={cancelSelect}>{language === 'en' ? 'Cancel' : 'Отмена'}</button>
+          </div>
+      )}
 
       {showScrollBottom && (
           <button

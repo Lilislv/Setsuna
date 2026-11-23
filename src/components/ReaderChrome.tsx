@@ -7,14 +7,35 @@ import { getTranslator } from '../utils/i18n';
 import { getDecks } from '../utils/anki';
 import { YATSU_READER_AVAILABLE } from '../utils/featureFlags';
 import AppMenu, { MenuIcons, type AppMenuSource } from './AppMenu';
+import DeckPicker from './DeckPicker';
 import { IconBookTab, IconPlayerTab } from './Icons';
 import { useJelly } from '../utils/jelly';
+import { IconSparkle } from './Icons';
 
 type TabStatus = NonNullable<Tab['status']>;
 
 const lockToVerticalAxis: Modifier = ({ transform }) => ({ ...transform, x: 0 });
 
 /** One draggable tab row: dnd-kit moves it, the jelly hook squishes it. */
+/** "LIVE · 2" on a broadcast tab, "LIVE" on a followed one, grey once the room ended. */
+function LiveMark({ tab, status, isEn }: { tab: Tab; status?: { state: string; viewers: number; hostOnline: boolean }; isEn: boolean }) {
+    const share = tab.shared!;
+    if (share.role === 'host') {
+        const live = status?.state === 'live';
+        return (
+            <span className={`tab-live ${live ? 'is-host' : 'is-ended'}`} title={isEn ? `On air, code ${share.code}` : `В эфире, код ${share.code}`}>
+                {live ? `LIVE${status?.viewers ? ` · ${status.viewers}` : ''}` : '…'}
+            </span>
+        );
+    }
+    const ended = share.ended;
+    return (
+        <span className={`tab-live ${ended ? 'is-ended' : 'is-viewer'}`} title={ended ? (isEn ? 'The broadcast has ended' : 'Эфир завершён') : (isEn ? `Following ${share.code}` : `Смотришь эфир ${share.code}`)}>
+            {ended ? (isEn ? 'ended' : 'конец') : 'LIVE'}
+        </span>
+    );
+}
+
 function SortableTabRow({ id, index, className, rowProps, children }: {
     id: number;
     index: number;
@@ -58,7 +79,6 @@ export const TopBar = ({
     setEditingTabId,
     setTabs,
     closeTab,
-    openArchiveSettings,
     cycleTabStatus,
     addNewTab,
     settings,
@@ -72,9 +92,14 @@ export const TopBar = ({
     openExport,
     activeTab,
     openCaptureSourcePicker,
+    openSharedReading,
+    sharedStatus,
     openJlModeWindow,
     flowOpen,
     toggleFlow,
+    aiAvailable,
+    aiOpen,
+    toggleAi,
     clearAll,
     openHome,
     openSettings,
@@ -87,8 +112,15 @@ export const TopBar = ({
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: number } | null>(null);
     const [tabDecks, setTabDecks] = useState<string[]>([]);
+    const [deckPickerOpen, setDeckPickerOpen] = useState(false);
     const suppressClickRef = useRef(false);
     const visibleTabs: Tab[] = tabs.filter((tab: Tab) => !tab.archived);
+    const archivedTabs: Tab[] = tabs.filter((tab: Tab) => tab.archived);
+    const [archiveView, setArchiveView] = useState(false);
+    useEffect(() => {
+        if (isMenuOpen) setArchiveView(Boolean(tabs.find((tab: Tab) => tab.id === activeTabId)?.archived));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isMenuOpen]);
     const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
     const primaryWebSocketId = settings?.primaryWebSocketId || settings?.websockets?.[0]?.id;
 
@@ -162,8 +194,12 @@ export const TopBar = ({
         }
         setTabMenu(null);
     };
+    const restoreTab = (id: number) => {
+        setTabs((prev: Tab[]) => prev.map((tab) => tab.id === id ? { ...tab, archived: false } : tab));
+        setTabMenu(null);
+    };
     const deleteTab = (id: number) => {
-        if (visibleTabs.length <= 1) return;
+        if (!getTabById(id)?.archived && visibleTabs.length <= 1) return;
         const next = tabs.filter((tab: Tab) => tab.id !== id);
         setTabs(next);
         if (activeTabId === id) {
@@ -175,9 +211,7 @@ export const TopBar = ({
 
     useEffect(() => {
         if (!tabMenu) return;
-        if (settings?.ankiDeckMode === 'contextual') {
-            getDecks().then(setTabDecks).catch(() => setTabDecks(settings?.ankiDeck ? [settings.ankiDeck] : []));
-        }
+        getDecks().then(setTabDecks).catch(() => setTabDecks(settings?.ankiDeck ? [settings.ankiDeck] : []));
         const close = () => setTabMenu(null);
         window.addEventListener('click', close);
         window.addEventListener('resize', close);
@@ -233,6 +267,8 @@ export const TopBar = ({
     ];
     const menuTiles = [
         { id: 'capture', label: isEn ? 'Capture' : 'Захват', hint: activeTab?.captureSource?.name || t('topbar.captureSource'), icon: <MenuIcons.IconPin />, onSelect: openCaptureSourcePicker },
+        { id: 'deck', label: isEn ? 'Anki deck' : 'Колода', hint: activeTab?.ankiDeck || (isEn ? `As in settings: ${settings?.ankiDeck || '-'}` : `Как в настройках: ${settings?.ankiDeck || '-'}`), icon: <MenuIcons.IconDeck />, onSelect: () => setDeckPickerOpen(true) },
+        { id: 'shared', label: isEn ? 'Read together' : 'Читать вместе', hint: activeTab?.shared ? (activeTab.shared.role === 'host' ? (isEn ? `On air · ${activeTab.shared.code}` : `В эфире · ${activeTab.shared.code}`) : (isEn ? `Following · ${activeTab.shared.code}` : `Смотрю эфир · ${activeTab.shared.code}`)) : (isEn ? 'Broadcast or join by code' : 'Эфир вкладки или вход по коду'), icon: <MenuIcons.IconShare />, onSelect: () => openSharedReading?.(activeTab?.id) },
         { id: 'flow', label: 'Flow', hint: isEn ? 'Floating reader' : 'Окно поверх игры', icon: <MenuIcons.IconLayers />, onSelect: openJlModeWindow },
         { id: 'search', label: t('common.search'), hint: 'Ctrl + F', icon: <MenuIcons.IconSearch />, onSelect: openSearch },
         ...(YATSU_READER_AVAILABLE ? [{ id: 'yatsu', label: 'Yatsu', hint: 'EPUB', icon: <MenuIcons.IconBookTab />, onSelect: openEpubWorkspace }] : []),
@@ -298,12 +334,51 @@ export const TopBar = ({
         if (firstTabRef.current) { firstTabRef.current = false; return; }
         showIsland(2200);
     }, [activeTabId]);
+    // While the menu is open, follow the active tab: "+" adds a tab at the end
+    // of the list and the list scrolls to it.
+    useEffect(() => {
+        if (!isMenuOpen) return;
+        const frame = requestAnimationFrame(() => {
+            document.querySelector('.app-menu .app-menu-tab.is-active')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [activeTabId, tabs.length, isMenuOpen]);
     const primaryWs = activeWebSockets.find((ws: any) => ws.id === primaryWebSocketId) || activeWebSockets[0];
     const sourceConnected = primaryWs ? Boolean(wsStatuses?.[primaryWs.id]) : Boolean(useClipboard);
     const sourcePending = primaryWs ? Boolean(wsIntents?.[primaryWs.id] && !wsStatuses?.[primaryWs.id]) : false;
     // The lookup popup often opens at the top of the window (first lines), right
     // where the island appears; keep the island out of its way while it is open.
     const islandHidden = !islandVisible || isMenuOpen || Boolean(lookupOpen);
+
+    // Archived tabs: opening one shows it read-only, nothing moves it out of the archive.
+    const archiveList = (
+        <div className="app-menu-tabs app-menu-archive-list" role="listbox" aria-label={isEn ? 'Archived tabs' : 'Архивные вкладки'}>
+            {archivedTabs.length === 0 && (
+                <div className="app-menu-archive-empty">{isEn ? 'The archive is empty. Archive a tab from its right-click menu.' : 'Архив пуст. Отправить вкладку в архив можно через её меню по правому клику.'}</div>
+            )}
+            {archivedTabs.map((tab) => {
+                const isActive = tab.id === activeTabId;
+                return (
+                    <div
+                        key={tab.id}
+                        role="option"
+                        aria-selected={isActive}
+                        tabIndex={0}
+                        className={`app-menu-tab is-archived${isActive ? ' is-active' : ''}`}
+                        onClick={() => { switchTab(tab.id); setIsMenuOpen(false); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { switchTab(tab.id); setIsMenuOpen(false); } }}
+                        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setTabMenu({ x: e.clientX, y: e.clientY, tabId: tab.id }); }}
+                    >
+                        <span className="app-menu-archive-icon" aria-hidden="true">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4" /></svg>
+                        </span>
+                        <span className="app-menu-tab-name">{tab.name || (isEn ? 'Unnamed tab' : 'Без названия')}</span>
+                        <span className="app-menu-tab-meta">{formatChars(tab.stats?.chars || 0)}</span>
+                    </div>
+                );
+            })}
+        </div>
+    );
 
     const tabList = (
         <DndContext
@@ -380,6 +455,7 @@ export const TopBar = ({
                         ) : (
                             <span className="app-menu-tab-name">{tab.name || (isEn ? 'Unnamed tab' : 'Без названия')}</span>
                         )}
+                        {tab.shared && <LiveMark tab={tab} status={sharedStatus?.[tab.id]} isEn={isEn} />}
                         {type && <span className="app-menu-tab-type" title={type.title} style={{ color: type.color }}>{type.icon}</span>}
                         <span className="app-menu-tab-meta" title={isEn ? 'Characters read' : 'Прочитано символов'}>{formatChars(tab.stats?.chars || 0)}</span>
                         {visibleTabs.length > 1 && (
@@ -401,23 +477,12 @@ export const TopBar = ({
         </DndContext>
     );
 
-    const menuButtonStyle = {
-        width: '100%',
-        textAlign: 'left' as const,
-        background: 'transparent',
-        border: 'none',
-        color: 'var(--text-main)',
-        padding: '8px 10px',
-        borderRadius: 5,
-        cursor: 'pointer',
-        fontSize: 13,
-    };
     const contextTab = tabMenu ? getTabById(tabMenu.tabId) : null;
 
     return (
         <>
             <div
-                className={`reader-island${islandHidden ? ' is-hidden' : ''}`}
+                className={`reader-island${islandHidden ? ' is-hidden' : ''}${activeTab?.archived ? ' is-archived' : ''}`}
                 aria-hidden={islandHidden}
                 onPointerEnter={() => { islandHoverRef.current = true; showIsland(null); }}
                 onPointerLeave={() => { islandHoverRef.current = false; hideIslandLater(600); }}
@@ -427,10 +492,19 @@ export const TopBar = ({
                     className="reader-island-tab"
                     tabIndex={islandHidden ? -1 : 0}
                     onClick={() => setIsMenuOpen(true)}
-                    title={isEn ? 'Tabs and actions' : 'Вкладки и действия'}
+                    title={activeTab?.archived
+                        ? (isEn ? 'Archived tab: read-only' : 'Архивная вкладка: только чтение')
+                        : (isEn ? 'Tabs and actions' : 'Вкладки и действия')}
                 >
-                    <span className={`tab-status tab-status-${activeTab?.status || 'planned'}`} style={{ ['--status-color' as any]: activeStatus.color }} aria-hidden="true" />
+                    {activeTab?.archived ? (
+                        <span className="reader-island-archive-icon" aria-label={isEn ? 'Archived, read-only' : 'Архив, только чтение'}>
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4" /></svg>
+                        </span>
+                    ) : (
+                        <span className={`tab-status tab-status-${activeTab?.status || 'planned'}`} style={{ ['--status-color' as any]: activeStatus.color }} aria-hidden="true" />
+                    )}
                     <span key={activeTab?.id} className="reader-island-name">{activeTab?.name || (isEn ? 'Reading' : 'Чтение')}</span>
+                    {activeTab?.shared && <LiveMark tab={activeTab} status={sharedStatus?.[activeTab.id]} isEn={isEn} />}
                     <span className="reader-island-meta">{formatChars(activeChars)} {charsLabel}</span>
                 </button>
                 <span className="reader-island-divider" aria-hidden="true" />
@@ -459,6 +533,21 @@ export const TopBar = ({
                     <MenuIcons.IconLayers />
                     <span>Flow</span>
                 </button>
+                {aiAvailable && (
+                    <button
+                        type="button"
+                        className={`reader-island-flow${aiOpen ? ' is-active' : ''}`}
+                        tabIndex={islandHidden ? -1 : 0}
+                        onClick={() => toggleAi?.()}
+                        aria-pressed={Boolean(aiOpen)}
+                        title={aiOpen
+                            ? (isEn ? 'Hide AI explanations' : 'Скрыть ИИ-объяснения')
+                            : (isEn ? 'Show AI explanations' : 'Показать ИИ-объяснения')}
+                    >
+                        <IconSparkle />
+                        <span>{isEn ? 'AI' : 'ИИ'}</span>
+                    </button>
+                )}
                 <button
                     type="button"
                     className="reader-island-menu"
@@ -477,10 +566,12 @@ export const TopBar = ({
                 english={isEn}
                 title={activeTab?.name || (isEn ? 'Reading' : 'Чтение')}
                 subtitle={`${activeStatus.label} · ${formatChars(activeChars)} ${charsLabel}`}
-                tabs={tabList}
+                tabs={archiveView ? archiveList : tabList}
                 tabCount={visibleTabs.length}
                 onAddTab={() => addNewTab()}
-                onOpenArchive={openArchiveSettings}
+                archiveView={archiveView}
+                archiveCount={archivedTabs.length}
+                onToggleArchive={() => setArchiveView((value) => !value)}
                 sources={menuSources}
                 tiles={menuTiles}
                 onImport={openImport}
@@ -495,18 +586,32 @@ export const TopBar = ({
                 return (
                     <div className="tab-context-menu" onClick={(e) => e.stopPropagation()} style={{ left: menuX, top: menuY }}>
                         <div className="tab-context-title">{contextTab.name}</div>
-                        <button style={menuButtonStyle} onClick={() => renameTab(contextTab.id)}>{isEn ? 'Rename' : 'Переименовать'}</button>
-                        <button style={menuButtonStyle} onClick={() => duplicateTab(contextTab.id)}>{isEn ? 'Duplicate' : 'Дублировать'}</button>
-                        {settings?.ankiDeckMode === 'contextual' && (
-                            <label style={{ display: 'block', padding: '5px 8px 8px' }}>
-                                <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: 11, marginBottom: 6 }}>{isEn ? 'Anki deck' : 'Колода Anki'}</span>
+                        {contextTab.archived ? (
+                            <>
+                                <button className="tab-context-item" onClick={() => { switchTab(contextTab.id); setTabMenu(null); setIsMenuOpen(false); }}>{isEn ? 'Open (read-only)' : 'Открыть для чтения'}</button>
+                                <button className="tab-context-item" onClick={() => restoreTab(contextTab.id)}>{isEn ? 'Restore from archive' : 'Вернуть из архива'}</button>
+                                <div className="tab-context-divider" />
+                                <button className="tab-context-item is-danger" onClick={() => deleteTab(contextTab.id)}>{isEn ? 'Delete tab' : 'Удалить вкладку'}</button>
+                            </>
+                        ) : (<>
+                        <button className="tab-context-item" onClick={() => renameTab(contextTab.id)}>{isEn ? 'Rename' : 'Переименовать'}</button>
+                        <button className="tab-context-item" onClick={() => duplicateTab(contextTab.id)}>{isEn ? 'Duplicate' : 'Дублировать'}</button>
+                        <button className="tab-context-item" onClick={() => { openSharedReading?.(contextTab.id); setTabMenu(null); }}>
+                            {contextTab.shared?.role === 'host' ? (isEn ? `On air · ${contextTab.shared.code}` : `В эфире · ${contextTab.shared.code}`)
+                                : contextTab.shared?.role === 'viewer' ? (isEn ? 'Broadcast you follow…' : 'Эфир, который смотришь…')
+                                : (isEn ? 'Read together…' : 'Читать вместе…')}
+                        </button>
+                        {(
+                            <label className="tab-context-field">
+                                <span>{isEn ? 'Anki deck' : 'Колода Anki'}</span>
                                 <select
+                                    className="modern-select"
                                     value={contextTab.ankiDeck || ''}
                                     onChange={(event) => setTabDeck(contextTab.id, event.target.value)}
                                     onClick={(event) => event.stopPropagation()}
-                                    style={{ width: '100%', height: 30, border: '1px solid var(--border-main)', borderRadius: 5, background: 'var(--bg-main)', color: 'var(--text-main)', padding: '0 7px' }}
                                 >
-                                    <option value="">{isEn ? `Main: ${settings.ankiDeck || '-'}` : `Основная: ${settings.ankiDeck || '-'}`}</option>
+                                    <option value="">{isEn ? `As in settings: ${settings?.ankiDeck || '-'}` : `Как в настройках: ${settings?.ankiDeck || '-'}`}</option>
+                                    {contextTab.ankiDeck && !tabDecks.includes(contextTab.ankiDeck) && <option value={contextTab.ankiDeck}>{contextTab.ankiDeck}</option>}
                                     {tabDecks.map((deck) => <option key={deck} value={deck}>{deck}</option>)}
                                 </select>
                             </label>
@@ -516,7 +621,7 @@ export const TopBar = ({
                         {(['planned', 'reading', 'paused', 'completed'] as const).map((value) => {
                             const meta = statusMeta(value);
                             return (
-                                <button key={value} style={{ ...menuButtonStyle, display: 'flex', alignItems: 'center', gap: 10 }} onClick={() => setTabStatus(contextTab.id, value)}>
+                                <button key={value} className="tab-context-item has-icon" onClick={() => setTabStatus(contextTab.id, value)}>
                                     <span className={`tab-status tab-status-${value}`} style={{ ['--status-color' as any]: meta.color }} />
                                     <span style={{ flex: 1 }}>{meta.label}</span>
                                     {(contextTab.status || 'planned') === value && <span style={{ color: 'var(--accent-blue)' }}>✓</span>}
@@ -524,11 +629,22 @@ export const TopBar = ({
                             );
                         })}
                         <div className="tab-context-divider" />
-                        <button style={{ ...menuButtonStyle, opacity: visibleTabs.length <= 1 ? 0.45 : 1 }} disabled={visibleTabs.length <= 1} onClick={() => archiveTab(contextTab.id)}>{isEn ? 'Archive tab' : 'В архив'}</button>
-                        <button style={{ ...menuButtonStyle, color: '#ff5555', opacity: visibleTabs.length <= 1 ? 0.45 : 1 }} disabled={visibleTabs.length <= 1} onClick={() => deleteTab(contextTab.id)}>{isEn ? 'Delete tab' : 'Удалить вкладку'}</button>
+                        <button className="tab-context-item" disabled={visibleTabs.length <= 1} onClick={() => archiveTab(contextTab.id)}>{isEn ? 'Archive tab' : 'В архив'}</button>
+                        <button className="tab-context-item is-danger" disabled={visibleTabs.length <= 1} onClick={() => deleteTab(contextTab.id)}>{isEn ? 'Delete tab' : 'Удалить вкладку'}</button>
+                        </>)}
                     </div>
                 );
             })()}
+
+            <DeckPicker
+                open={deckPickerOpen}
+                tabName={activeTab?.name || ''}
+                current={activeTab?.ankiDeck}
+                defaultDeck={settings?.ankiDeck || ''}
+                en={isEn}
+                onPick={(deck) => { if (activeTab) setTabDeck(activeTab.id, deck || ''); setDeckPickerOpen(false); }}
+                onClose={() => setDeckPickerOpen(false)}
+            />
         </>
     );
 };

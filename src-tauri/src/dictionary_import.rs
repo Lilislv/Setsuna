@@ -20,6 +20,7 @@ static RECENT_DICTIONARY_IMPORT: OnceLock<Mutex<Option<(Vec<String>, Instant)>>>
 
 thread_local! {
     static IMPORT_BATCH_POSITION: RefCell<Option<(usize, usize)>> = const { RefCell::new(None) };
+    static IMPORT_PERCENT: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
     static IMPORT_DATABASE_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
@@ -41,6 +42,11 @@ struct ImportProgress {
     total_files: usize,
     words_added: usize,
     status: String,
+    /// Position of this dictionary in the batch (1-based) and the batch size.
+    dict_index: usize,
+    dict_count: usize,
+    /// Progress of the current dictionary, 0-100, when it is known precisely.
+    percent: Option<f64>,
 }
 
 #[tauri::command]
@@ -147,6 +153,14 @@ fn import_dictionaries_blocking(
         );
         super::core::database::ensure_dictionary_name_indexes(&db)?;
     }
+    struct ImportActiveGuard;
+    impl Drop for ImportActiveGuard {
+        fn drop(&mut self) {
+            super::core::database::IMPORT_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    super::core::database::IMPORT_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _import_active = ImportActiveGuard;
     if !cfg!(target_os = "android") { drop_import_indexes(&db)?; }
 
     let mut total_added = 0usize;
@@ -155,6 +169,7 @@ fn import_dictionaries_blocking(
         IMPORT_BATCH_POSITION.with(|position| {
             *position.borrow_mut() = Some((index + 1, total_dicts));
         });
+        IMPORT_PERCENT.with(|cell| cell.set(None));
         let display_name = Path::new(path)
             .file_name()
             .map(|value| value.to_string_lossy().into_owned())
@@ -177,6 +192,7 @@ fn import_dictionaries_blocking(
         }
     }
     IMPORT_BATCH_POSITION.with(|position| *position.borrow_mut() = None);
+    IMPORT_PERCENT.with(|cell| cell.set(Some(100.0)));
 
     emit_progress(
         &app,
@@ -306,17 +322,16 @@ fn commit_import_transaction(transaction: Transaction<'_>) -> Result<(), String>
         .map_err(|e| format!("Database save error: {}", e))
 }
 
+/// Drops only the indexes lookups never use. The term/reading indexes stay:
+/// without them every Shift-scan during an import scanned millions of rows
+/// (4 s instead of 7 ms on wty-en-en), so lookups looked broken until the
+/// import finished. Keeping them costs about 18% more import time.
 fn drop_import_indexes(db: &rusqlite::Connection) -> Result<(), String> {
     let transaction = begin_import_transaction(db)?;
     transaction
         .execute_batch(
-            "DROP INDEX IF EXISTS idx_term;
-         DROP INDEX IF EXISTS idx_reading;
-         DROP INDEX IF EXISTS idx_freq_term;
-         DROP INDEX IF EXISTS idx_freq_reading;
-         DROP INDEX IF EXISTS idx_pitch_term;
+            "DROP INDEX IF EXISTS idx_freq_reading;
          DROP INDEX IF EXISTS idx_pitch_reading;
-         DROP INDEX IF EXISTS idx_pron_term;
          DROP INDEX IF EXISTS idx_pron_reading;",
         )
         .map_err(|e| format!("Failed to prepare dictionary indexes: {}", e))?;
@@ -473,39 +488,65 @@ fn emit_progress(
     words_added: usize,
     status: &str,
 ) {
-    let (total_dicts, status) = IMPORT_BATCH_POSITION.with(|position| {
-        if let Some((current, total)) = *position.borrow() {
-            (total, format!("[{}/{}] {}", current, total, status))
-        } else {
-            (total_dicts, status.to_string())
-        }
-    });
+    let (dict_index, dict_count) = IMPORT_BATCH_POSITION
+        .with(|position| *position.borrow())
+        .unwrap_or((1, total_dicts.max(1)));
+    let percent = IMPORT_PERCENT.with(|cell| cell.get());
     app.emit(
         "import_progress",
         ImportProgress {
             dict_name: dict_name.to_string(),
-            total_dicts,
+            total_dicts: dict_count,
             current_file,
             total_files,
             words_added,
-            status,
+            status: status.to_string(),
+            dict_index,
+            dict_count,
+            percent,
         },
     )
     .ok();
 }
 
-fn stream_json_array<R, F>(reader: R, mut on_value: F) -> Result<usize, String>
+/// Counts the decompressed bytes read from an archive entry, for progress.
+struct CountingReader<R> {
+    inner: R,
+    count: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.count.set(self.count.get() + n as u64);
+        Ok(n)
+    }
+}
+
+fn stream_json_array<R, F>(reader: R, on_value: F) -> Result<usize, String>
 where
     R: Read,
     F: FnMut(Value) -> Result<(), String>,
 {
-    struct ArraySeed<'a, F> {
+    stream_json_array_of::<Value, R, F>(reader, on_value)
+}
+
+/// Streams the elements of a top-level JSON array as `T`.
+fn stream_json_array_of<T, R, F>(reader: R, mut on_value: F) -> Result<usize, String>
+where
+    T: serde::de::DeserializeOwned,
+    R: Read,
+    F: FnMut(T) -> Result<(), String>,
+{
+    struct ArraySeed<'a, T, F> {
         on_value: &'a mut F,
+        _element: std::marker::PhantomData<T>,
     }
 
-    impl<'de, 'a, F> serde::de::DeserializeSeed<'de> for ArraySeed<'a, F>
+    impl<'de, 'a, T, F> serde::de::DeserializeSeed<'de> for ArraySeed<'a, T, F>
     where
-        F: FnMut(Value) -> Result<(), String>,
+        T: serde::de::DeserializeOwned,
+        F: FnMut(T) -> Result<(), String>,
     {
         type Value = usize;
 
@@ -513,13 +554,15 @@ where
         where
             D: serde::Deserializer<'de>,
         {
-            struct ArrayVisitor<'a, F> {
+            struct ArrayVisitor<'a, T, F> {
                 on_value: &'a mut F,
+                _element: std::marker::PhantomData<T>,
             }
 
-            impl<'de, 'a, F> serde::de::Visitor<'de> for ArrayVisitor<'a, F>
+            impl<'de, 'a, T, F> serde::de::Visitor<'de> for ArrayVisitor<'a, T, F>
             where
-                F: FnMut(Value) -> Result<(), String>,
+                T: serde::de::DeserializeOwned,
+                F: FnMut(T) -> Result<(), String>,
             {
                 type Value = usize;
 
@@ -532,7 +575,7 @@ where
                     A: serde::de::SeqAccess<'de>,
                 {
                     let mut count = 0usize;
-                    while let Some(value) = seq.next_element::<Value>()? {
+                    while let Some(value) = seq.next_element::<T>()? {
                         (self.on_value)(value).map_err(serde::de::Error::custom)?;
                         count += 1;
                     }
@@ -542,13 +585,15 @@ where
 
             deserializer.deserialize_seq(ArrayVisitor {
                 on_value: self.on_value,
+                _element: std::marker::PhantomData,
             })
         }
     }
 
-    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let mut deserializer = serde_json::Deserializer::from_reader(std::io::BufReader::with_capacity(1 << 20, reader));
     let count = ArraySeed {
         on_value: &mut on_value,
+        _element: std::marker::PhantomData,
     }
     .deserialize(&mut deserializer)
     .map_err(|e| format!("Failed to stream JSON array: {}", e))?;
@@ -723,6 +768,16 @@ fn import_yomitan_zip(
         "Removing previous version...",
     );
     let mut words_added = 0usize;
+    let is_bank = |name: &str| {
+        !name.contains("__MACOSX")
+            && name.ends_with(".json")
+            && (name.contains("term_bank_") || name.contains("kanji_bank_") || name.contains("term_meta_bank_"))
+    };
+    let total_bytes: u64 = (0..total_files)
+        .filter_map(|i| archive.by_index_raw(i).ok().filter(|f| is_bank(f.name())).map(|f| f.size()))
+        .sum::<u64>()
+        .max(1);
+    let done_bytes = std::rc::Rc::new(std::cell::Cell::new(0u64));
 
     // A revision may have a different title (for example `JMdict [2026-07-31]`)
     // while keeping the same update source. Remove the previous revision inside
@@ -789,22 +844,36 @@ fn import_yomitan_zip(
             Err(_) => continue,
         };
         let file_name = file.name().to_string();
-        if file_name.contains("__MACOSX")
-            || !file_name.ends_with(".json")
-            || !(file_name.contains("term_bank_")
-                || file_name.contains("kanji_bank_")
-                || file_name.contains("term_meta_bank_"))
-        {
+        if !is_bank(&file_name) {
             continue;
         }
 
-        let imported = stream_json_array(file, |entry| {
-            let Some(data_arr) = entry.as_array() else {
-                return Ok(());
-            };
-            import_yomitan_bank_entry(&tx, &file_name, data_arr, &dict_name, &mut words_added);
-            Ok(())
-        });
+        let reader = CountingReader { inner: file, count: done_bytes.clone() };
+        let mut last_emit = Instant::now();
+        let mut report = |words_added: usize| {
+            if words_added % 2048 == 0 && last_emit.elapsed() >= Duration::from_millis(250) {
+                last_emit = Instant::now();
+                let percent = (done_bytes.get() as f64 / total_bytes as f64 * 100.0).min(99.0);
+                IMPORT_PERCENT.with(|cell| cell.set(Some(percent)));
+                emit_progress(app, &dict_name, 1, i + 1, total_files, words_added, "Reading dictionary archive...");
+            }
+        };
+        let imported = if file_name.contains("term_bank_") {
+            stream_json_array_of::<Vec<Box<serde_json::value::RawValue>>, _, _>(reader, |row| {
+                import_yomitan_term_raw(&tx, &row, &dict_name, &mut words_added);
+                report(words_added);
+                Ok(())
+            })
+        } else {
+            stream_json_array(reader, |entry| {
+                let Some(data_arr) = entry.as_array() else {
+                    return Ok(());
+                };
+                import_yomitan_bank_entry(&tx, &file_name, data_arr, &dict_name, &mut words_added);
+                report(words_added);
+                Ok(())
+            })
+        };
         if let Err(error) = imported {
             return Err(format!("Failed to import {}: {}", file_name, error));
         }
@@ -2620,6 +2689,40 @@ fn insert_entry(
     }
 }
 
+/// Imports one `term_bank` row whose fields are still raw JSON. The glossary
+/// (by far the largest field) is stored as its original text instead of being
+/// parsed into a tree and serialized back.
+fn import_yomitan_term_raw(
+    tx: &Transaction<'_>,
+    row: &[Box<serde_json::value::RawValue>],
+    dict_name: &str,
+    words_added: &mut usize,
+) {
+    let text = |index: usize| -> String {
+        row.get(index)
+            .and_then(|raw| serde_json::from_str::<Option<String>>(raw.get()).ok().flatten())
+            .unwrap_or_default()
+    };
+    let term = text(0);
+    let reading = text(1);
+    let tags = format!("{} {}", text(2), text(7)).trim().to_string();
+    let rules = row
+        .get(3)
+        .and_then(|raw| serde_json::from_str::<Option<String>>(raw.get()).ok().flatten());
+    let score = row
+        .get(4)
+        .and_then(|raw| serde_json::from_str::<f64>(raw.get()).ok())
+        .map(|value| value as i64)
+        .unwrap_or(0);
+    let definition = row.get(5).map(|raw| raw.get()).unwrap_or("[]");
+    if !term.trim().is_empty() {
+        let result = tx.prepare_cached("INSERT INTO entries (term, reading, definition, dict_name, tags, lookup_rules, score) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
+            .and_then(|mut statement| statement.execute(params![term, reading, definition, dict_name, tags, rules, score]));
+        if let Err(error) = result { remember_import_database_error(error.to_string()); }
+    }
+    *words_added += 1;
+}
+
 fn import_yomitan_bank_entry(
     tx: &Transaction<'_>,
     file_name: &str,
@@ -2826,6 +2929,51 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use std::io::Cursor;
+
+
+    #[test]
+    fn raw_term_rows_import_like_parsed_rows() {
+        // Row shapes seen in real dictionaries: null tags, float score,
+        // structured content and a plain gloss list.
+        let bank = r#"[
+            ["abuse", "", null, "n", 0.5, [{"type": "structured-content", "content": [{"tag": "ol", "content": [{"tag": "li", "content": "злоупотребление"}]}]}], 1, "common"],
+            ["食べる", "たべる", "v1", "v1", 12, ["to eat"], 2, ""],
+            ["", "", "", "", 0, [], 3, ""]
+        ]"#;
+        let import = |raw: bool| {
+            let mut conn = Connection::open_in_memory().unwrap();
+            crate::core::database::ensure_canonical_schema(&mut conn).unwrap();
+            let tx = conn.transaction().unwrap();
+            let mut added = 0usize;
+            if raw {
+                stream_json_array_of::<Vec<Box<serde_json::value::RawValue>>, _, _>(Cursor::new(bank), |row| {
+                    import_yomitan_term_raw(&tx, &row, "Test", &mut added);
+                    Ok(())
+                }).unwrap();
+            } else {
+                stream_json_array(Cursor::new(bank), |entry| {
+                    import_yomitan_bank_entry(&tx, "term_bank_1.json", entry.as_array().unwrap(), "Test", &mut added);
+                    Ok(())
+                }).unwrap();
+            }
+            tx.commit().unwrap();
+            let mut stmt = conn.prepare("SELECT term, reading, definition, tags, COALESCE(lookup_rules, ''), score FROM entries ORDER BY term").unwrap();
+            let rows: Vec<(String, String, Value, String, String, i64)> = stmt
+                .query_map([], |r| {
+                    let definition: String = r.get(2)?;
+                    Ok((r.get(0)?, r.get(1)?, serde_json::from_str(&definition).unwrap(), r.get(3)?, r.get(4)?, r.get(5)?))
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            (added, rows)
+        };
+        let parsed = import(false);
+        let raw = import(true);
+        assert_eq!(raw.0, 3);
+        assert_eq!(raw.1.len(), 2, "the empty term is skipped");
+        assert_eq!(raw, parsed);
+    }
 
     #[test]
     fn stardict_companions_are_imported_as_one_dictionary() {

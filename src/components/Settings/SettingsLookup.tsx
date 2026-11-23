@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import DictionaryShare from "./DictionaryShare";
 import { useJelly } from "../../utils/jelly";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openMobileDictionaryPicker } from "../../utils/mobileFiles";
@@ -125,7 +126,9 @@ function SortableDictItem({ dict, idx, totalLen, toggleDict, changeDictColor, de
     return (
         <div ref={setRefs} style={style} onClick={() => isSelectionMode && toggleSelection(dict.name)}>
             <div className="dictionary-item-header" style={{ display: "flex", alignItems: "center", gap: "10px", width: "100%" }}>
-                <span {...attributes} {...listeners} style={{ color: "var(--text-muted)", fontSize: "18px", padding: "0 5px", cursor: "grab", touchAction: "none" }}>☰</span>
+                <span {...attributes} {...listeners} className="dict-row-grip" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></svg>
+                </span>
                 <span style={{ color: "var(--text-muted)", fontSize: "12px", width: "20px", textAlign: "right", userSelect: "none" }}>{idx + 1}.</span>
                 {!isSelectionMode && <input type="checkbox" aria-label={dict.name} checked={dict.active} onChange={() => toggleDict(idx)} style={{ cursor: "pointer" }} />}
                 <span className="dictionary-item-name" style={{ color: dict.active || isSelectionMode ? "var(--text-main)" : "var(--text-muted)", fontSize: "14px", flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", userSelect: "none" }}>{dict.name}</span>
@@ -134,17 +137,23 @@ function SortableDictItem({ dict, idx, totalLen, toggleDict, changeDictColor, de
                         type="button"
                         onClick={(event) => { event.stopPropagation(); updateDictionary(dict.name); }}
                         disabled={isUpdating}
-                        style={{ background: "rgba(79,166,255,0.12)", color: "var(--accent-blue)", border: "1px solid rgba(79,166,255,0.35)", padding: "3px 7px", borderRadius: "4px", cursor: isUpdating ? "default" : "pointer", opacity: isUpdating ? 0.6 : 1, whiteSpace: "nowrap" }}
+                        className="dict-row-update"
                         title={`${updateStatus.currentRevision || "?"} -> ${updateStatus.latestRevision || "?"}`}
                     >
                         {isUpdating ? "..." : updateLabel}
                     </button>
                 )}
                 <input type="color" value={dict.color || "#4fa6ff"} onChange={(e) => changeDictColor(idx, e.target.value)} onClick={(e) => isSelectionMode && e.stopPropagation()} style={{ width: "24px", height: "24px", border: "none", background: "none", cursor: "pointer", padding: 0 }} title={t.color} />
-                <div style={{ display: "flex", gap: "4px", marginRight: "5px" }}>
-                    <button onClick={(e) => { e.stopPropagation(); moveDict(idx, -1); }} disabled={idx === 0} style={{ background: "var(--bg-main)", color: "var(--text-main)", border: "1px solid var(--border-main)", padding: "2px 6px", borderRadius: "4px", cursor: idx === 0 ? "default" : "pointer", opacity: idx === 0 ? 0.3 : 1 }}>↑</button>
-                    <button onClick={(e) => { e.stopPropagation(); moveDict(idx, 1); }} disabled={idx === totalLen - 1} style={{ background: "var(--bg-main)", color: "var(--text-main)", border: "1px solid var(--border-main)", padding: "2px 6px", borderRadius: "4px", cursor: idx === totalLen - 1 ? "default" : "pointer", opacity: idx === totalLen - 1 ? 0.3 : 1 }}>↓</button>
-                    <button onClick={(e) => { e.stopPropagation(); deleteDict(idx); }} style={{ background: "rgba(255,68,68,0.1)", color: "#ff4444", border: "1px solid rgba(255,68,68,0.3)", padding: "2px 6px", borderRadius: "4px", cursor: "pointer", marginLeft: "4px" }} title={t.deleteDictionary}>x</button>
+                <div className="dict-row-actions">
+                    <button type="button" className="dict-row-btn" onClick={(e) => { e.stopPropagation(); moveDict(idx, -1); }} disabled={idx === 0} aria-label="↑">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6" /></svg>
+                    </button>
+                    <button type="button" className="dict-row-btn" onClick={(e) => { e.stopPropagation(); moveDict(idx, 1); }} disabled={idx === totalLen - 1} aria-label="↓">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+                    </button>
+                    <button type="button" className="dict-row-btn is-danger" onClick={(e) => { e.stopPropagation(); deleteDict(idx); }} title={t.deleteDictionary} aria-label={t.deleteDictionary}>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                    </button>
                 </div>
             </div>
         </div>
@@ -251,6 +260,7 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
     const [checkingUpdates, setCheckingUpdates] = useState(false);
     const [updatingDictionary, setUpdatingDictionary] = useState<string | null>(null);
     const [dictionaryUpdateMessage, setDictionaryUpdateMessage] = useState("");
+    const [shareDialog, setShareDialog] = useState<null | { tab: "share" | "receive" | "mine"; selection: string[] }>(null);
 
     const checkDictionaryUpdates = async () => {
         setCheckingUpdates(true);
@@ -490,6 +500,16 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
             </div>
 
             </>}
+            {shareDialog && (
+                <DictionaryShare
+                    language={settings.appLanguage === "en" ? "en" : "ru"}
+                    dictionaries={settings.dictionaries || []}
+                    initialSelection={shareDialog.selection}
+                    initialTab={shareDialog.tab}
+                    onClose={() => setShareDialog(null)}
+                    syncDictionaries={syncDictionaries}
+                />
+            )}
             <div id="lookup-dicts" className={`modern-card ${highlightedSection === "lookup-dicts" ? "card-highlighted" : ""}`} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
                     <div className="card-label" style={{ margin: 0, color: "var(--text-main)" }}>{t.dictionaries}</div>
@@ -498,11 +518,12 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
                             {checkingUpdates ? "..." : (settings.appLanguage === "en" ? "Check updates" : "Проверить обновления")}
                         </button>
                         <button onClick={handleDictionaryImport} className="btn-primary" style={{ padding: "6px 12px" }}>+ {t.import}</button>
+                        <button onClick={() => setShareDialog({ tab: "share", selection: [] })} style={{ background: "var(--bg-side)", border: "1px solid var(--border-main)", color: "var(--text-main)", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>{settings.appLanguage === "en" ? "Share" : "Обмен"}</button>
                         <button onClick={() => { setIsSelectionMode(!isSelectionMode); setSelectedDicts([]); }} style={{ background: isSelectionMode ? "var(--accent-blue)" : "var(--bg-side)", border: `1px solid ${isSelectionMode ? "var(--accent-blue)" : "var(--border-main)"}`, color: isSelectionMode ? "#fff" : "var(--text-main)", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>{isSelectionMode ? t.done : t.select}</button>
                     </div>
                 </div>
                 {dictionaryUpdateMessage && <div style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "10px" }}>{dictionaryUpdateMessage}</div>}
-                {selectedDicts.length > 0 && isSelectionMode && <div style={{ marginBottom: "10px" }}><button onClick={handleDeleteSelected} style={{ background: "rgba(255, 68, 68, 0.1)", color: "#ff4444", border: "1px solid rgba(255, 68, 68, 0.3)", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>{t.deleteSelectedButton(selectedDicts.length)}</button></div>}
+                {selectedDicts.length > 0 && isSelectionMode && <div style={{ marginBottom: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}><button onClick={() => setShareDialog({ tab: "share", selection: selectedDicts })} style={{ background: "rgba(79,166,255,0.12)", color: "var(--accent-blue)", border: "1px solid rgba(79,166,255,0.35)", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>{settings.appLanguage === "en" ? `Share (${selectedDicts.length})` : `Поделиться (${selectedDicts.length})`}</button><button onClick={handleDeleteSelected} className="dict-row-danger-button">{t.deleteSelectedButton(selectedDicts.length)}</button></div>}
                 <div style={{ background: "var(--bg-main)", border: "1px solid var(--border-main)", borderRadius: "6px", padding: "10px" }}>
                     {(!settings.dictionaries || settings.dictionaries.length === 0) ? (
                         <div style={{ color: "var(--text-muted)", fontSize: "13px", textAlign: "center", padding: "10px" }}>{t.noDictionaries}</div>

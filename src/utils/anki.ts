@@ -3,6 +3,7 @@
     expiresAt: number;
 };
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+import { SETSUNA_CARD_TEMPLATES, SETSUNA_MODEL_CSS, SETSUNA_TEMPLATE_NAME, isCurrentSetsunaTemplate } from "./ankiCardTemplate";
 import { invoke } from '@tauri-apps/api/core';
 import { resolveDictionaryAudio, type LocalAudioClip } from './dictionaryAudio';
 
@@ -282,19 +283,49 @@ export const getModelFields = async (
     return promise;
 };
 
-const SETSUNA_MODEL_CSS = `
-.card { font-family: Arial, sans-serif; font-size: 22px; text-align: center; color: #222; background: #fff; }
-.sentence { margin-top: 18px; font-size: 18px; text-align: left; }
-.definition { margin-top: 16px; text-align: left; white-space: pre-wrap; }
-`;
+let setsunaModelChecked = false;
 
-const SETSUNA_CARD_TEMPLATES = [
-    {
-        Name: "Setsuna card",
-        Front: "{{Expression}}<br><small>{{ExpressionReading}}</small>",
-        Back: "{{FrontSide}}<hr id=answer><div class=definition>{{MainDefinition}}</div><div class=sentence>{{Sentence}}</div>{{ExpressionAudio}}",
-    },
-];
+/**
+ * Brings an existing "Setsuna Japanese" note type to the current card design.
+ * Only Setsuna's own note type is touched, and only when its templates are
+ * older; cards keep their fields and review history. Desktop only.
+ */
+export const upgradeSetsunaModel = async (force = false): Promise<boolean> => {
+    if (getAnkiDroidBridge() || (setsunaModelChecked && !force)) return false;
+    try {
+        const templates = await invokeAnki("modelTemplates", { modelName: SETSUNA_DEFAULT_MODEL }) as Record<string, { Front: string; Back: string }> | null;
+        if (!templates) return false;
+        setsunaModelChecked = true;
+        const current = templates[SETSUNA_TEMPLATE_NAME];
+        if (current && isCurrentSetsunaTemplate(current.Front)) return false;
+        const fresh = SETSUNA_CARD_TEMPLATES[0];
+        // A renamed template can't be updated by name; leave the user's edits alone then.
+        const name = current ? SETSUNA_TEMPLATE_NAME : Object.keys(templates)[0];
+        if (!name) return false;
+        await invokeAnki("updateModelTemplates", { model: { name: SETSUNA_DEFAULT_MODEL, templates: { [name]: { Front: fresh.Front, Back: fresh.Back } } } });
+        await invokeAnki("updateModelStyling", { model: { name: SETSUNA_DEFAULT_MODEL, css: SETSUNA_MODEL_CSS } });
+        return true;
+    } catch (error) {
+        console.warn("Could not upgrade the Setsuna note type", error);
+        return false;
+    }
+};
+
+const createSetsunaModel = async () => {
+    try {
+        await invokeAnki("createModel", {
+            modelName: SETSUNA_DEFAULT_MODEL,
+            inOrderFields: SETSUNA_MODEL_FIELDS,
+            css: SETSUNA_MODEL_CSS,
+            cardTemplates: SETSUNA_CARD_TEMPLATES,
+        });
+        setsunaModelChecked = true;
+        return true;
+    } catch (error) {
+        console.warn("Could not create the default Setsuna model", error);
+        return false;
+    }
+};
 
 /**
  * Makes a blank Anki profile usable without requiring the Lapis note type.
@@ -333,26 +364,21 @@ export const ensureSetsunaAnkiSetup = async (): Promise<AnkiSetup> => {
         decks = await getDecks(true);
     }
 
-    if (models.length === 0) {
-        try {
-            await invokeAnki("createModel", {
-                modelName: SETSUNA_DEFAULT_MODEL,
-                inOrderFields: SETSUNA_MODEL_FIELDS,
-                css: SETSUNA_MODEL_CSS,
-                cardTemplates: SETSUNA_CARD_TEMPLATES,
-            });
-            createdModel = true;
-        } catch (error) {
-            console.warn("Could not create the default Setsuna model", error);
-        }
+    // A clean Anki has Basic and Cloze, which can't hold a mining card: without
+    // Lapis, Setsuna's own note type is created (it used to wait for a profile
+    // with no note types at all, which never happens).
+    if (!findLapisModel(models) && !models.includes(SETSUNA_DEFAULT_MODEL)) {
+        createdModel = await createSetsunaModel();
         clearAnkiMetaCache();
         models = await getModels(true);
+    } else if (models.includes(SETSUNA_DEFAULT_MODEL)) {
+        await upgradeSetsunaModel();
     }
 
     const defaultDeck = decks.includes(SETSUNA_DEFAULT_DECK)
         ? SETSUNA_DEFAULT_DECK
         : (decks[0] || "");
-    const defaultModel = models.find((model) => /lapis/i.test(model))
+    const defaultModel = findLapisModel(models)
         || models.find((model) => model === SETSUNA_DEFAULT_MODEL)
         || models[0]
         || "";
@@ -370,26 +396,29 @@ export const ensureSetsunaAnkiSetup = async (): Promise<AnkiSetup> => {
 };
 
 
+/** Lapis itself first, then its copies ("Lapis+", …). */
+export const findLapisModel = (models: string[]) =>
+    models.find((model) => /^lapis$/i.test(model.trim())) || models.find((model) => /lapis/i.test(model)) || "";
+
 /**
- * Makes sure Setsuna's own note type exists (creating it if needed) and
- * returns its fields. Used by the first-run wizard, which always starts users
- * on the default card format.
+ * Picks the note type for the first-run wizard: the one already chosen if it
+ * still exists, else Lapis, else Setsuna's own simple type (created if needed).
+ * It never replaces Lapis with the simple type: that sent cards to the wrong
+ * note type for people who had Lapis set up.
  */
-export const ensureSetsunaNoteType = async (): Promise<{ model: string; fields: string[]; models: string[] }> => {
+export const ensureSetsunaNoteType = async (current = ""): Promise<{ model: string; fields: string[]; models: string[] }> => {
     let models = await getModels(true);
+    const keep = current && models.includes(current) && current !== SETSUNA_DEFAULT_MODEL ? current : "";
+    const preferred = keep || findLapisModel(models);
+    if (preferred) {
+        return { model: preferred, fields: await getModelFields(preferred, true), models };
+    }
     if (!models.includes(SETSUNA_DEFAULT_MODEL) && !getAnkiDroidBridge()) {
-        try {
-            await invokeAnki("createModel", {
-                modelName: SETSUNA_DEFAULT_MODEL,
-                inOrderFields: SETSUNA_MODEL_FIELDS,
-                css: SETSUNA_MODEL_CSS,
-                cardTemplates: SETSUNA_CARD_TEMPLATES,
-            });
-        } catch (error) {
-            console.warn("Could not create the default Setsuna model", error);
-        }
+        await createSetsunaModel();
         clearAnkiMetaCache();
         models = await getModels(true);
+    } else {
+        await upgradeSetsunaModel();
     }
     const model = models.includes(SETSUNA_DEFAULT_MODEL) ? SETSUNA_DEFAULT_MODEL : (models[0] || "");
     const fields = model ? await getModelFields(model, true) : [];
@@ -565,6 +594,9 @@ export const addNote = async (settings: any, noteData: any) => {
     const bridge = getAnkiDroidBridge();
     let localAudio: LocalAudioClip | null = null;
     let audioWarning: string | undefined;
+
+    // Cards made with an older copy of Setsuna's note type get the new design too.
+    if (!bridge && settings.ankiModel === SETSUNA_DEFAULT_MODEL) await upgradeSetsunaModel();
 
     // Older settings may contain a model/deck but no field mapping because the
     // profile used to require Lapis. Resolve missing fields at card-add time so

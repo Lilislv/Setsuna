@@ -16,6 +16,9 @@ import "./styles/motion.css";
 import "./index.css";
 import "./App.css";
 import "./lookup-window.css";
+import { disableNativeContextMenu } from "./utils/nativeContextMenu";
+
+disableNativeContextMenu();
 
 type HoveredText = {
   x: number;

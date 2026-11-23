@@ -11,7 +11,9 @@ import SettingsAnki from "./Settings/SettingsAnki";
 import SettingsFeedback from './Settings/SettingsFeedback';
 import SettingsCloud from "./Settings/SettingsCloud";
 import SettingsDiscord from "./Settings/SettingsDiscord";
-import { IconArchive, IconBookTab, IconClose, IconCloud, IconEye, IconImport, IconMessage, IconRefresh, IconSearch, IconTextTab } from "./Icons";
+import SettingsAI from "./Settings/SettingsAI";
+import { isMobilePlatform } from "../utils/platform";
+import { IconBookTab, IconClose, IconCloud, IconEye, IconImport, IconMessage, IconRefresh, IconSearch, IconSparkle, IconTextTab } from "./Icons";
 import { DEFAULT_SETTINGS } from "../utils/constants";
 import { getTranslator } from "../utils/i18n";
 import "./SettingsModal.css";
@@ -49,6 +51,8 @@ export interface AppSettings {
   jlModeFontSize?: number; jlModeFontFamily?: string; jlModeOpacity?: number; jlModeTextColor?: string; jlModeBackgroundColor?: string; jlModeBorderColor?: string; jlModeAlwaysOnTop?: boolean; jlModeShowControls?: boolean; jlModePadding?: number; jlModeLookupOnClick?: boolean;
   jlModeLookupTrigger?: 'hover' | 'click' | 'both'; jlModeHoverDelay?: number; jlModeBacklogCapacity?: number; jlModeHideLookupOnNewText?: boolean; jlModeAutoLookupFirstWord?: boolean;
   jlModeLookupMode?: 'scan' | 'click'; jlModeScanDelay?: number;
+  aiEnabled?: boolean; aiLineButtons?: boolean; aiLanguage?: 'ru' | 'uk'; aiModel?: string;
+  aiExplainLanguage?: 'ru' | 'uk' | 'ja' | 'en'; aiSourceLanguage?: 'auto' | 'ja' | 'en'; aiDetail?: 'detailed' | 'brief'; aiCustomPrompt?: string;
   mobileOverlayEnabled?: boolean; mobileOverlayFontSize?: number; mobileOverlayFontFamily?: 'serif' | 'sans' | 'monospace'; mobileOverlayLineHeight?: number;
   mobileOverlayOpacity?: number; mobileOverlayTextColor?: string; mobileOverlayBackgroundColor?: string; mobileOverlayBorderColor?: string;
   mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
@@ -68,11 +72,10 @@ interface SettingsModalProps {
     isOpen: boolean; onClose: () => void; settings: AppSettings; onSettingsChange: (newSettings: AppSettings) => void; tabs: any[]; setTabs: (t: any[]) => void; 
     syncDictionaries: () => Promise<void>; runDictImport: (path: string | string[]) => Promise<boolean>;
     onResetSettings: () => void; onClearLookup: () => void; onCheckForUpdates?: (manual?: boolean) => Promise<void>; updateChecking?: boolean;
-    onOpenArchivedTab?: (id: number) => void;
     initialSection?: string | null;
 }
 
-type SettingsTab = 'text' | 'sync' | 'archive' | 'jl' | 'epub' | 'lookup' | 'anki' | 'cloud' | 'player' | 'discord' | 'updates' | 'feedback';
+type SettingsTab = 'text' | 'sync' | 'jl' | 'epub' | 'lookup' | 'anki' | 'ai' | 'cloud' | 'player' | 'discord' | 'updates' | 'feedback';
 
 interface SettingsNavButtonProps {
   active: boolean;
@@ -108,7 +111,7 @@ interface AccountDevice {
   lastSeenAt?: string;
 }
 
-export default function SettingsModal({ isOpen, onClose, settings, onSettingsChange, tabs, setTabs, syncDictionaries, runDictImport, onClearLookup, onCheckForUpdates, updateChecking = false, onOpenArchivedTab, initialSection = null }: SettingsModalProps) {
+export default function SettingsModal({ isOpen, onClose, settings, onSettingsChange, tabs, setTabs, syncDictionaries, runDictImport, onClearLookup, onCheckForUpdates, updateChecking = false, initialSection = null }: SettingsModalProps) {
   const t = getTranslator(settings.appLanguage || 'ru');
   const [activeTab, setActiveTab] = useState<SettingsTab>('text');
   const [activeSubTab, setActiveSubTab] = useState<string>('text-app');
@@ -816,10 +819,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           const target = initialSection.startsWith('text-') ? initialSection : 'text-src';
           setActiveSubTab(target);
           setHighlightedSection(target);
-      } else if (initialSection === 'archive-main') {
-          setActiveTab('archive');
-          setActiveSubTab('archive-main');
-          setHighlightedSection('archive-main');
       } else if (initialSection.startsWith('anki-')) {
           setActiveTab('anki');
           setActiveSubTab(initialSection);
@@ -841,11 +840,11 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
   const sectionMeta: Record<SettingsTab, { title: string; description: string }> = {
       text: { title: t('settings.nav.text'), description: isEnglish ? 'Appearance, text sources and reading behavior' : 'Внешний вид, источники текста и поведение читалки' },
       sync: { title: 'Setsuna Sync', description: isEnglish ? 'Connected devices and capture' : 'Подключённые устройства и захват' },
-      archive: { title: isEnglish ? 'Archive' : 'Архив', description: isEnglish ? 'Finished and paused reading sessions' : 'Завершённые и отложенные сессии' },
       jl: { title: 'Setsuna Flow', description: isEnglish ? 'Floating reading mode' : 'Компактный режим чтения поверх окон' },
       epub: { title: isEnglish ? 'EPUB reader' : 'EPUB-ридер', description: isEnglish ? 'Book reader settings' : 'Настройки чтения книг' },
       lookup: { title: t('settings.nav.lookup'), description: isEnglish ? 'Lookup window, dictionaries and shortcuts' : 'Окно поиска, словари и горячие клавиши' },
       anki: { title: 'Anki', description: isEnglish ? 'Cards, decks and screenshots' : 'Карточки, колоды и скриншоты' },
+      ai: { title: isEnglish ? 'AI explanations' : 'ИИ-объяснения', description: isEnglish ? 'A local model that explains lines in Russian or Ukrainian' : 'Локальная модель объясняет строки на русском или украинском' },
       cloud: { title: 'Google Drive', description: isEnglish ? 'Private backups and restore' : 'Приватные резервные копии и восстановление' },
       player: { title: isEnglish ? 'Player' : 'Плеер', description: isEnglish ? 'Video and subtitle settings' : 'Видео и настройки субтитров' },
       discord: { title: 'Discord', description: isEnglish ? 'Rich Presence and activity preview' : 'Rich Presence и предпросмотр активности' },
@@ -863,7 +862,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           .tab-content-anim { animation: tabFadeIn 0.25s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; display: flex; flex-direction: column; gap: 25px; }
           @keyframes smoothFlash { 0% { border-color: var(--border-main); background-color: var(--bg-panel); box-shadow: none; } 15% { border-color: var(--accent-blue); background-color: rgba(79, 166, 255, 0.08); box-shadow: 0 0 10px rgba(79, 166, 255, 0.2); } 100% { border-color: var(--border-main); background-color: var(--bg-panel); box-shadow: none; } }
           .card-highlighted { animation: smoothFlash 1s ease-in-out forwards; }
-          .tiny-scroll::-webkit-scrollbar { width: 6px; } .tiny-scroll::-webkit-scrollbar-track { background: var(--bg-main); border-radius: 4px; } .tiny-scroll::-webkit-scrollbar-thumb { background: var(--border-main); border-radius: 4px; } .tiny-scroll::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+          .tiny-scroll::-webkit-scrollbar { width: 6px; } 
       `}</style>
 
       {wizardOpen && (
@@ -924,7 +923,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                       <SettingsSubNavButton active={activeSubTab === 'text-src'} label={t('settings.nav.sources')} onClick={() => handleNav('text', 'text-src')} />
                       <SettingsSubNavButton active={activeSubTab === 'text-filters'} label={t('settings.nav.filters')} onClick={() => handleNav('text', 'text-filters')} />
                   </div>}
-                  <SettingsNavButton active={activeTab === 'archive'} icon={<IconArchive />} label={isEnglish ? 'Archive' : 'Архив'} onClick={() => handleNav('archive', 'archive-main')} />
                   <SettingsNavButton active={activeTab === 'jl'} icon={<IconTextTab />} label="Setsuna Flow" onClick={() => handleNav('jl', 'jl-main')} />
               </div>
 
@@ -941,6 +939,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                       <SettingsSubNavButton active={activeSubTab === 'anki-audio'} label={isEnglish ? 'Audio' : 'Озвучка'} onClick={() => handleNav('anki', 'anki-audio')} />
                       <SettingsSubNavButton active={activeSubTab === 'anki-hooks'} label={t('settings.nav.screenshots')} onClick={() => handleNav('anki', 'anki-hooks')} />
                   </div>}
+                  {!isMobilePlatform() && <SettingsNavButton active={activeTab === 'ai'} icon={<IconSparkle />} label={isEnglish ? 'AI explanations' : 'ИИ-объяснения'} onClick={() => handleNav('ai', 'ai-main')} />}
               </div>
 
               <div className="settings-nav-group">
@@ -1438,67 +1437,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                 </div>
               )}
 
-              {activeTab === 'archive' && (
-                <div className="tab-content-anim">
-                  <div id="archive-main" className={`modern-card ${highlightedSection === 'archive-main' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>
-                      <div className="card-label" style={{ color: 'var(--text-main)' }}>
-                          {settings.appLanguage === 'en' ? 'Archived tabs' : 'Архив вкладок'}
-                      </div>
-                      <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: 1.5, marginBottom: 14 }}>
-                          {settings.appLanguage === 'en'
-                              ? 'Archived tabs are hidden from the top bar but stay in the workspace and sync state.'
-                              : 'Архивные вкладки скрыты с верхней панели, но остаются в рабочем состоянии и синхронизации.'}
-                      </div>
-                      {(tabs || []).filter((tab: any) => tab.archived).length === 0 ? (
-                          <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: 18, border: '1px dashed var(--border-main)', borderRadius: 6 }}>
-                              {settings.appLanguage === 'en' ? 'Archive is empty.' : 'Архив пуст.'}
-                          </div>
-                      ) : (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                              <button
-                                  className="btn-primary"
-                                  onClick={() => setTabs((tabs || []).map((tab: any) => tab.archived ? { ...tab, archived: false } : tab))}
-                                  style={{ alignSelf: 'flex-start', padding: '7px 12px', marginBottom: 8 }}
-                              >
-                                  {settings.appLanguage === 'en' ? 'Restore all' : 'Вернуть всё'}
-                              </button>
-                              {(tabs || []).filter((tab: any) => tab.archived).map((tab: any) => (
-                                  <div key={tab.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto auto', gap: 8, alignItems: 'center', background: 'var(--bg-side)', border: '1px solid var(--border-main)', borderRadius: 6, padding: 10 }}>
-                                      <div style={{ minWidth: 0 }}>
-                                          <div style={{ color: 'var(--text-main)', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.name}</div>
-                                          <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>{(tab.lines || []).length} lines · {Math.round((tab.stats?.time || 0) / 60)} min</div>
-                                      </div>
-                                      <button
-                                          className="btn-primary"
-                                          onClick={() => {
-                                              setTabs((tabs || []).map((item: any) => item.id === tab.id ? { ...item, archived: false } : item));
-                                              onOpenArchivedTab?.(tab.id);
-                                          }}
-                                          style={{ padding: '6px 10px' }}
-                                      >
-                                          {settings.appLanguage === 'en' ? 'Open' : 'Открыть'}
-                                      </button>
-                                      <button
-                                          className="btn-primary"
-                                          onClick={() => setTabs((tabs || []).map((item: any) => item.id === tab.id ? { ...item, archived: false } : item))}
-                                          style={{ padding: '6px 10px' }}
-                                      >
-                                          {settings.appLanguage === 'en' ? 'Restore' : 'Вернуть'}
-                                      </button>
-                                      <button
-                                          onClick={() => setTabs((tabs || []).filter((item: any) => item.id !== tab.id))}
-                                          style={{ background: 'rgba(255,68,68,0.1)', color: '#ff4444', border: '1px solid rgba(255,68,68,0.3)', borderRadius: 4, padding: '6px 10px', cursor: 'pointer' }}
-                                      >
-                                          {settings.appLanguage === 'en' ? 'Delete' : 'Удалить'}
-                                      </button>
-                                  </div>
-                              ))}
-                          </div>
-                      )}
-                  </div>
-                </div>
-              )}
-
               {activeTab === 'jl' && (
                 <div className="tab-content-anim">
                     <div id="jl-main" className={`modern-card ${highlightedSection === 'jl-main' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>
@@ -1578,6 +1516,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                         </div>
                     </div>
                 </div>
+              )}
+
+              {activeTab === 'ai' && (
+                <SettingsAI settings={settings} updateSetting={updateSetting} highlighted={highlightedSection === 'ai-main'} />
               )}
 
               {/* === EPUB TAB === */}
@@ -1776,11 +1718,11 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
       {confirmDialog && (
           <div className="modal-overlay" style={{ zIndex: 100000, position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setConfirmDialog(null)}>
               <div className="modern-modal" onClick={e => e.stopPropagation()} style={{ width: '400px', height: 'auto', minHeight: 'auto', padding: '25px', textAlign: 'center', display: 'block', background: 'var(--bg-panel)', border: '1px solid var(--border-main)', borderRadius: '8px' }}>
-                  <h3 style={{ marginTop: 0, color: 'var(--text-main)', fontSize: '18px', fontWeight: 'bold' }}>{confirmDialog.title}</h3>
+                  <h3 style={{ marginTop: 0, color: 'var(--text-main)', fontSize: '18px', fontWeight: 600 }}>{confirmDialog.title}</h3>
                   <p style={{ color: 'var(--text-muted)', marginBottom: '25px', lineHeight: '1.5', fontSize: '14px' }}>{confirmDialog.message}</p>
                   <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
-                      <button className="btn-primary" style={{ background: 'transparent', color: 'var(--text-main)', border: '1px solid var(--border-main)', padding: '8px 20px' }} onClick={() => setConfirmDialog(null)}>{t('common.cancel')}</button>
-                      <button className="btn-primary" style={{ background: '#ff4444', border: 'none', padding: '8px 20px' }} onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}>{t('common.confirm')}</button>
+                      <button className="btn-primary btn-secondary" style={{ padding: '8px 20px' }} onClick={() => setConfirmDialog(null)}>{t('common.cancel')}</button>
+                      <button className="btn-primary btn-danger" style={{ padding: '8px 20px' }} onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}>{t('common.confirm')}</button>
                   </div>
               </div>
           </div>
@@ -1793,8 +1735,8 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                   <h3 style={{ marginTop: 0, color: 'var(--text-main)' }}>{t('settings.reset')}</h3>
                   <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '14px' }}>{t('settings.resetQuestion')}</p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <button className="btn-primary" style={{ background: 'var(--bg-side)', color: 'var(--text-main)', border: '1px solid var(--border-main)' }} onClick={handleResetVisuals}>{t('settings.resetVisuals')}</button>
-                      <button className="btn-primary" style={{ background: '#ff4444', border: 'none' }} onClick={handleResetAll}>{t('settings.resetAll')}</button>
+                      <button className="btn-primary btn-secondary" onClick={handleResetVisuals}>{t('settings.resetVisuals')}</button>
+                      <button className="btn-primary btn-danger" onClick={handleResetAll}>{t('settings.resetAll')}</button>
                       <button className="btn-primary" style={{ background: 'transparent', color: 'var(--text-muted)', border: 'none', marginTop: '10px' }} onClick={() => setResetDialog(false)}>{t('common.cancel')}</button>
                   </div>
               </div>

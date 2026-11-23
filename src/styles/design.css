@@ -114,31 +114,20 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
 input[type="range"]::-moz-range-track { height: 4px; border-radius: 4px; background: var(--line-strong); }
 input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 0 0 4px var(--accent-blue); }
 
-/* ---- Scrollbars: hidden until scrolled or approached (utils/autoScrollbars.ts) ---- */
-* {
-    scrollbar-width: thin;
-    scrollbar-color: transparent transparent;
-}
-
-.is-scrolling {
-    scrollbar-color: var(--line-strong) transparent;
-}
-
-.is-near-scrollbar {
-    scrollbar-color: color-mix(in srgb, var(--text-main) 32%, transparent) transparent;
-}
-
-/* Fallback for engines that only support the WebKit pseudo-elements. */
-::-webkit-scrollbar { width: 10px; height: 10px; }
+/* ---- Scrollbars: hidden until scrolled or approached (utils/autoScrollbars.ts) ----
+   Drawn with the WebKit pseudo-elements only: the standard scrollbar-color /
+   scrollbar-width properties can't fade and show arrow buttons on Windows.
+   autoScrollbars.ts animates --sb-alpha (0..1) for a smooth fade in and out. */
+::-webkit-scrollbar { width: 10px; height: 10px; background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-corner { background: transparent; }
 
 ::-webkit-scrollbar-thumb {
     border: 3px solid transparent;
     border-radius: 10px;
-    background: transparent;
     background-clip: padding-box;
+    background-color: color-mix(in srgb, var(--sb-color, color-mix(in srgb, var(--text-main) 26%, transparent)) calc(var(--sb-alpha, 0) * 100%), transparent);
 }
 
-.is-scrolling::-webkit-scrollbar-thumb { background-color: var(--line-strong); }
-.is-near-scrollbar::-webkit-scrollbar-thumb { background-color: color-mix(in srgb, var(--text-main) 32%, transparent); }
+.is-near-scrollbar { --sb-color: color-mix(in srgb, var(--text-main) 40%, transparent); }

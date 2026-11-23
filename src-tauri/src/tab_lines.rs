@@ -27,7 +27,33 @@ fn read(dir: &Path, tab_id: i64) -> Result<Option<String>, String> {
     }
 }
 
+/// Ids of all tabs that have a history file.
+fn list_ids(dir: &Path) -> Vec<i64> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut ids: Vec<i64> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".json")?.parse::<i64>().ok()
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// Deletes the history files of explicitly deleted tabs. Files of tabs that
+/// are merely missing from the list are kept: two app builds share these files
+/// and a stale workspace from one of them must not erase the other's tabs.
+fn prune_deleted(dir: &Path, delete: &[i64], keep: &[i64]) -> usize {
+    delete
+        .iter()
+        .filter(|id| !keep.contains(id))
+        .filter(|id| std::fs::remove_file(tab_file(dir, **id)).is_ok())
+        .count()
+}
+
 /// Deletes history files of tabs that no longer exist.
+#[allow(dead_code)]
 fn prune(dir: &Path, keep: &[i64]) -> Result<usize, String> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Ok(0) };
     let mut removed = 0;
@@ -64,11 +90,20 @@ pub async fn load_tab_lines(app: tauri::AppHandle, tab_id: i64) -> Result<Option
 }
 
 #[tauri::command]
-pub async fn prune_tab_lines(app: tauri::AppHandle, keep_ids: Vec<i64>) -> Result<usize, String> {
+pub async fn prune_tab_lines(app: tauri::AppHandle, keep_ids: Vec<i64>, delete_ids: Option<Vec<i64>>) -> Result<usize, String> {
     let dir = history_dir(&app)?;
-    tauri::async_runtime::spawn_blocking(move || prune(&dir, &keep_ids))
+    let delete_ids = delete_ids.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || Ok(prune_deleted(&dir, &delete_ids, &keep_ids)))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn list_tab_lines(app: tauri::AppHandle) -> Result<Vec<i64>, String> {
+    let dir = history_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || list_ids(&dir))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -84,6 +119,11 @@ mod tests {
         write_atomic(&dir, 9, r#"{"lines":[]}"#).unwrap();
         assert_eq!(read(&dir, 7).unwrap().as_deref(), Some(r#"{"lines":["a","b"]}"#));
         assert!(!dir.join("7.json.tmp").exists());
+        assert_eq!(list_ids(&dir), vec![7, 9]);
+        // Only explicitly deleted tabs lose their files, and never a kept one.
+        assert_eq!(prune_deleted(&dir, &[9, 7], &[7]), 1);
+        assert_eq!(list_ids(&dir), vec![7]);
+        write_atomic(&dir, 9, r#"{"lines":[]}"#).unwrap();
         assert_eq!(prune(&dir, &[7]).unwrap(), 1);
         assert_eq!(read(&dir, 9).unwrap(), None);
         assert!(read(&dir, 7).unwrap().is_some());

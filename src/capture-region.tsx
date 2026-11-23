@@ -5,6 +5,9 @@ import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getTranslator, type AppLanguage } from "./utils/i18n";
 import "./capture-region.css";
+import { disableNativeContextMenu } from "./utils/nativeContextMenu";
+
+disableNativeContextMenu();
 
 type Point = { x: number; y: number };
 

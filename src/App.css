@@ -1,7 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;700&display=swap');
 
 :root {
-    /* �A�p�x���r���u �����|�q���{�y (���u���u�x�p���y�����r�p�������� �y�x App.tsx �����y ���}�u�~�u ���u�}��) */
+    /* legacy styles */
     /* Tells the engine which variant to paint native form controls in.
        Without it <select> popups and scrollbars render light on a dark UI.
        App.tsx overrides this when the active theme changes. */
@@ -40,25 +40,6 @@ body {
     height: 100vh;
     transition: background-color 0.3s, color 0.3s;
 }
-
-::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-}
-
-::-webkit-scrollbar-track {
-    background: var(--bg-main);
-}
-
-::-webkit-scrollbar-thumb {
-    background: var(--border-main);
-    border-radius: 10px;
-    border: 2px solid var(--bg-main);
-}
-
-    ::-webkit-scrollbar-thumb:hover {
-        background: var(--text-muted);
-    }
 
 .app-wrapper {
     display: flex;
@@ -240,7 +221,7 @@ body {
         border-color: var(--accent-blue);
     }
 
-/* --- �B�R�P�L�\�B�@�_�Z�I�E �O�K�N�@ �R�L�O�B�@�Q�` --- */
+/* legacy styles */
 .dict-popup {
     position: fixed;
     background-color: var(--surface-glass);
@@ -399,7 +380,7 @@ body {
     margin-top: 1px;
 }
 
-/* --- �P�@�N�E�L�I �R�S�@�S�I�R�S�I�K�I --- */
+/* legacy styles */
 .stats-panel.bottom {
     position: fixed;
     bottom: 0;
@@ -501,7 +482,7 @@ body {
         color: var(--text-main);
     }
 
-/* --- �N�@�R�S�Q�O�J�K�I (MODAL) --- */
+/* legacy styles */
 .modal-overlay {
     position: fixed;
     top: 0;
@@ -692,9 +673,9 @@ body {
     box-shadow: none;
     cursor: not-allowed;
 }
-/* --- �P�L�@�B�N�\�E �@�N�I�M�@�W�I�I --- */
+/* legacy styles */
 
-/* �P�|�p�r�~���u �������r�|�u�~�y�u �����~�p */
+/* legacy styles */
 @keyframes fadeIn {
     from {
         opacity: 0;
@@ -707,7 +688,7 @@ body {
     }
 }
 
-/* �P�����w�y�~�y�������u �������r�|�u�~�y�u ���{���~ (�}���t�p�|�{�y) */
+/* legacy styles */
 @keyframes popIn {
     0% {
         opacity: 0;
@@ -720,7 +701,7 @@ body {
     }
 }
 
-/* �P�|�p�r�~���z �r���u�x�t �����y���{�p ���q���{�� */
+/* legacy styles */
 @keyframes slideLeft {
     from {
         opacity: 0;
@@ -733,7 +714,7 @@ body {
     }
 }
 
-/* �P���y�}�u�~���u�} �p�~�y�}�p���y�y �{ �������u�����r�������y�} �{�|�p�����p�} */
+/* legacy styles */
 .modal-overlay {
     animation: motion-fade-in var(--dur-base) var(--ease-fluid) both;
     background-color: color-mix(in srgb, var(--bg-main) 62%, transparent) !important;
@@ -789,7 +770,7 @@ body {
     border-radius: 10px !important;
 }
 
-/* �K�~�����{�y ���u���u���� �~�p�w�y�}�p�������� �����y�����~�u�u */
+/* legacy styles */
 .btn-primary, .header-btn, button {
     transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -798,7 +779,7 @@ body {
         transform: scale(0.96);
     }
 
-/* �D�|�� ���|�p�r�~���s�� �������r�|�u�~�y�� �����y���{�p (�t���q�p�r�� �{�|�p���� search-bar-anim �{ div-�� �����y���{�p, �u���|�y �������u����) */
+/* legacy styles */
 .search-bar-anim {
     animation: motion-slide-in var(--dur-base) var(--ease-spring) backwards;
 }
@@ -1951,3 +1932,149 @@ body {
 .mobile-settings-sheet #lookup-dicts .dictionary-item-name { order: -1; flex: 1 0 100% !important; white-space: normal !important; overflow-wrap: anywhere; }
 .mobile-settings-sheet #lookup-dicts button { min-height: 36px; }
 .mobile-settings-sheet #lookup-dicts input[type=checkbox] { width: 24px; height: 24px; }
+
+/* AI explanations: picking several lines */
+.ai-select-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 84px;
+    transform: translateX(-50%);
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 8px 8px 16px;
+    border: 1px solid var(--border-main);
+    border-radius: 999px;
+    background: var(--bg-panel);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
+    color: var(--text-main);
+    /* It lives inside the reader, which uses the Japanese reading font. */
+    font-family: var(--font-stack, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+    font-size: 13px;
+    letter-spacing: normal;
+    white-space: nowrap;
+    animation: aiSelectBarIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ai-select-count em { color: var(--text-muted); font-style: normal; }
+.ai-select-bar button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 14px;
+    border: none;
+    border-radius: 999px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s, opacity 0.15s;
+}
+.ai-select-primary { background: var(--accent-blue); color: #fff; }
+.ai-select-primary:disabled { opacity: 0.45; cursor: default; }
+.ai-select-primary:not(:disabled):hover { filter: brightness(1.08); }
+.ai-select-cancel { background: var(--hover-bg); color: var(--text-main); }
+.ai-select-cancel:hover { filter: brightness(1.2); }
+@keyframes aiSelectBarIn {
+    from { opacity: 0; transform: translate(-50%, 10px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* Reader + docked AI panel. The stage is its own containing block, so the
+   stats panel and the reader's fixed buttons stay over the text, not the panel. */
+.reader-row {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+}
+.reader-stage {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    transform: translateZ(0);
+}
+
+/* Dictionary / text import progress pill (bottom left, never blocks reading). */
+.import-pill-wrap {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    z-index: 100003;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    font-family: var(--font-stack);
+    letter-spacing: normal;
+    animation: importPillIn 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.import-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px 4px 4px;
+    border: 1px solid var(--line, var(--border-main));
+    border-radius: 999px;
+    background: var(--surface-glass, var(--bg-panel));
+    backdrop-filter: blur(14px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+    color: var(--text-main);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: box-shadow 0.15s, transform 0.15s;
+}
+.import-pill:hover { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3); }
+.import-pill:active { transform: scale(0.97); }
+.import-pill-ring { flex: 0 0 auto; transform: rotate(-90deg); }
+.import-pill-ring-track { fill: none; stroke: var(--surface-2, var(--hover-bg)); stroke-width: 3; }
+.import-pill-ring-value { fill: none; stroke: var(--accent-blue); stroke-width: 3; stroke-linecap: round; transition: stroke-dashoffset 0.3s ease; }
+.import-pill-label { font-weight: 600; }
+.import-pill-percent { color: var(--accent-blue); font-weight: 700; font-variant-numeric: tabular-nums; }
+.import-pill-badge {
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--surface-2, var(--hover-bg));
+    color: var(--text-muted);
+    font-size: 11.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+.import-pill-card {
+    width: 300px;
+    padding: 14px 14px 12px;
+    border: 1px solid var(--line, var(--border-main));
+    border-radius: 14px;
+    background: var(--surface-glass, var(--bg-panel));
+    backdrop-filter: blur(16px);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+    color: var(--text-main);
+    font-size: 12.5px;
+    animation: importPillIn 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.import-pill-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.import-pill-card-head strong { font-size: 13px; }
+.import-pill-card-head span { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.import-pill-bar { height: 4px; margin: 10px 0 8px; border-radius: 4px; background: var(--surface-2, var(--hover-bg)); overflow: hidden; }
+.import-pill-bar > div { height: 100%; background: var(--accent-blue); transition: width 0.3s ease; }
+.import-pill-status { color: var(--accent-blue); margin-bottom: 8px; }
+.import-pill-card dl { margin: 0; display: grid; gap: 4px; }
+.import-pill-card dl > div { display: flex; justify-content: space-between; gap: 12px; }
+.import-pill-card dt { color: var(--text-muted); }
+.import-pill-card dd { margin: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.import-pill-card p { margin: 10px 0 0; color: var(--text-muted); font-size: 11.5px; line-height: 1.45; }
+@keyframes importPillIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+}
+@media (max-width: 640px) {
+    .import-pill-wrap { left: 50%; bottom: auto; top: calc(env(safe-area-inset-top, 0px) + 58px); transform: translateX(-50%); align-items: center; flex-direction: column-reverse; animation: none; }
+    .import-pill-card { width: min(300px, calc(100vw - 32px)); }
+}
+
+/* Button variants for dialogs (replace inline #ff4444 / transparent styles). */
+.btn-primary.btn-secondary { background: var(--surface-2, var(--bg-side)); color: var(--text-main); border: 0; box-shadow: none; }
+.btn-primary.btn-danger { background: var(--danger, #ff5a5a); color: #fff; border: 0; box-shadow: 0 6px 16px -8px var(--danger, #ff5a5a); }

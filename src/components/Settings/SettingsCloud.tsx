@@ -253,6 +253,8 @@ const formatBytes = (value?: number | string | null) => {
 const stripLocalTabFields = (tab: any) => {
     const clean = structuredClone(tab);
     delete clean.captureSource;
+    // A room's host key stays on this device.
+    delete clean.shared;
     return clean;
 };
 

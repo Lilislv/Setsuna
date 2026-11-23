@@ -13,6 +13,9 @@ import { installAutoHideScrollbars } from "./utils/autoScrollbars";
 installAutoHideScrollbars();
 import "./styles/motion.css";
 import "./jl-window.css";
+import { disableNativeContextMenu } from "./utils/nativeContextMenu";
+
+disableNativeContextMenu();
 
 type ResizeEdge = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
 type CursorLookupResult = { entries: DictEntry[]; match_start: number; match_len: number; word: string };

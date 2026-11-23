@@ -1,9 +1,47 @@
 use rusqlite::{params, Connection, OpenFlags};
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub const DICTIONARY_SCHEMA_VERSION: i64 = 4;
+
+/// Set while a dictionary import owns the database. Lookups then skip schema
+/// and index maintenance, which needs the write lock the importer holds; with
+/// it they waited on the importer and Shift-scan looked dead during imports.
+pub static IMPORT_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn import_active() -> bool {
+    IMPORT_ACTIVE.load(Ordering::SeqCst)
+}
+
+const LOOKUP_INDEXES: [&str; 8] = [
+    "idx_term", "idx_reading", "idx_freq_term", "idx_freq_reading",
+    "idx_pitch_term", "idx_pitch_reading", "idx_pron_term", "idx_pron_reading",
+];
+
+/// True when the database already has the current schema, so opening it for a
+/// lookup needs no writes at all.
+fn schema_is_current(conn: &Connection) -> bool {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap_or(0);
+    if version != DICTIONARY_SCHEMA_VERSION {
+        return false;
+    }
+    let indexes: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ({})",
+                LOOKUP_INDEXES.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(",")
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    indexes == LOOKUP_INDEXES.len() as i64
+        && table_has_column(conn, "entries", "lookup_rules").unwrap_or(false)
+        && table_has_column(conn, "entries", "score").unwrap_or(false)
+        && !table_exists(conn, "dictionary").unwrap_or(true)
+}
 
 const CANONICAL_SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS entries (
@@ -69,6 +107,9 @@ pub fn configure_connection(conn: &Connection) -> Result<(), String> {
 }
 
 pub fn ensure_canonical_schema(conn: &mut Connection) -> Result<LegacyMigrationReport, String> {
+    if import_active() || schema_is_current(conn) {
+        return Ok(LegacyMigrationReport::default());
+    }
     conn.execute_batch(CANONICAL_SCHEMA)
         .map_err(|error| format!("Failed to prepare dictionary database: {error}"))?;
 
@@ -130,6 +171,9 @@ pub fn ensure_dictionary_name_indexes(conn: &Connection) -> Result<(), String> {
 /// are much smaller than `entries`, so building them once on the spot is cheap,
 /// and they let the dictionary list find frequency-only dictionaries quickly.
 pub fn ensure_metadata_dictionary_name_indexes(conn: &Connection) -> Result<(), String> {
+    if import_active() {
+        return Ok(());
+    }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_freq_dict ON frequencies(dict_name);
          CREATE INDEX IF NOT EXISTS idx_pitch_dict ON pitches(dict_name);

@@ -1,0 +1,175 @@
+.dshare-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100001;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.dshare.modern-modal {
+    display: flex;
+    flex-direction: column;
+    width: min(460px, calc(100vw - 32px));
+    max-height: min(640px, calc(100vh - 48px));
+    height: auto;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-main);
+    border-radius: 14px;
+    background: var(--bg-panel);
+    color: var(--text-main);
+    font-family: var(--font-stack);
+    font-size: 13.5px;
+    text-align: left;
+}
+
+.dshare-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px 8px;
+}
+.dshare-head strong { font-size: 15px; }
+.dshare-close {
+    width: 30px;
+    height: 30px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.dshare-close:hover:not(:disabled) { background: var(--hover-bg); color: var(--text-main); }
+
+.dshare-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 0 12px;
+    padding: 3px;
+    border-radius: 10px;
+    background: var(--bg-main);
+}
+.dshare-tabs button {
+    flex: 1;
+    height: 30px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.dshare-tabs button.is-active { background: var(--bg-panel); color: var(--text-main); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25); }
+
+.dshare-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px 16px;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.dshare-list-head {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-muted);
+    font-size: 12.5px;
+}
+
+.dshare-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 10px;
+    border: 1px solid var(--border-main);
+    border-radius: 10px;
+    background: var(--bg-main);
+}
+.dshare-list .checkbox-label { display: flex; align-items: center; gap: 8px; margin: 0; }
+.dshare-list .checkbox-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dshare-main { align-self: stretch; padding: 10px 14px; }
+
+.dshare-link {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent-blue);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+}
+.dshare-link:disabled { opacity: 0.5; cursor: default; }
+
+.dshare-lead { margin: 0; }
+.dshare-muted { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.dshare-ok { margin: 0; color: #4caf50; }
+
+.dshare-code {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 10px 10px 14px;
+    border: 1px solid var(--border-main);
+    border-radius: 10px;
+    background: var(--bg-main);
+}
+.dshare-code code {
+    flex: 1;
+    min-width: 0;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 14px;
+    letter-spacing: 0.3px;
+    overflow-wrap: anywhere;
+    user-select: all;
+}
+.dshare-code .btn-primary { padding: 7px 12px; white-space: nowrap; }
+
+.dshare-code-input { font-family: Consolas, "Cascadia Mono", monospace; }
+
+.dshare-share {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    border: 1px solid var(--border-main);
+    border-radius: 10px;
+    background: var(--bg-main);
+}
+.dshare-share-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dshare-share-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.dshare-share-main span { color: var(--text-muted); font-size: 11.5px; }
+.dshare-share button {
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--border-main);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-main);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.dshare-share button.is-danger { color: #ff6b6b; }
+
+.dshare-error {
+    margin: 0 16px 16px;
+    padding: 9px 12px;
+    border-radius: 9px;
+    background: rgba(255, 107, 107, 0.1);
+    color: #ff8a8a;
+    font-size: 12.5px;
+    line-height: 1.45;
+}
+
+.dshare-row em { margin-left: auto; padding-left: 10px; color: var(--text-muted); font-style: normal; font-size: 11.5px; white-space: nowrap; }
+.dshare-share-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

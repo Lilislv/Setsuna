@@ -6,6 +6,9 @@ import "./index.css";
 import "./styles/motion.css";
 import "./styles/design.css";
 import { installAutoHideScrollbars } from "./utils/autoScrollbars";
+import { disableNativeContextMenu } from "./utils/nativeContextMenu";
+
+disableNativeContextMenu();
 installAutoHideScrollbars();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

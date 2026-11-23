@@ -183,8 +183,6 @@
     overflow-y: auto;
     margin: 0 -6px;
     padding: 0 6px;
-    scrollbar-width: thin;
-    scrollbar-color: var(--menu-line) transparent;
 }
 
 .app-menu-tab {
@@ -403,12 +401,14 @@
     transform-origin: top left;
     position: fixed;
     z-index: 9500;
-    width: 220px;
+    width: 230px;
     padding: 6px;
-    border: 1px solid var(--border-main);
-    border-radius: 10px;
-    background: var(--bg-panel);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
+    border: 1px solid var(--line, var(--border-main));
+    border-radius: 14px;
+    background: var(--surface-glass, var(--bg-panel));
+    backdrop-filter: blur(16px);
+    box-shadow: var(--shadow-float, 0 14px 34px rgba(0, 0, 0, 0.42));
+    font-family: var(--font-stack);
 }
 
 .tab-context-title {
@@ -607,3 +607,90 @@
     .reader-island-name { animation: none; }
 }
 
+/* ---- Archive view of the tab list: paper-like, quieter, read-only ---- */
+.app-menu-archive-toggle { width: auto; min-width: 28px; gap: 4px; padding: 0 7px; }
+.app-menu-archive-toggle span { font-size: 11px; font-weight: 700; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.app-menu-back-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 28px;
+    padding: 0 10px 0 6px;
+    border: 1px solid var(--line, var(--border-main));
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-main);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+.app-menu-back-button:hover { background: var(--menu-raised); }
+.app-menu-archive-label { display: inline-flex; align-items: center; gap: 6px; color: #c9a977; }
+.app-menu-tabs-column.is-archive-view .app-menu-tabs {
+    padding: 6px;
+    border: 1px dashed color-mix(in srgb, #c9a977 45%, transparent);
+    border-radius: 12px;
+    background:
+        repeating-linear-gradient(0deg, transparent 0 37px, color-mix(in srgb, #c9a977 7%, transparent) 37px 38px),
+        color-mix(in srgb, #c9a977 5%, transparent);
+}
+.app-menu-tab.is-archived { color: color-mix(in srgb, var(--text-muted) 85%, #c9a977); }
+.app-menu-tab.is-archived:hover { background: color-mix(in srgb, #c9a977 12%, transparent); color: var(--text-main); }
+.app-menu-tab.is-archived.is-active { background: color-mix(in srgb, #c9a977 18%, transparent); color: var(--text-main); }
+.app-menu-archive-icon { display: inline-flex; color: #c9a977; opacity: 0.85; }
+.app-menu-archive-empty { padding: 18px 10px; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; text-align: center; }
+
+/* Context menu items (new design) */
+.tab-context-item {
+    display: block;
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-main);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+.tab-context-item:hover { background: var(--hover-bg); }
+.tab-context-item.is-danger { color: #ff6b6b; }
+
+.tab-context-item.has-icon { display: flex; align-items: center; gap: 10px; }
+.tab-context-item.has-icon > span:nth-child(2) { flex: 1; }
+.tab-context-item:disabled { opacity: 0.45; cursor: default; }
+.tab-context-item:disabled:hover { background: transparent; }
+.tab-context-field { display: block; padding: 4px 8px 8px; }
+.tab-context-field > span { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: 11px; }
+.tab-context-field .modern-select { width: 100%; height: 32px; margin: 0; }
+
+/* ---- Archive: an old, dusty drawer with cobwebs in the corners ---- */
+.app-menu-tabs-column.is-archive-view .app-menu-tabs {
+    background:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none' stroke='%23c9a977' stroke-opacity='0.42' stroke-width='0.7' stroke-linecap='round'%3E%3Cpath d='M100 0 L0.0 -0.0'/%3E%3Cpath d='M100 0 L4.9 30.9'/%3E%3Cpath d='M100 0 L21.2 61.6'/%3E%3Cpath d='M100 0 L47.0 84.8'/%3E%3Cpath d='M100 0 L75.8 97.0'/%3E%3Cpath d='M100 0 L100.0 100.0'/%3E%3Cpath d='M84.0 -0.0 Q86.3 2.2 84.8 4.9 Q87.8 6.5 87.4 9.9 Q90.7 10.3 91.5 13.6 Q94.6 12.8 96.1 15.5 Q98.3 13.9 100.0 16.0'/%3E%3Cpath d='M70.0 -0.0 Q74.2 4.1 71.5 9.3 Q77.0 12.2 76.4 18.5 Q82.6 19.3 84.1 25.4 Q89.8 24.0 92.7 29.1 Q96.8 26.0 100.0 30.0'/%3E%3Cpath d='M55.0 -0.0 Q61.4 6.1 57.2 13.9 Q65.6 18.3 64.5 27.7 Q73.9 29.0 76.2 38.2 Q84.7 36.0 89.1 43.7 Q95.2 39.0 100.0 45.0'/%3E%3Cpath d='M38.0 -0.0 Q46.8 8.4 41.0 19.2 Q52.6 25.2 51.1 38.2 Q64.0 39.9 67.1 52.6 Q78.9 49.6 85.0 60.2 Q93.4 53.7 100.0 62.0'/%3E%3Cpath d='M20.0 -0.0 Q31.3 10.9 23.9 24.7 Q38.8 32.5 37.0 49.3 Q53.6 51.5 57.6 67.8 Q72.8 64.0 80.6 77.6 Q91.5 69.4 100.0 80.0'/%3E%3C/svg%3E") top right / 92px 92px no-repeat,
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none' stroke='%23c9a977' stroke-opacity='0.42' stroke-width='0.7' stroke-linecap='round'%3E%3Cpath d='M100 0 L0.0 -0.0'/%3E%3Cpath d='M100 0 L4.9 30.9'/%3E%3Cpath d='M100 0 L21.2 61.6'/%3E%3Cpath d='M100 0 L47.0 84.8'/%3E%3Cpath d='M100 0 L75.8 97.0'/%3E%3Cpath d='M100 0 L100.0 100.0'/%3E%3Cpath d='M84.0 -0.0 Q86.3 2.2 84.8 4.9 Q87.8 6.5 87.4 9.9 Q90.7 10.3 91.5 13.6 Q94.6 12.8 96.1 15.5 Q98.3 13.9 100.0 16.0'/%3E%3Cpath d='M70.0 -0.0 Q74.2 4.1 71.5 9.3 Q77.0 12.2 76.4 18.5 Q82.6 19.3 84.1 25.4 Q89.8 24.0 92.7 29.1 Q96.8 26.0 100.0 30.0'/%3E%3Cpath d='M55.0 -0.0 Q61.4 6.1 57.2 13.9 Q65.6 18.3 64.5 27.7 Q73.9 29.0 76.2 38.2 Q84.7 36.0 89.1 43.7 Q95.2 39.0 100.0 45.0'/%3E%3Cpath d='M38.0 -0.0 Q46.8 8.4 41.0 19.2 Q52.6 25.2 51.1 38.2 Q64.0 39.9 67.1 52.6 Q78.9 49.6 85.0 60.2 Q93.4 53.7 100.0 62.0'/%3E%3Cpath d='M20.0 -0.0 Q31.3 10.9 23.9 24.7 Q38.8 32.5 37.0 49.3 Q53.6 51.5 57.6 67.8 Q72.8 64.0 80.6 77.6 Q91.5 69.4 100.0 80.0'/%3E%3C/svg%3E") bottom left / 64px 64px no-repeat,
+        radial-gradient(120% 90% at 50% 0%, transparent 55%, rgba(0, 0, 0, 0.22) 100%),
+        radial-gradient(circle at 18% 30%, rgba(201, 169, 119, 0.05) 0 1px, transparent 2px) 0 0 / 23px 19px,
+        radial-gradient(circle at 70% 60%, rgba(201, 169, 119, 0.04) 0 1px, transparent 2px) 0 0 / 31px 27px,
+        repeating-linear-gradient(0deg, transparent 0 37px, color-mix(in srgb, #c9a977 7%, transparent) 37px 38px),
+        color-mix(in srgb, #c9a977 5%, transparent);
+}
+
+.app-menu-tab.is-archived .app-menu-tab-name {
+    font-family: var(--txt-font-family, "Noto Serif JP"), "Yu Mincho", Georgia, serif;
+    letter-spacing: 0.2px;
+}
+.app-menu-tab.is-archived .app-menu-tab-meta { opacity: 0.7; }
+
+/* Island while an archived tab is open: dusty, dashed, with a box icon. */
+.reader-island.is-archived {
+    border-style: dashed;
+    border-color: color-mix(in srgb, #c9a977 55%, transparent);
+    background:
+        linear-gradient(color-mix(in srgb, #c9a977 9%, transparent), color-mix(in srgb, #c9a977 9%, transparent)),
+        var(--surface-glass);
+}
+.reader-island.is-archived .reader-island-name { color: #d8bf95; }
+.reader-island-archive-icon { display: inline-flex; color: #c9a977; }

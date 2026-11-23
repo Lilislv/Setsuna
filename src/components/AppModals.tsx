@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Tab } from '../utils/constants';
 import { getTranslator, type AppLanguage } from '../utils/i18n';
 
@@ -8,11 +9,11 @@ export const ConfirmDialogModal = ({ dialog, setDialog, language = 'ru' }: any) 
     return (
         <div className="modal-overlay" style={{ zIndex: 100000, position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setDialog(null)}>
             <div className="modern-modal" onClick={e => e.stopPropagation()} style={{ width: '400px', height: 'auto', minHeight: 'auto', padding: '25px', textAlign: 'center', display: 'block', background: 'var(--bg-panel)', border: '1px solid var(--border-main)', borderRadius: '8px' }}>
-                <h3 style={{ marginTop: 0, color: 'var(--text-main)', fontSize: '18px', fontWeight: 'bold' }}>{dialog.title}</h3>
+                <h3 style={{ marginTop: 0, color: 'var(--text-main)', fontSize: '18px', fontWeight: 600 }}>{dialog.title}</h3>
                 <p style={{ color: 'var(--text-muted)', marginBottom: '25px', lineHeight: '1.5', fontSize: '14px' }}>{dialog.message}</p>
                 <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
-                    <button className="btn-primary" style={{ background: 'transparent', color: 'var(--text-main)', border: '1px solid var(--border-main)', padding: '8px 20px' }} onClick={() => setDialog(null)}>{t('common.cancel')}</button>
-                    <button className="btn-primary" style={{ background: '#ff4444', border: 'none', padding: '8px 20px' }} onClick={() => { dialog.onConfirm(); setDialog(null); }}>{t('common.confirm')}</button>
+                    <button className="btn-primary btn-secondary" style={{ padding: '8px 20px' }} onClick={() => setDialog(null)}>{t('common.cancel')}</button>
+                    <button className="btn-primary btn-danger" style={{ padding: '8px 20px' }} onClick={() => { dialog.onConfirm(); setDialog(null); }}>{t('common.confirm')}</button>
                 </div>
             </div>
         </div>
@@ -35,57 +36,138 @@ export const NoticeModal = ({ notice, setNotice, language = 'ru' }: any) => {
         </div>
     );
 };
+// Backend import statuses are English; show them in the app language.
+const IMPORT_STATUS_RU: Record<string, string> = {
+    'Building lookup indexes...': 'Строю индексы поиска…',
+    'Importing Cambridge JSON...': 'Импортирую Cambridge JSON…',
+    'Importing Cambridge JSONL...': 'Импортирую Cambridge JSONL…',
+    'Importing DICTD entries...': 'Импортирую статьи DICTD…',
+    'Importing DSL entries...': 'Импортирую статьи DSL…',
+    'Importing JSON entries...': 'Импортирую статьи JSON…',
+    'Importing Kaikki JSONL...': 'Импортирую Kaikki JSONL…',
+    'Importing StarDict entries...': 'Импортирую статьи StarDict…',
+    'Importing text entries...': 'Импортирую текстовые статьи…',
+    'Opening JSONL dictionary...': 'Открываю словарь JSONL…',
+    'Opening StarDict files...': 'Открываю файлы StarDict…',
+    'Opening database...': 'Открываю базу словарей…',
+    'Optimizing dictionary database (one time)...': 'Оптимизирую базу словарей (один раз)…',
+    'Preparing dictionary...': 'Готовлю словарь…',
+    'Reading JSON dictionary...': 'Читаю словарь JSON…',
+    'Reading dictionary archive...': 'Читаю архив словаря…',
+    'Reading text dictionary...': 'Читаю текстовый словарь…',
+    'Removing previous version...': 'Удаляю прошлую версию…',
+    'Saving dictionary...': 'Сохраняю словарь…',
+    'Streaming Yomitan JSON...': 'Читаю Yomitan JSON…',
+    'Streaming large JSON dictionary...': 'Читаю большой словарь JSON…',
+    'Waiting for dictionary database...': 'Жду базу словарей…',
+    'Import complete': 'Готово',
+    'Collecting dictionaries...': 'Собираю словари…',
+    'Compressing...': 'Сжимаю…',
+    'Uploading to Google Drive...': 'Загружаю на Google Drive…',
+    'Downloading...': 'Скачиваю…',
+    'Unpacking...': 'Распаковываю…',
+    'Done': 'Готово',
+};
+
+// Import progress is a small pill (like the stats pill) that never blocks
+// reading; a click opens the details. Batches show "6/19" next to it.
 export const ImportProgressModal = ({ jsonProgress, dictProgress, language = 'ru' }: any) => {
     const t = getTranslator(language as AppLanguage);
-    const progressOverlayStyle = {
-        position: 'fixed' as const,
-        inset: 0,
-        width: '100vw',
-        height: '100vh',
-        zIndex: 100002,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-    };
+    const en = language === 'en';
+    const [expanded, setExpanded] = useState(false);
+    const [startedAt, setStartedAt] = useState<number | null>(null);
+    const active = Boolean(jsonProgress || dictProgress);
+    useEffect(() => {
+        if (active && startedAt === null) setStartedAt(Date.now());
+        if (!active) { setStartedAt(null); setExpanded(false); }
+    }, [active, startedAt]);
+    const [, tick] = useState(0);
+    useEffect(() => {
+        if (!active || !expanded) return;
+        const timer = window.setInterval(() => tick((n) => n + 1), 1000);
+        return () => window.clearInterval(timer);
+    }, [active, expanded]);
+    if (!active) return null;
 
+    let label: string;
+    let percent: number;
+    let badge = '';
+    let details: Array<[string, string]> = [];
+    let title: string;
+    let status = '';
     if (jsonProgress) {
-        return (
-            <div className="modal-overlay" style={progressOverlayStyle} role="status" aria-live="polite">
-                <div className="modern-modal" style={{ background: 'var(--bg-panel)', padding: '30px', borderRadius: '8px', width: '350px', height: 'auto', minHeight: 'auto', display: 'block', textAlign: 'center', border: '1px solid var(--border-main)' }}>
-                    <h3 style={{ marginTop: 0, color: 'var(--text-main)', fontSize: '18px', fontWeight: 'normal' }}>{t('modal.importText')}</h3>
-                    <div style={{ width: '100%', height: '8px', backgroundColor: 'var(--bg-main)', borderRadius: '4px', overflow: 'hidden', margin: '20px 0' }}>
-                        <div style={{ width: `${(jsonProgress.current / jsonProgress.total) * 100}%`, height: '100%', backgroundColor: '#4fa6ff', transition: 'width 0.1s' }} />
-                    </div>
-                    <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>{t('modal.processedRows', { current: jsonProgress.current, total: jsonProgress.total })}</div>
-                </div>
-            </div>
-        );
+        title = t('modal.importText');
+        label = title;
+        percent = jsonProgress.total > 0 ? (jsonProgress.current / jsonProgress.total) * 100 : 0;
+        details = [[en ? 'Rows' : 'Строк', `${jsonProgress.current} / ${jsonProgress.total}`]];
+    } else {
+        const p = dictProgress;
+        const count = Math.max(1, Number(p.dict_count ?? p.total_dicts) || 1);
+        const index = Math.min(count, Math.max(1, Number(p.dict_index) || 1));
+        const local = Number.isFinite(p.percent)
+            ? Number(p.percent)
+            : p.total_files > 0 ? (p.current_file / p.total_files) * 100 : 0;
+        percent = count > 1 ? ((index - 1) + Math.min(100, local) / 100) / count * 100 : local;
+        if (count > 1) badge = `${index}/${count}`;
+        title = count > 1 ? t('modal.importCollection', { count }) : t('modal.importDictionary');
+        label = p.operation === 'share'
+            ? (en ? 'Sharing' : 'Раздача')
+            : p.operation === 'download'
+                ? (en ? 'Downloading' : 'Скачивание')
+                : (en ? 'Importing' : 'Импорт');
+        if (p.operation === 'share') title = en ? 'Sharing dictionaries' : 'Раздача словарей';
+        if (p.operation === 'download') title = en ? 'Downloading shared dictionaries' : 'Скачивание словарей по коду';
+        status = String(p.status || '').replace(/^\[\d+\/\d+\]\s*/, '');
+        if (!en) status = IMPORT_STATUS_RU[status] || status;
+        details = p.operation === 'share' || p.operation === 'download'
+            ? [
+                [p.operation === 'share' ? (en ? 'Pack' : 'Пакет') : (en ? 'Source' : 'Источник'), String(p.dict_name || '')],
+                [en ? 'Progress' : 'Готово', `${Math.floor(Math.max(0, Math.min(100, local)))}%`],
+            ]
+            : [
+                [en ? 'Dictionary' : 'Словарь', String(p.dict_name || '')],
+                ...(count > 1 ? [[en ? 'In the batch' : 'В очереди', `${index} ${en ? 'of' : 'из'} ${count}`] as [string, string]] : []),
+                [t('modal.words'), Number(p.words_added || 0).toLocaleString(en ? 'en-US' : 'ru-RU')],
+                [en ? 'This dictionary' : 'Этот словарь', `${Math.floor(Math.min(100, local))}%`],
+            ];
     }
+    const shown = Math.max(0, Math.min(100, percent));
+    const elapsed = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : 0;
+    const clock = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
+    const radius = 11;
+    const circumference = 2 * Math.PI * radius;
 
-    if (dictProgress) {
-        return (
-            <div className="modal-overlay" style={progressOverlayStyle} role="status" aria-live="polite">
-                <div className="modern-modal" style={{ background: 'var(--bg-panel)', padding: '30px', borderRadius: '8px', width: '400px', height: 'auto', minHeight: 'auto', display: 'block', textAlign: 'center', border: '1px solid var(--border-main)' }}>
-                    <div style={{ color: '#4CAF50', fontSize: '14px', marginBottom: '8px', fontWeight: 'bold' }}>
-                        {dictProgress.total_dicts > 1 ? t('modal.importCollection', { count: dictProgress.total_dicts }) : t('modal.importDictionary')}
+    return (
+        <div className={`import-pill-wrap${expanded ? ' is-expanded' : ''}`} role="status" aria-live="polite">
+            {expanded && (
+                <div className="import-pill-card">
+                    <div className="import-pill-card-head">
+                        <strong>{title}</strong>
+                        <span>{clock}</span>
                     </div>
-                    <h3 style={{ marginTop: 0, color: 'var(--text-main)', fontSize: '18px', fontWeight: 'normal', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {dictProgress.dict_name}
-                    </h3>
-                    <div style={{ width: '100%', height: '10px', backgroundColor: 'var(--bg-main)', borderRadius: '5px', overflow: 'hidden', margin: '20px 0' }}>
-                        <div style={{ width: `${dictProgress.percent ?? (dictProgress.current_file / dictProgress.total_files) * 100}%`, height: '100%', backgroundColor: '#4CAF50', transition: 'width 0.2s' }} />
-                    </div>
-                    <div style={{ color: 'var(--text-muted)', fontSize: '13px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-main)', paddingBottom: '10px', marginBottom: '10px' }}>
-                        <span>{dictProgress.percent != null ? `${Math.floor(dictProgress.percent)}%` : `${t('modal.files')}: ${dictProgress.current_file} / ${dictProgress.total_files}`}</span>
-                        <span>{t('modal.words')}: {dictProgress.words_added}</span>
-                    </div>
-                    {dictProgress.status && <div style={{ color: '#4fa6ff', fontSize: '13px' }}>{dictProgress.status}</div>}
+                    <div className="import-pill-bar"><div style={{ width: `${shown}%` }} /></div>
+                    {status && <div className="import-pill-status">{status}</div>}
+                    <dl>
+                        {details.map(([key, value]) => (
+                            <div key={key}><dt>{key}</dt><dd title={value}>{value}</dd></div>
+                        ))}
+                    </dl>
+                    <p>{en ? 'You can keep reading: lookups keep working during the import.' : 'Можно читать дальше: поиск по словам работает и во время импорта.'}</p>
                 </div>
-            </div>
-        );
-    }
-
-    return null;
+            )}
+            <button type="button" className="import-pill" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}
+                title={en ? 'Dictionary import: click for details' : 'Импорт словарей: нажми, чтобы увидеть подробности'}>
+                <svg className="import-pill-ring" width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+                    <circle cx="14" cy="14" r={radius} className="import-pill-ring-track" />
+                    <circle cx="14" cy="14" r={radius} className="import-pill-ring-value"
+                        strokeDasharray={circumference} strokeDashoffset={circumference * (1 - shown / 100)} />
+                </svg>
+                <span className="import-pill-label">{label}</span>
+                <span className="import-pill-percent">{Math.floor(shown)}%</span>
+                {badge && <span className="import-pill-badge">{badge}</span>}
+            </button>
+        </div>
+    );
 };
 
 export const ExportModal = ({ isOpen, onClose, fileName, setFileName, tabs, selection, setSelection, onExport, language = 'ru' }: any) => {

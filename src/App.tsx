@@ -24,9 +24,12 @@ import { countLineStats, sumLineStats } from "./utils/textStats";
 import { recordDailyLine, recordDailySeconds } from "./utils/dailyStats";
 import { cachedGlyphScale, glyphScaleFor } from "./utils/fontNormalize";
 import { appendSpeedSample } from "./utils/speedSamples";
-import { loadTabHistory, markTabHistorySaved, mergeTabHistory, pruneTabHistories, saveChangedTabHistories, slimTabForWorkspace, tailTabForCache } from "./utils/tabHistory";
+import { listTabHistoryIds, loadTabHistory, markTabHistorySaved, mergeTabHistory, pruneTabHistories, saveChangedTabHistories, slimTabForWorkspace, tailTabForCache } from "./utils/tabHistory";
 import { IconBookTab, IconPin, IconPlayerTab, IconSearch } from "./components/Icons";
-import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, Tab, themes, PlayerMiningClip, ReadingSpeedSample } from "./utils/constants";
+import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, Tab, themes, PlayerMiningClip, ReadingSpeedSample, isTabLocked, type CaptureSourceBinding } from "./utils/constants";
+import { useSharedReading } from "./utils/useSharedReading";
+import SharedReadingDialog from "./components/SharedReadingDialog";
+import { registerCaptureSourceRequest } from "./utils/captureRequest";
 import { getTranslator } from "./utils/i18n";
 import { ConfirmDialogModal, ImportProgressModal, ExportModal, NoticeModal } from "./components/AppModals";
 import SetupWizard from "./components/SetupWizard";
@@ -39,6 +42,8 @@ import { appVersionLabel } from "./utils/appVersion";
 import { contentFingerprint, createLatestTaskQueue } from './utils/runtimeMemory';
 import { selectActiveLookupResult } from './utils/lookupResults';
 import { loadCustomFont } from './utils/customFonts';
+import AiPanel, { type AiPanelRequest } from './components/AiPanel';
+import { AI_DEFAULT_MODEL, aiModelReady, fetchAiStatus } from './utils/aiAssistant';
 import {
     applyTabOrder,
     extractHookPayload,
@@ -114,6 +119,27 @@ const readStoredSettings = (): AppSettings => {
 };
 
 const WORKSPACE_UPDATED_AT_STORAGE_KEY = "txthk-workspace-updated-at";
+/** One reversible change to a tab's lines (Ctrl+Z / Ctrl+Shift+Z). */
+type LineOp = { tabId: number; kind: 'add' | 'delete' | 'edit'; index: number; before?: string; after?: string; furigana?: unknown };
+// Ids of tabs the user deleted. The dev and release builds share the workspace
+// file but keep separate local caches; merging the two must not bring deleted
+// tabs back, and must not drop tabs that only one of them knows about.
+const DELETED_TABS_STORAGE_KEY = "txthk-deleted-tabs";
+const readDeletedTabIds = (): number[] => {
+    try {
+        const value = JSON.parse(localStorage.getItem(DELETED_TABS_STORAGE_KEY) || "[]");
+        return Array.isArray(value) ? value.filter((id) => Number.isFinite(id)) : [];
+    } catch {
+        return [];
+    }
+};
+const writeDeletedTabIds = (ids: Iterable<number>) => {
+    try {
+        localStorage.setItem(DELETED_TABS_STORAGE_KEY, JSON.stringify([...ids].slice(-500)));
+    } catch {
+        // Storage can be unavailable; the workspace file keeps the list too.
+    }
+};
 const SKIPPED_UPDATE_VERSION_STORAGE_KEY = "setsuna-skipped-update-version";
 
 const countExportedTextLines = (value: unknown): number => {
@@ -323,6 +349,14 @@ export default function App() {
 
     const activeTabIdRef = useRef(activeTabId);
     const nextTabId = useRef(Math.max(...tabs.map((t) => t.id), 0) + 1);
+    // New tab ids come from the clock. The dev and release builds share the tab
+    // files; with "largest id + 1" both gave id 64 to different tabs and one
+    // overwrote the other's lines.
+    const allocateTabId = useCallback(() => {
+        const id = Math.max(Date.now(), nextTabId.current);
+        nextTabId.current = id + 1;
+        return id;
+    }, []);
 
     const mainContentRef = useRef<HTMLElement>(null);
     const discordLastPayloadRef = useRef("");
@@ -393,6 +427,8 @@ export default function App() {
         activeTabId,
     });
     const workspaceHydratedRef = useRef(false);
+    const deletedTabIdsRef = useRef<Set<number>>(new Set(readDeletedTabIds()));
+    const knownTabIdsRef = useRef<Set<number> | null>(null);
     const workspaceFileWriteQueueRef = useRef(createLatestTaskQueue<string>(
         (content) => invoke<void>('save_workspace_state', { content }),
         (error) => console.warn('Failed to save file-backed workspace', error),
@@ -424,8 +460,26 @@ export default function App() {
         } catch (error) {
             console.warn('Failed to persist workspace', error);
         }
-        queueWorkspaceFileSave(`{"version":2,"updatedAt":${updatedAt},"activeTabId":${snapshot.activeTabId},"tabs":${serializedTabs}}`);
+        const deleted = JSON.stringify([...deletedTabIdsRef.current].slice(-500));
+        queueWorkspaceFileSave(`{"version":2,"updatedAt":${updatedAt},"activeTabId":${snapshot.activeTabId},"deleted":${deleted},"tabs":${serializedTabs}}`);
     }, [queueWorkspaceFileSave]);
+
+    // Remember tabs that disappear after the workspace loaded (closed, deleted,
+    // replaced by a restore), and forget the mark if a tab with that id returns.
+    useEffect(() => {
+        if (!workspaceHydratedRef.current || !knownTabIdsRef.current) return;
+        const current = new Set(tabs.map((tab) => tab.id));
+        const deleted = deletedTabIdsRef.current;
+        let changed = false;
+        knownTabIdsRef.current.forEach((id) => {
+            if (!current.has(id)) { deleted.add(id); changed = true; }
+        });
+        current.forEach((id) => {
+            if (deleted.delete(id)) changed = true;
+        });
+        knownTabIdsRef.current = current;
+        if (changed) writeDeletedTabIds(deleted);
+    }, [tabs]);
 
     useEffect(() => {
         let disposed = false;
@@ -435,16 +489,24 @@ export default function App() {
                 if (disposed) return;
                 let fileTabs: Tab[] | null = null;
                 let fileActiveId: number | null = null;
+                let localNewer = false;
+                const deleted = deletedTabIdsRef.current;
                 if (content) {
                     const parsed = JSON.parse(content) as {
                         version?: number;
                         updatedAt?: number;
                         activeTabId?: number;
+                        deleted?: unknown;
                         tabs?: unknown;
                     };
                     const localUpdatedAt = Number.parseInt(localStorage.getItem(WORKSPACE_UPDATED_AT_STORAGE_KEY) || '0', 10) || 0;
                     const fileUpdatedAt = Number(parsed.updatedAt) || 0;
-                    if ((parsed.version === 1 || parsed.version === 2) && localUpdatedAt <= fileUpdatedAt) {
+                    localNewer = localUpdatedAt > fileUpdatedAt;
+                    if (Array.isArray(parsed.deleted)) {
+                        parsed.deleted.forEach((id) => { if (Number.isFinite(id)) deleted.add(Number(id)); });
+                        writeDeletedTabIds(deleted);
+                    }
+                    if (parsed.version === 1 || parsed.version === 2) {
                         const restored = normalizeStoredTabs(parsed.tabs, t('tabs.defaultName'));
                         if (restored.length > 0) {
                             // Version 2 keeps lines in per-tab history files.
@@ -454,18 +516,45 @@ export default function App() {
                     }
                 }
 
+                // Merge the shared file with this build's own cache instead of
+                // picking one of them: the newer copy wins for tabs both know,
+                // tabs only one of them has are kept, deleted tabs stay deleted.
+                // (Picking one copy whole let an older release cache erase a
+                // tab created in the dev build.)
+                const hasLocalCache = localStorage.getItem('txthk-tabs') !== null;
+                const localTabs = hasLocalCache ? tabsRef.current : [];
+                const fromFile = fileTabs ?? [];
+                const primary = localNewer || !fileTabs ? localTabs : fromFile;
+                const secondary = primary === localTabs ? fromFile : localTabs;
+                const primaryIds = new Set(primary.map((tab) => tab.id));
+                let baseTabs = [...primary, ...secondary.filter((tab) => !primaryIds.has(tab.id))]
+                    .filter((tab) => !deleted.has(tab.id));
+                if (baseTabs.length === 0) baseTabs = tabsRef.current;
+
+                // A history file without a tab means the tab entry was lost:
+                // bring it back instead of leaving the lines orphaned.
+                const listedIds = new Set(baseTabs.map((tab) => tab.id));
+                const orphanIds = (await listTabHistoryIds()).filter((id) => !listedIds.has(id) && !deleted.has(id));
+                const recovered: Tab[] = orphanIds.map((id) => ({
+                    id,
+                    name: `${t('tabs.recovered')} ${id}`,
+                    lines: [],
+                    stats: { ...defaultStats },
+                    historyTail: true,
+                } as Tab));
+
                 // Attach the full line history of every tab (falls back to what
                 // is already in memory for tabs that have no history file yet).
-                const baseTabs = fileTabs ?? tabsRef.current;
-                const merged = await Promise.all(baseTabs.map(async (tab) => {
+                const merged = (await Promise.all([...baseTabs, ...recovered].map(async (tab) => {
                     const history = await loadTabHistory(tab.id);
                     const next = mergeTabHistory(tab, history);
                     if (history && next.lines.length === history.lines.length) markTabHistorySaved(next);
                     return next;
-                }));
+                }))).filter((tab) => !recovered.some((item) => item.id === tab.id) || tab.lines.length > 0);
                 if (disposed) return;
 
                 restoredFromFile = true;
+                knownTabIdsRef.current = new Set(merged.map((tab) => tab.id));
                 setTabs(merged);
                 if (fileTabs) {
                     const nextActiveId = fileActiveId != null && Number.isFinite(fileActiveId)
@@ -475,8 +564,9 @@ export default function App() {
                     setActiveTabId(nextActiveId);
                     activeTabIdRef.current = nextActiveId;
                 }
-                nextTabId.current = Math.max(...merged.map((tab) => tab.id), nextTabId.current - 1, 0) + 1;
-                void pruneTabHistories(merged);
+                // New ids never reuse a deleted tab's id.
+                nextTabId.current = Math.max(...merged.map((tab) => tab.id), ...deleted, nextTabId.current - 1, 0) + 1;
+                void pruneTabHistories(merged, [...deleted]);
                 // Persist once so legacy workspaces are split into history files.
                 window.setTimeout(persistWorkspaceNow, 0);
             })
@@ -486,6 +576,7 @@ export default function App() {
             .finally(() => {
                 if (disposed) return;
                 workspaceHydratedRef.current = true;
+                if (!knownTabIdsRef.current) knownTabIdsRef.current = new Set(tabsRef.current.map((tab) => tab.id));
                 if (!restoredFromFile) {
                     window.setTimeout(persistWorkspaceNow, 0);
                 }
@@ -531,8 +622,9 @@ export default function App() {
         };
     }, [persistWorkspaceNow]);
 
+    // An archived tab may be open (read-only); only a missing tab needs a fallback.
     useEffect(() => {
-        if (tabs.some((tab) => tab.id === activeTabId && !tab.archived)) return;
+        if (tabs.some((tab) => tab.id === activeTabId)) return;
         const fallback = tabs.find((tab) => !tab.archived)?.id ?? tabs[0]?.id;
         if (fallback === undefined) return;
         setActiveTabId(fallback);
@@ -575,6 +667,28 @@ export default function App() {
             window.clearInterval(interval);
         };
     }, []);
+
+    // The last regular (not archived) tab that was open. New hooked text goes
+    // there while an archived tab is being read.
+    const undoStackRef = useRef<LineOp[]>([]);
+    const redoStackRef = useRef<LineOp[]>([]);
+    const recordLineOp = useCallback((op: LineOp) => {
+        undoStackRef.current.push(op);
+        if (undoStackRef.current.length > 300) undoStackRef.current.shift();
+        redoStackRef.current = [];
+    }, []);
+    const liveTabIdRef = useRef<number | null>(null);
+    const textTargetTabId = useCallback(() => {
+        const list = tabsRef.current;
+        const active = list.find((tab) => tab.id === activeTabIdRef.current);
+        if (active && !isTabLocked(active)) return active.id;
+        const live = list.find((tab) => tab.id === liveTabIdRef.current && !isTabLocked(tab));
+        return (live ?? list.find((tab) => !isTabLocked(tab)))?.id ?? activeTabIdRef.current;
+    }, []);
+    useEffect(() => {
+        const active = tabs.find((tab) => tab.id === activeTabId);
+        if (active && !isTabLocked(active)) liveTabIdRef.current = active.id;
+    }, [tabs, activeTabId]);
 
     const switchTab = useCallback((id: number) => {
         setActiveTabId(id);
@@ -997,6 +1111,23 @@ export default function App() {
         refreshCaptureSources();
     }, [refreshCaptureSources]);
 
+    // Adding a card with a screenshot and no process chosen opens the picker;
+    // the choice is bound to the tab and handed back so the card is added at once.
+    const captureRequestRef = useRef<((source: CaptureSourceBinding | null) => void) | null>(null);
+    const [captureRequestPending, setCaptureRequestPending] = useState(false);
+    useEffect(() => registerCaptureSourceRequest(() => new Promise<CaptureSourceBinding | null>((resolve) => {
+        captureRequestRef.current?.(null);
+        captureRequestRef.current = resolve;
+        setCaptureRequestPending(true);
+        openCaptureSourcePicker();
+    })), [openCaptureSourcePicker]);
+    useEffect(() => {
+        if (isCaptureSourcePickerOpen || !captureRequestRef.current) return;
+        captureRequestRef.current(null);
+        captureRequestRef.current = null;
+        setCaptureRequestPending(false);
+    }, [isCaptureSourcePickerOpen]);
+
     // Flow window visibility, kept in sync by the backend (it can also be
     // closed from the Flow window itself).
     const [flowOpen, setFlowOpen] = useState(false);
@@ -1026,6 +1157,50 @@ export default function App() {
             speedTimeframe: settings.speedTimeframe || 'hour',
         }).catch(() => {});
     }, [flowOpen, activeTabForDisplay?.id, activeTabForDisplay?.name, activeTabForDisplay?.stats.chars, flowStatsTime, isPaused, settings.speedMetric, settings.speedTimeframe]);
+
+    // AI explanations: the reader passes line indices of the active tab.
+    const aiTabRef = useRef<{ id: number | null; name: string; lines: string[] }>({ id: null, name: '', lines: [] });
+    aiTabRef.current = { id: activeTab?.id ?? null, name: activeTab?.name || '', lines: activeTab?.lines || [] };
+    const [aiPanelOpen, setAiPanelOpen] = useState(false);
+    const [aiPanelMounted, setAiPanelMounted] = useState(false);
+    const [aiRequest, setAiRequest] = useState<AiPanelRequest | null>(null);
+    const openAiPanel = useCallback(() => { setAiPanelMounted(true); setAiPanelOpen(true); }, []);
+    const explainLinesWithAi = useCallback((indices: number[]) => {
+        const tab = aiTabRef.current;
+        const lines = indices.map((index) => removeGarbageTags(tab.lines[index] || '').trim()).filter(Boolean);
+        if (!lines.length) return;
+        setAiRequest({ id: Date.now(), request: { tabId: tab.id, tabName: tab.name, lines } });
+        openAiPanel();
+    }, [openAiPanel]);
+    // "Open AI chat" in Settings.
+    useEffect(() => {
+        const onOpen = () => { openAiPanel(); setIsSettingsOpen(false); };
+        window.addEventListener('setsuna:open-ai-panel', onOpen);
+        return () => window.removeEventListener('setsuna:open-ai-panel', onOpen);
+    }, [openAiPanel]);
+    // The AI features appear as soon as the model is downloaded (desktop only).
+    const [aiReady, setAiReady] = useState(false);
+    useEffect(() => {
+        if (isMobileLayout) return;
+        let cancelled = false;
+        const check = () => {
+            fetchAiStatus()
+                .then((status) => { if (!cancelled) setAiReady(aiModelReady(status, settings.aiModel || AI_DEFAULT_MODEL)); })
+                .catch(() => { if (!cancelled) setAiReady(false); });
+        };
+        check();
+        let unlisten: (() => void) | undefined;
+        listen<{ stage?: string }>('ai://download', (event) => {
+            if (event.payload?.stage === 'done') check();
+        }).then((fn) => { if (cancelled) fn(); else unlisten = fn; });
+        window.addEventListener('setsuna:ai-status-changed', check);
+        return () => {
+            cancelled = true;
+            unlisten?.();
+            window.removeEventListener('setsuna:ai-status-changed', check);
+        };
+    }, [isMobileLayout, settings.aiModel]);
+    useEffect(() => { if (!aiReady) setAiPanelOpen(false); }, [aiReady]);
 
     const openJlModeWindow = useCallback(() => {
         const getLastJlLine = () => {
@@ -1063,25 +1238,24 @@ export default function App() {
     }, [tabs]);
 
     const bindCaptureSourceToActiveTab = useCallback((source: CaptureWindowInfo) => {
+        const binding: CaptureSourceBinding = {
+            name: source.process_name || source.app_name || source.title,
+            active: true,
+            icon: source.icon || undefined,
+            path: source.path || undefined,
+            pid: source.pid,
+            sourceType: source.sourceType || 'local',
+            remoteUrl: source.remoteUrl,
+            remoteToken: source.remoteToken,
+        };
         setTabs((prev) =>
             prev.map((tab) =>
-                tab.id === activeTabIdRef.current
-                    ? {
-                          ...tab,
-                          captureSource: {
-                              name: source.process_name || source.app_name || source.title,
-                              active: true,
-                              icon: source.icon || undefined,
-                              path: source.path || undefined,
-                              pid: source.pid,
-                              sourceType: source.sourceType || 'local',
-                              remoteUrl: source.remoteUrl,
-                              remoteToken: source.remoteToken,
-                          },
-                      }
-                    : tab
+                tab.id === activeTabIdRef.current ? { ...tab, captureSource: binding } : tab
             )
         );
+        captureRequestRef.current?.(binding);
+        captureRequestRef.current = null;
+        setCaptureRequestPending(false);
         setIsCaptureSourcePickerOpen(false);
     }, []);
 
@@ -1550,7 +1724,7 @@ export default function App() {
             }
 
             if (lines.length === 0) continue;
-            const id = nextTabId.current++;
+            const id = allocateTabId();
             const filename = path.split(/[\\/]/).pop() || `Text ${id}`;
             const name = filename.replace(/\.txt$/i, "");
             importedTabs.push({
@@ -1576,8 +1750,16 @@ export default function App() {
         let unlistenDrag: UnlistenFn;
         let disposed = false;
 
+        // Imports started outside runDictImport (dictionaries received by code)
+        // have nobody to clear the pill, so a final status hides it shortly after.
+        let progressDoneTimer: number | undefined;
         listen('import_progress', (e: any) => {
+            window.clearTimeout(progressDoneTimer);
             setDictImportProgress(e.payload);
+            const status = String(e.payload?.status || '');
+            if (status === 'Import complete' || status === 'Done') {
+                progressDoneTimer = window.setTimeout(() => setDictImportProgress(null), 1500);
+            }
         }).then((f) => {
             if (disposed) f();
             else unlistenProgress = f;
@@ -1619,7 +1801,7 @@ export default function App() {
                     const parsed = JSON.parse(content);
 
                     if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].lines !== undefined) {
-                        let currentId = nextTabId.current;
+                        let currentId = allocateTabId();
                         const newTabs = parsed.map((t: any) => ({ ...t, id: currentId++ }));
                         nextTabId.current = currentId;
                         setTabs((prev) => [...prev, ...newTabs]);
@@ -1662,7 +1844,7 @@ export default function App() {
                             if (currentChunk < total) {
                                 setTimeout(processChunk, 10);
                             } else {
-                                const newId = nextTabId.current++;
+                                const newId = allocateTabId();
                                 let name = file.split(/[/\\]/).pop()?.replace('.json', '') || t('topbar.import');
                                 if (name.length > 20) name = name.substring(0, 20) + '...';
 
@@ -1845,7 +2027,7 @@ export default function App() {
             && (!Array.isArray(suppliedFurigana) || suppliedFurigana.length > 0);
         const enrichExistingLine = () => {
             if (!hasSuppliedFurigana) return;
-            const currentTabId = activeTabIdRef.current;
+            const currentTabId = textTargetTabId();
             setTabs((prev) => prev.map((tab) => {
                 if (tab.id !== currentTabId) return tab;
                 let matchingIndex = -1;
@@ -1900,12 +2082,15 @@ export default function App() {
         void publishToTextSync;
 
         const newStats = calculateStats(cleanText, settings.appLanguage);
-        const currentTabId = activeTabIdRef.current;
+        const currentTabId = textTargetTabId();
         {
             const currentTab = tabsRef.current.find((tab) => tab.id === currentTabId);
             const lastLine = currentTab?.lines[currentTab.lines.length - 1];
             const isDuplicate = settings.ignoreDuplicates && lastLine !== undefined && removeGarbageTags(lastLine).trim() === cleanText;
-            if (currentTab && !isDuplicate) recordDailyLine(currentTabId, cleanText, newStats.chars);
+            if (currentTab && !isDuplicate) {
+                recordDailyLine(currentTabId, cleanText, newStats.chars);
+                recordLineOp({ tabId: currentTabId, kind: 'add', index: currentTab.lines.length, after: cleanText });
+            }
         }
 
         setTabs((prev) =>
@@ -1948,6 +2133,8 @@ export default function App() {
         );
     }, [
         triggerFlash,
+        textTargetTabId,
+        recordLineOp,
         settings.replacements,
         settings.removeWhitespace,
         settings.requireJapanese,
@@ -1989,49 +2176,120 @@ export default function App() {
         return () => window.removeEventListener('setsuna-mobile-text', receiveAndroidText);
     }, [handleNewText]);
 
-    const deleteLine = useCallback((index: number) => {
-        setTabs((prev) =>
-            prev.map((t) => {
-                if (t.id === activeTabIdRef.current) {
-                    const removedStats = calculateStats(t.lines[index], settings.appLanguage);
-                    return {
-                        ...t,
-                        lines: t.lines.filter((_, i) => i !== index),
-                        stats: {
-                            chars: Math.max(0, t.stats.chars - removedStats.chars),
-                            words: Math.max(0, t.stats.words - removedStats.words),
-                            sentences: Math.max(0, t.stats.sentences - removedStats.sentences),
-                            time: t.stats.time,
-                        },
-                    };
-                }
-                return t;
-            })
-        );
+    // Line edits go through these three helpers so undo/redo can replay them,
+    // keeping stats, furigana and the stored line count consistent.
+    const changeLines = useCallback((tabId: number, change: (lines: string[], furigana: unknown[]) => { lines: string[]; furigana: unknown[]; removed: string[]; added: string[] } | null) => {
+        setTabs((prev) => prev.map((t) => {
+            if (t.id !== tabId) return t;
+            const furigana = Array.isArray(t.lineFurigana) ? [...t.lineFurigana] : t.lines.map(() => null);
+            const next = change([...t.lines], furigana);
+            if (!next) return t;
+            // Only the changed lines are counted; tabs can hold tens of thousands of lines.
+            const before = calculateStats(next.removed.join('\n'), settings.appLanguage);
+            const after = calculateStats(next.added.join('\n'), settings.appLanguage);
+            const delta = next.lines.length - t.lines.length;
+            return {
+                ...t,
+                lines: next.lines,
+                lineFurigana: next.furigana,
+                ...(t.historyTail && delta ? { lineCount: Math.max(0, (t.lineCount || t.lines.length) + delta) } : {}),
+                stats: {
+                    chars: Math.max(0, t.stats.chars - before.chars + after.chars),
+                    words: Math.max(0, t.stats.words - before.words + after.words),
+                    sentences: Math.max(0, t.stats.sentences - before.sentences + after.sentences),
+                    time: t.stats.time,
+                },
+            };
+        }));
     }, [settings.appLanguage]);
+
+    const removeLineAt = useCallback((tabId: number, index: number) => changeLines(tabId, (lines, furigana) => {
+        if (index < 0 || index >= lines.length) return null;
+        const [removed] = lines.splice(index, 1);
+        furigana.splice(index, 1);
+        return { lines, furigana, removed: [removed], added: [] };
+    }), [changeLines]);
+    const insertLineAt = useCallback((tabId: number, index: number, text: string, furiganaValue: unknown = null) => changeLines(tabId, (lines, furigana) => {
+        const at = Math.max(0, Math.min(index, lines.length));
+        lines.splice(at, 0, text);
+        furigana.splice(at, 0, furiganaValue);
+        return { lines, furigana, removed: [], added: [text] };
+    }), [changeLines]);
+    const replaceLineAt = useCallback((tabId: number, index: number, text: string) => changeLines(tabId, (lines, furigana) => {
+        if (index < 0 || index >= lines.length) return null;
+        const removed = lines[index];
+        lines[index] = text;
+        furigana[index] = null;
+        return { lines, furigana, removed: [removed], added: [text] };
+    }), [changeLines]);
+
+    const deleteLine = useCallback((index: number) => {
+        const tabId = activeTabIdRef.current;
+        const tab = tabsRef.current.find((item) => item.id === tabId);
+        if (!tab || isTabLocked(tab) || index < 0 || index >= tab.lines.length) return;
+        recordLineOp({ tabId, kind: 'delete', index, before: tab.lines[index], furigana: tab.lineFurigana?.[index] ?? null });
+        removeLineAt(tabId, index);
+    }, [removeLineAt]);
 
     const editLine = useCallback((index: number, newText: string) => {
-        setTabs((prev) =>
-            prev.map((t) => {
-                if (t.id === activeTabIdRef.current) {
-                    const removedStats = calculateStats(t.lines[index], settings.appLanguage);
-                    const addedStats = calculateStats(newText, settings.appLanguage);
+        const tabId = activeTabIdRef.current;
+        const tab = tabsRef.current.find((item) => item.id === tabId);
+        if (!tab || isTabLocked(tab) || index < 0 || index >= tab.lines.length || tab.lines[index] === newText) return;
+        recordLineOp({ tabId, kind: 'edit', index, before: tab.lines[index], after: newText });
+        replaceLineAt(tabId, index, newText);
+    }, [replaceLineAt]);
 
-                    return {
-                        ...t,
-                        lines: t.lines.map((l, i) => (i === index ? newText : l)),
-                        stats: {
-                            chars: Math.max(0, t.stats.chars - removedStats.chars + addedStats.chars),
-                            words: Math.max(0, t.stats.words - removedStats.words + addedStats.words),
-                            sentences: Math.max(0, t.stats.sentences - removedStats.sentences + addedStats.sentences),
-                            time: t.stats.time,
-                        },
-                    };
-                }
-                return t;
-            })
-        );
-    }, [settings.appLanguage]);
+    const applyLineOp = useCallback((op: LineOp, direction: 'undo' | 'redo') => {
+        const tab = tabsRef.current.find((item) => item.id === op.tabId);
+        if (!tab || isTabLocked(tab)) return false;
+        // An added line can have moved if older lines were deleted meanwhile.
+        const findAdded = () => (tab.lines[op.index] === op.after ? op.index : tab.lines.lastIndexOf(op.after ?? ''));
+        if (op.kind === 'delete') {
+            if (direction === 'undo') insertLineAt(op.tabId, op.index, op.before ?? '', op.furigana ?? null);
+            else removeLineAt(op.tabId, op.index);
+        } else if (op.kind === 'edit') {
+            replaceLineAt(op.tabId, op.index, (direction === 'undo' ? op.before : op.after) ?? '');
+        } else if (direction === 'undo') {
+            const at = findAdded();
+            if (at < 0) return false;
+            removeLineAt(op.tabId, at);
+        } else {
+            insertLineAt(op.tabId, op.index, op.after ?? '');
+        }
+        if (activeTabIdRef.current !== op.tabId) switchTab(op.tabId);
+        return true;
+    }, [insertLineAt, removeLineAt, replaceLineAt, switchTab]);
+
+    const undoLineOp = useCallback(() => {
+        while (undoStackRef.current.length) {
+            const op = undoStackRef.current.pop()!;
+            if (applyLineOp(op, 'undo')) { redoStackRef.current.push(op); return; }
+        }
+    }, [applyLineOp]);
+    const redoLineOp = useCallback(() => {
+        while (redoStackRef.current.length) {
+            const op = redoStackRef.current.pop()!;
+            if (applyLineOp(op, 'redo')) { undoStackRef.current.push(op); return; }
+        }
+    }, [applyLineOp]);
+
+    // Ctrl+Z undoes the last line change (add, edit, delete), Ctrl+Shift+Z or
+    // Ctrl+Y redoes it. Text fields keep their own native undo.
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+            const isZ = event.code === 'KeyZ';
+            const isY = event.code === 'KeyY';
+            if (!isZ && !isY) return;
+            const target = event.target as HTMLElement | null;
+            if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) return;
+            event.preventDefault();
+            if (isY || event.shiftKey) redoLineOp();
+            else undoLineOp();
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [undoLineOp, redoLineOp]);
 
     const clearAll = () => {
         setConfirmDialog({
@@ -2063,9 +2321,57 @@ export default function App() {
     };
 
     const addNewTab = () => {
-        const newId = nextTabId.current++;
-        setTabs((prev) => [...prev, { id: newId, name: t('tabs.newName', { id: newId }), lines: [], stats: defaultStats, speedSamples: [] }]);
+        const newId = allocateTabId();
+        setTabs((prev) => [...prev, { id: newId, name: t('tabs.newName', { id: prev.length + 1 }), lines: [], stats: defaultStats, speedSamples: [] }]);
         switchTab(newId);
+    };
+
+    // Shared reading: broadcast a tab to a room, or follow someone's room.
+    const sharedReading = useSharedReading({
+        tabs,
+        setTabs,
+        countStats: (text) => calculateStats(text, settings.appLanguage),
+    });
+    const [sharedDialogTabId, setSharedDialogTabId] = useState<number | null>(null);
+    const openSharedReading = useCallback((tabId?: number) => {
+        setSharedDialogTabId(tabId ?? activeTabIdRef.current);
+    }, []);
+
+    const joinSharedRoom = async (code: string) => {
+        const existing = tabsRef.current.find((tab) => tab.shared?.role !== undefined && tab.shared.code === code);
+        if (existing && existing.shared?.role === 'viewer' && !existing.shared.ended) {
+            switchTab(existing.id);
+            return;
+        }
+        // The tab appears at once and finds the host by itself; it takes the
+        // host's tab name with the first text.
+        const newId = allocateTabId();
+        setTabs((prev) => [...prev, {
+            id: newId,
+            name: code,
+            lines: [],
+            stats: { ...defaultStats },
+            speedSamples: [],
+            mode: 'text',
+            status: 'reading',
+            shared: { code, role: 'viewer' },
+        }]);
+        switchTab(newId);
+        setActiveWorkspace('texthooker');
+    };
+
+    /** Leaves a followed room: the tab goes away (keep a copy first to hold on to it). */
+    const leaveSharedRoom = (id: number) => {
+        const rest = tabsRef.current.filter((tab) => tab.id !== id);
+        const visible = rest.filter((tab) => !tab.archived && (!tab.mode || tab.mode === 'text'));
+        let nextId = visible[0]?.id;
+        const extra: Tab[] = [];
+        if (nextId === undefined) {
+            nextId = allocateTabId();
+            extra.push({ id: nextId, name: t('tabs.newName', { id: 1 }), lines: [], stats: { ...defaultStats }, speedSamples: [] });
+        }
+        setTabs([...rest, ...extra]);
+        if (activeTabIdRef.current === id) switchTab(nextId);
     };
 
     const openTextHookerWorkspace = () => {
@@ -2076,10 +2382,10 @@ export default function App() {
             if (existing) {
                 switchTab(existing.id);
             } else {
-                const newId = nextTabId.current++;
+                const newId = allocateTabId();
                 setTabs((prev) => [...prev, {
                     id: newId,
-                    name: t('tabs.newName', { id: newId }),
+                    name: t('tabs.newName', { id: tabs.length + 1 }),
                     lines: [],
                     stats: defaultStats,
                     speedSamples: [],
@@ -2226,7 +2532,7 @@ export default function App() {
                 const parsed = JSON.parse(event.target?.result as string);
 
                 if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].lines !== undefined) {
-                    let currentId = nextTabId.current;
+                    let currentId = allocateTabId();
                     const newTabs = parsed.map((t: any) => ({ ...t, id: currentId++ }));
                     nextTabId.current = currentId;
                     setTabs((prev) => [...prev, ...newTabs]);
@@ -2269,7 +2575,7 @@ export default function App() {
                         if (currentChunk < total) {
                             setTimeout(processChunk, 10);
                         } else {
-                            const newId = nextTabId.current++;
+                            const newId = allocateTabId();
                             let name = file.name.replace('.json', '');
                             if (name.length > 20) name = name.substring(0, 20) + '...';
 
@@ -2328,7 +2634,7 @@ export default function App() {
             const content = await invoke<string>("load_sync_file", { path: selected });
             const parsed = JSON.parse(content);
             if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].lines !== undefined) {
-                let currentId = nextTabId.current;
+                let currentId = allocateTabId();
                 const newTabs = parsed.map((tab: any) => ({ ...tab, id: currentId++ }));
                 nextTabId.current = currentId;
                 setTabs((prev) => [...prev, ...newTabs]);
@@ -2351,7 +2657,7 @@ export default function App() {
                     totalWords += stats.words;
                     totalSents += stats.sentences;
                 });
-                const newId = nextTabId.current++;
+                const newId = allocateTabId();
                 let name = selected.split(/[/\\]/).pop()?.replace(/\.json$/i, "") || t("topbar.import");
                 if (name.length > 20) name = name.substring(0, 20) + "...";
                 setTabs((prev) => [...prev, {
@@ -3162,6 +3468,19 @@ export default function App() {
                 </div>
             )}
 
+            <SharedReadingDialog
+                open={sharedDialogTabId !== null}
+                tab={tabs.find((tab) => tab.id === sharedDialogTabId) || null}
+                status={sharedDialogTabId !== null ? sharedReading.status[sharedDialogTabId] : undefined}
+                en={settings.appLanguage === 'en'}
+                onStart={sharedReading.startHosting}
+                onStop={sharedReading.stopHosting}
+                onJoin={joinSharedRoom}
+                onKeep={sharedReading.keepCopy}
+                onLeave={leaveSharedRoom}
+                onClose={() => setSharedDialogTabId(null)}
+            />
+
             {isCaptureSourcePickerOpen && (
                 <div
                     className="modal-overlay"
@@ -3215,7 +3534,11 @@ export default function App() {
                                         whiteSpace: 'nowrap',
                                     }}
                                 >
-                                    {activeTab?.captureSource?.name
+                                    {captureRequestPending
+                                        ? (settings.appLanguage === 'en'
+                                            ? 'Pick the game window for the card screenshot. It is remembered for this tab.'
+                                            : 'Выбери окно игры для скриншота карточки. Оно запомнится для этой вкладки.')
+                                        : activeTab?.captureSource?.name
                                         ? t('capture.current', { source: activeTab.captureSource.name })
                                         : t('capture.notBound')}
                                 </div>
@@ -3480,7 +3803,6 @@ export default function App() {
                     setTabs={setTabs}
                     closeTab={closeTab}
                     archiveTab={archiveTab}
-                    openArchiveSettings={() => openSettingsPanel('archive-main')}
                     cycleTabStatus={cycleTabStatus}
                     addNewTab={addNewTab}
                     settings={{ ...settings, websockets: settings.websockets?.filter((w) => w.active) }}
@@ -3513,12 +3835,17 @@ export default function App() {
                     openExport={openExportModal}
                     activeTab={activeTab}
                     openCaptureSourcePicker={openCaptureSourcePicker}
+                    openSharedReading={openSharedReading}
+                    sharedStatus={sharedReading.status}
                     openJlModeWindow={openJlModeWindow}
                     flowOpen={flowOpen}
                     toggleFlow={() => {
                         if (flowOpen) invoke("close_jl_mode_window").catch(() => {});
                         else openJlModeWindow();
                     }}
+                    aiAvailable={aiReady && !isMobileLayout}
+                    aiOpen={aiPanelOpen}
+                    toggleAi={() => (aiPanelOpen ? setAiPanelOpen(false) : openAiPanel())}
                     clearAll={clearAll}
                     openHome={() => setActiveWorkspace("hub")}
                     openSettings={() => openSettingsPanel()}
@@ -3527,6 +3854,8 @@ export default function App() {
                     escMenuBlocked={isSearchOpen || isSettingsOpen || isCaptureSourcePickerOpen || Boolean(updateDialog)}
                 />
 
+                <div className="reader-row">
+                <div className="reader-stage">
                 <main ref={mainContentRef} className="main-content" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                     <TextContainer
                         contentKey={activeTab?.id ?? activeTabId}
@@ -3542,6 +3871,8 @@ export default function App() {
                         panelPosition={settings.panelPosition}
                         language={settings.appLanguage}
                         textOrientation={settings.textOrientation}
+                        onExplainLines={aiReady && settings.aiLineButtons !== false ? explainLinesWithAi : undefined}
+                        readOnly={isTabLocked(activeTab)}
                     />
                 </main>
 
@@ -3558,6 +3889,18 @@ export default function App() {
                     tabId={activeTab?.id ?? null}
                     tabName={activeTab?.name || ''}
                 />
+                </div>
+                {aiPanelMounted && (
+                    <AiPanel
+                        open={aiPanelOpen}
+                        settings={settings}
+                        request={aiRequest}
+                        activeTabId={activeTab?.id ?? null}
+                        activeTabName={activeTab?.name || ''}
+                        onClose={() => setAiPanelOpen(false)}
+                    />
+                )}
+                </div>
                 </>
                 )}
 
@@ -3577,13 +3920,6 @@ export default function App() {
                     onClearLookup={() => setLookupStack([])}
                     onCheckForUpdates={checkForUpdates}
                     updateChecking={isCheckingUpdate}
-                    onOpenArchivedTab={(id) => {
-                        setTabs((prev) => prev.map((tab) => tab.id === id ? { ...tab, archived: false } : tab));
-                        switchTab(id);
-                        setActiveWorkspace("texthooker");
-                        setIsSettingsOpen(false);
-                        setSettingsInitialSection(null);
-                    }}
                     initialSection={settingsInitialSection}
                 />
 
@@ -3598,11 +3934,7 @@ export default function App() {
                         settings={settings}
                         playerClip={playerMiningClip}
                         captureSource={resolvedWorkspace === "texthooker" ? (activeTab?.captureSource || null) : null}
-                        ankiDeck={isMobileLayout && resolvedWorkspace === "texthooker"
-                            ? (activeTab?.ankiDeck || settings.ankiDeck)
-                            : settings.ankiDeckMode === 'contextual' && resolvedWorkspace === "texthooker"
-                                ? (activeTab?.ankiDeck || settings.ankiDeck)
-                                : settings.ankiDeck}
+                        ankiDeck={resolvedWorkspace === "texthooker" ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
                         onClose={() => setLookupStack([])}
                         onSentenceLookup={isMobileLayout ? runSentenceTokenLookup : undefined}
                     />

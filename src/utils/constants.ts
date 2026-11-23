@@ -1,4 +1,5 @@
 import { AppSettings } from "../components/SettingsModal";
+import type { TabShare } from "./sharedReading";
 
 export interface TabStats { chars: number; words: number; sentences: number; time: number; }
 export interface ReadingSpeedSample {
@@ -59,7 +60,12 @@ export interface Tab {
     lineCount?: number;
     /** True while `lines` holds only the cached tail and the full history is still on disk. */
     historyTail?: boolean;
+    /** Shared reading: this tab is broadcast to a room (host) or follows one (viewer). */
+    shared?: TabShare;
 }
+
+/** Tabs that take no new text and can't be edited: archived ones and the ones following a room. */
+export const isTabLocked = (tab: Tab | null | undefined) => Boolean(tab?.archived || tab?.shared?.role === 'viewer');
 export interface PlayerMiningClip {
     path?: string;
     filename?: string;
@@ -131,6 +137,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
     jlModeHoverDelay: 90,
     jlModeLookupMode: 'scan',
     jlModeScanDelay: 200,
+    aiEnabled: false,
+    aiLineButtons: true,
+    aiLanguage: 'ru',
+    aiSourceLanguage: 'auto',
+    aiDetail: 'detailed',
+    aiCustomPrompt: '',
+    aiModel: 'gemma-4-e4b',
     jlModeBacklogCapacity: 300,
     jlModeHideLookupOnNewText: true,
     mobileOverlayEnabled: false,

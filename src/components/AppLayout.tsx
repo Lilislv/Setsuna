@@ -982,11 +982,13 @@ export const MobileLayout = ({
                 tabs: (tabs || []).filter((tab: any) => !tab.archived).map((tab: any) => {
                     const clean = JSON.parse(JSON.stringify(tab));
                     delete clean.captureSource;
+                    delete clean.shared;
                     return clean;
                 }),
                 archive: (tabs || []).filter((tab: any) => tab.archived).map((tab: any) => {
                     const clean = JSON.parse(JSON.stringify(tab));
                     delete clean.captureSource;
+                    delete clean.shared;
                     return clean;
                 }),
             };

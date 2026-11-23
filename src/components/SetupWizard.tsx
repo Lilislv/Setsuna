@@ -123,13 +123,15 @@ export default function SetupWizard({
                 ? deck
                 : ankiDeck && list.includes(ankiDeck) ? ankiDeck : (setup.defaultDeck || list[0] || "");
             if (preferred) chooseDeck(preferred);
-            // The wizard starts everyone on Setsuna's own card format
-            // (created in Anki if it is missing); another type can be picked below.
-            const noteType = await ensureSetsunaNoteType();
+            // Keep the note type already in use, else Lapis; Setsuna's own simple
+            // type only when there is neither. Another type can be picked below.
+            const noteType = await ensureSetsunaNoteType(ankiModel || "");
             setModels(noteType.models);
             if (noteType.model) {
                 setModel(noteType.model);
-                patch({ ankiDeck: preferred, ankiModel: noteType.model, ...recommendAnkiFieldSettings(noteType.fields) });
+                patch(noteType.model === ankiModel
+                    ? { ankiDeck: preferred }
+                    : { ankiDeck: preferred, ankiModel: noteType.model, ...recommendAnkiFieldSettings(noteType.fields) });
             }
             setAnkiState("connected");
         } catch (error) {

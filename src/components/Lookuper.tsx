@@ -12,6 +12,7 @@ import { isMobilePlatform } from '../utils/platform';
 import { withReadableCyrillic } from '../utils/cyrillicFace';
 import { TokenizedLine } from './TextContainer';
 import { audioPreviewUrl, resolveDictionaryAudio } from '../utils/dictionaryAudio';
+import { canRequestCaptureSource, requestCaptureSource } from '../utils/captureRequest';
 
 
 export interface DeinflectReason { rule: any; desc: any; in_suffix?: string; out_suffix?: string; }
@@ -771,6 +772,22 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                             document.documentElement.classList.remove('setsuna-capture-clean');
                         }
                     } else {
+                        if (activeProcs.length === 0 && canRequestCaptureSource()) {
+                            // Nothing chosen yet: ask for the window once, it stays bound to the tab.
+                            const picked = await requestCaptureSource();
+                            if (!picked) {
+                                setIsAdding(false);
+                                return;
+                            }
+                            activeProcs.push({
+                                name: picked.name,
+                                path: picked.path || "",
+                                pid: picked.pid,
+                                sourceType: picked.sourceType || "local",
+                                remoteUrl: picked.remoteUrl,
+                                remoteToken: picked.remoteToken,
+                            });
+                        }
                         if (activeProcs.length === 0) {
                             alert(t('anki.noProcesses'));
                             setIsAdding(false);

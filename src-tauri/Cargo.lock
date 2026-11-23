@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Setsuna"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "atspi",
  "base64 0.22.1",
@@ -22,6 +22,7 @@ dependencies = [
  "screenshots",
  "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
  "tar",
  "tauri",

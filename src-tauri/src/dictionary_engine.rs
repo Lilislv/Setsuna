@@ -368,7 +368,10 @@ pub(crate) async fn get_installed_dicts(app: tauri::AppHandle) -> Result<Vec<Str
     let mut db = open_db(&app)?;
     // Older builds could leave one row per dated revision. Clean those rows
     // before exposing dictionary names to the frontend.
-    dictionary_import::cleanup_stale_dictionary_revisions(&mut db)?;
+    // While an import runs it owns the write lock; cleaning up then would wait for it.
+    if !crate::core::database::import_active() {
+        dictionary_import::cleanup_stale_dictionary_revisions(&mut db)?;
+    }
     // Dictionary imports record their title in dictionary_meta; entries covers
     // legacy databases. Frequency/pitch-only dictionaries (JPDB, Jiten, …) have
     // neither, so they never showed up in the list and could not be turned off
