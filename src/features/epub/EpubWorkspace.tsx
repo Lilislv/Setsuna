@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppSettings } from "../../components/SettingsModal";
 import type { EpubBookmark, Tab } from "../../utils/constants";
 import { getTranslator } from "../../utils/i18n";
-import WorkspaceShell from "../../components/WorkspaceShell";
+import "../../components/WorkspaceShell.css";
 import { IconBookTab, IconHome, IconImport, IconSettings } from "../../components/Icons";
 import "../../components/AppMenu.css";
 import EpubLibrary from "./EpubLibrary";
@@ -656,15 +656,8 @@ export default function EpubWorkspace({
     }
 
     return (
-        <WorkspaceShell
-            title={t("epub.title")}
-            icon={<IconBookTab />}
-            accent="reader"
-            language={language}
-            onHome={onHome}
-            onSettings={onSettings}
-        >
-            {content}
-        </WorkspaceShell>
+        <section className="workspace-shell workspace-shell-reader">
+            <div className="workspace-shell-content">{content}</div>
+        </section>
     );
 }

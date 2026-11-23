@@ -1653,11 +1653,11 @@ export default function App() {
                 ];
             });
 
-            if (options?.activate !== false) {
+            if (options?.activate) {
                 switchTab(tabId);
-                setLookupStack([]);
-                setActiveWorkspace("epub");
             }
+            setLookupStack([]);
+            setActiveWorkspace("epub");
         } catch (error) {
             setNotice({
                 title: t("epub.title"),
@@ -1679,8 +1679,8 @@ export default function App() {
             const selectedPaths = Array.isArray(selected)
                 ? selected.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
                 : [];
-            for (let i = 0; i < selectedPaths.length; i++) {
-                await importEpubPath(selectedPaths[i], undefined, { activate: i === selectedPaths.length - 1 });
+            for (const bookPath of selectedPaths) {
+                await importEpubPath(bookPath);
             }
         } catch (error) {
             setNotice({
@@ -2011,8 +2011,8 @@ export default function App() {
 
             const bookPaths = paths.filter((path) => isSupportedBookPath(path));
             if (bookPaths.length > 0) {
-                for (let i = 0; i < bookPaths.length; i++) {
-                    await importEpubPath(bookPaths[i], undefined, { activate: i === bookPaths.length - 1 });
+                for (const bookPath of bookPaths) {
+                    await importEpubPath(bookPath);
                 }
                 return;
             }
