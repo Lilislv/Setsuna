@@ -47,6 +47,7 @@ export interface EpubBookData {
     chapterIndex?: number;
     chapterOffset?: number;
     chapterCount?: number;
+    tocCount?: number;
     countedThrough?: string;
     bookmarks?: EpubBookmark[];
     highlights?: EpubHighlight[];
@@ -119,6 +120,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     lookupShowAudio: true,
     globalLookupEnabled: false,
     globalLookupRestoreClipboard: true,
+    globalLookupUseSelection: true,
+    globalLookupAutoClose: true,
+    globalLiveScanEnabled: true,
+    globalLiveScanModifier: 'Shift',
     globalLookupShortcut: 'Alt+Q',
     hookProcesses: [], 
     ankiDeck: '', ankiModel: '',

@@ -32,7 +32,7 @@ class MobileFileBridge(private val activity: Activity) {
             type = "*/*"
             putExtra(
                 Intent.EXTRA_MIME_TYPES,
-                arrayOf("application/epub+zip", "application/octet-stream"),
+                arrayOf("application/epub+zip", "text/plain", "application/octet-stream"),
             )
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
         }

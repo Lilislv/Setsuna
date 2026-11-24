@@ -5,7 +5,38 @@
 
 ---
 
-## 2026-11-23 — Sasayaki-Style Full-Book Audiobook Sync Engine, Auto-Pause & Anki Audio Mining
+## 2026-11-24 — System-Wide Windows Lookup Upgrade (Selection + UIA + Yomitan Popup) & Mobile Drive/Vertical Reader Fixes
+
+- **System-wide Windows lookup engine (`src-tauri/src/global_lookup.rs`, `src-tauri/src/main.rs`, `src-tauri/Cargo.toml`):**
+  - New isolated Rust module `global_lookup.rs` with **live continuous hover-scan watcher** (TextHooker/Yomitan-style: hold `Shift`/`Alt`/`Ctrl+Shift`/`Ctrl+Alt` and glide mouse across any Windows app without stealing focus via `SetWindowPos(..., SWP_NOACTIVATE | SWP_SHOWWINDOW)`), persistent thread-local `IUIAutomation` COM session (~1–3 ms/probe), and **pixel-accurate character hit-testing** (`GetBoundingRectangles` via `Win32_System_Ole` to fix Windows UIA's right-half caret rounding off-by-one bug, e.g. hovering `記` in `記憶の片隅` now hits `記憶` instead of `憶`).
+  - One-shot `Alt+Q` cascade combining: (1) non-intrusive UIA `TextPattern::GetSelection()`, (2) Scintilla word capture, (3) UIA `TextPattern` / `TextPattern2` / `TextChildPattern` exact cursor + clipped sentence, (4) safe clipboard-preserving `Ctrl+C` selection probe (releases held hotkey modifiers, checks `GetClipboardSequenceNumber()`, restores original clipboard text) for Telegram, Discord, Chrome/Vivaldi, PDF readers, and (5) `ValuePattern` / `CurrentName` fallback with bounding-box cursor estimate + Lindera enclosing-token snap.
+  - Added `read_system_clipboard_text` & `update_global_live_scan_config` commands, DPI-aware Yomitan placement (flips above cursor near screen bottom) in `show_lookup_agent_window`, global outside-click & Escape dismissal for unfocused live popups, previous foreground `HWND` restoration on Esc, and repeat-hotkey support while `lookup_external` is open.
+- **Yomitan-style external popup (`src/lookup-window.tsx`, `src/lookup-window.css`, `src/components/Settings/SettingsLookup.tsx`, `src/utils/constants.ts`, `src/components/SettingsModal.tsx`):**
+  - Compact draggable header with live search input, `📋` clipboard lookup, `▣` region capture, `📌` pin toggle (auto-close on blur when unpinned), collapsible `⚙` Anki deck & auto-bound active-window screenshot drawer, and interactive `TokenizedLine` sentence strip so users can click any neighboring word without re-triggering the hotkey.
+  - Added settings `globalLookupUseSelection` and `globalLookupAutoClose` (both default `true`).
+- **Mobile EPUB & Google Drive fixes (`src/components/AppLayout.tsx`, `src/features/epub/useEpubSync.ts`, `src/features/epub/EpubWorkspace.tsx`, `src/features/epub/EpubReader.tsx`, `src/features/epub/EpubLibrary.tsx`, `src/features/epub/epub.css`, `src/components/MobileShell.css`, `src/components/TextContainer.tsx`, `src/App.tsx`):**
+  - Fixed Android Google Drive `OAuth state mismatch` (clean up previous `oauth_code` listener + persist PKCE sessions in `sessionStorage`), wired `settings.gdriveRefreshToken` fallback into `useEpubSync`, opened Drive settings directly (`'drive'`), preserved Library vs Reader `viewMode` across Settings unmount, fixed `.m-page` safe-area scrolling under status bar, hid duplicate mobile shell bars in EPUB reader mode, switched mobile reader toolbar to a single 38px row with 1-tap `縦`/`横`, and added authentic EPUB `<ruby>` rendering (`furiganaMode="epub"`) inside `TokenizedLine`.
+
+---
+
+## 2026-11-23 — Discrete Vertical Pagination, Backward Section Nav, Vertical Mobile Lookup Context, Stats Tracker Fix & Full Mobile EPUB Parity
+
+- **Discrete vertical-rl pagination (`src/features/epub/EpubReader.tsx`, `src/features/epub/epub.css`):**
+  - Unified horizontal & vertical paged modes under `isDiscretePaged` using `.epub-page-measurer` (`writing-mode: vertical-rl` measuring paragraph widths) so vertical columns are NEVER sliced in half on Desktop or Android, with RTL page-turn animations and proper mobile top/bottom clearance (`66px`/`70px`).
+- **Backward section navigation & last-page landing:**
+  - Fixed 1-page sections (like `目次`) being trapped from navigating backward (`metrics.max <= 1` now satisfies both `atStart` and `atEnd`); turning back across a section boundary now lands cleanly on the **last page** of the previous section (`pendingStartAtEndRef`), and `«` always falls back to `chapterIndex - 1` if earlier content exists.
+- **Section labels & weighted progress (`EpubReader.tsx`, `EpubWorkspace.tsx`, `EpubLibrary.tsx`, `i18n.ts`):**
+  - Bottom bar now shows actual ToC section title + page + chars + %, replacing `"Глава X из Y"` with `"Раздел / Section"`; fixed `handleSelectChapter` to use `computeWeightedBookProgress` instead of naive spine file index (`17%` on `目次` -> `0%`).
+- **Honest EPUB-only stats tracker (`EpubReader.tsx`, `EpubStatsModal.tsx`, `dailyStats.ts`):**
+  - Replaced reversible `lastTrackedParaRef` with monotonic per-chapter `highWaterByChapterRef` + 1.2s minimum page dwell guard so back/forth page turning or rapid skimming never inflates char counts; filtered EPUB stats & heatmap to EPUB tabs only (`sumDayForTabs`) and added 1-click "Reset EPUB stats" (`resetDailyStatsForTabs`).
+- **Vertical mobile lookup context & kinsoku (`Lookuper.tsx`, `MobileShell.css`, `TextContainer.tsx`, `App.tsx`):**
+  - Added `verticalContext` prop to `Lookuper` so the mobile lookup sentence card renders in `writing-mode: vertical-rl` (and centers the tapped word) whenever the active reader is vertical; glued closing Japanese punctuation (`。、」』！？`) to preceding `.lookup-word` buttons in `TokenizedLine` to eliminate dangling punctuation.
+- **Full Mobile EPUB Parity (`EpubReader.tsx`, `AppLayout.tsx`, `App.tsx`, `MainActivity.kt`, `MobileFileBridge.kt`):**
+  - Compact wrapping mobile top bar showing `[←]` + `[ToC]` + all tools (Reading Point, Notes, Bookmarks, Gallery, Audio/Sasayaki, Search, Orientation, `Aa`), wired EPUB `Aa` furigana setting into mobile `TokenizedLine`, forwarded all desktop EPUB props to `MobileLayout`, and enabled `.txt`/`.htmlz` alongside `.epub` in Android's file picker.
+
+---
+
+## 2026-11-23 — Sasayaki-Style Full-Book Audiobook Sync Engine, Auto-Pause & Anki Audio Mining (`0b26a5c`)
 
 - **Rust full-book alignment engine (`src-tauri/src/epub_audio.rs`, registered in both `main.rs` & `lib.rs`):**
   - Commands: `epub_audio_allow_file` (grants `asset_protocol_scope().allow_file` + auto-detects sibling `.srt`/`.vtt` and `.cue`), `epub_audio_align`, `epub_audio_align_text`, `epub_audio_load_alignment`, `epub_audio_clear_alignment`.

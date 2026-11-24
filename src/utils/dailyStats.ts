@@ -92,6 +92,55 @@ export const recordDailyChars = (tabId: number | string, chars: number) => {
 
 export const getDay = (key = dayKey()): DayRecord => load()[key] || { total: emptyCounts(), tabs: {} };
 
+/** Sums daily counts across a specific subset of tab IDs (e.g. EPUB-only stats). */
+export const sumDayForTabs = (record: DayRecord, tabIds: ReadonlySet<string>): DayCounts => {
+    const out = emptyCounts();
+    if (!record || !record.tabs || tabIds.size === 0) return out;
+    for (const [id, counts] of Object.entries(record.tabs)) {
+        if (!tabIds.has(id) || !counts) continue;
+        out.chars += counts.chars || 0;
+        out.words += counts.words || 0;
+        out.sentences += counts.sentences || 0;
+        out.lines += counts.lines || 0;
+        out.seconds += counts.seconds || 0;
+    }
+    return out;
+};
+
+/** Removes daily stat entries for specific tab IDs and recomputes totals without affecting other tabs. */
+export const resetDailyStatsForTabs = (tabIds: readonly number[]): void => {
+    if (tabIds.length === 0) return;
+    const idSet = new Set(tabIds.map((id) => String(id)));
+    const data = load();
+    let changed = false;
+    for (const record of Object.values(data)) {
+        if (!record || !record.tabs) continue;
+        let dayChanged = false;
+        for (const id of idSet) {
+            if (id in record.tabs) {
+                delete record.tabs[id];
+                dayChanged = true;
+            }
+        }
+        if (dayChanged) {
+            const nextTotal = emptyCounts();
+            for (const counts of Object.values(record.tabs)) {
+                if (!counts) continue;
+                nextTotal.chars += counts.chars || 0;
+                nextTotal.words += counts.words || 0;
+                nextTotal.sentences += counts.sentences || 0;
+                nextTotal.lines += counts.lines || 0;
+                nextTotal.seconds += counts.seconds || 0;
+            }
+            record.total = nextTotal;
+            changed = true;
+        }
+    }
+    if (changed) {
+        persist();
+    }
+};
+
 /** Export a shallow snapshot of all stored daily reading stats (for portable backups). */
 export const exportDailyStatsSnapshot = (): Record<string, DayRecord> => {
     const data = load();

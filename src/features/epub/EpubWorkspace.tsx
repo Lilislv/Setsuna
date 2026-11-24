@@ -10,13 +10,14 @@ import EpubReader from "./EpubReader";
 import EpubStatsModal from "./EpubStatsModal";
 import { loadEpubChapter, loadEpubCover, openEpubBook } from "./epubApi";
 import { getInitialCoverSnapshot, hasCachedCover, setMemoryCover } from "./epubCoverCache";
-import type {
-    EpubBookMeta,
-    EpubBookNote,
-    EpubChapterContent,
-    EpubHighlight,
-    EpubOrientationSetting,
-    EpubReadingPoint,
+import {
+    computeWeightedBookProgress,
+    type EpubBookMeta,
+    type EpubBookNote,
+    type EpubChapterContent,
+    type EpubHighlight,
+    type EpubOrientationSetting,
+    type EpubReadingPoint,
 } from "./epubModel";
 import { loadEpubGoals, type EpubReadingGoals } from "./epubTracker";
 import type { EpubPortableBackup } from "./epubBackup";
@@ -25,6 +26,7 @@ import "./epub.css";
 
 const MAX_CACHED_CHAPTERS = 12;
 const ESC_MENU_CLOSE_MS = 180;
+let lastEpubViewMode: "library" | "reader" | null = null;
 
 type LookupMatch = { start: number; length: number };
 type LookupTokenHandler = (
@@ -61,6 +63,7 @@ interface EpubWorkspaceProps {
     onChangeBookNotes?: (tabId: number, notes: EpubBookNote[]) => void;
     onChangeReadingPoint?: (tabId: number, point: EpubReadingPoint | null) => void;
     onRecordReadingStats?: (tabId: number, deltaChars: number, deltaSeconds: number) => void;
+    onResetStats?: () => void;
     onUpdateSettings?: (patch: Partial<AppSettings>) => void;
     onLookupToken?: LookupTokenHandler;
     resumePromptBookId?: number | null;
@@ -99,6 +102,7 @@ export default function EpubWorkspace({
     onChangeBookNotes,
     onChangeReadingPoint,
     onRecordReadingStats,
+    onResetStats,
     onUpdateSettings,
     onLookupToken,
     resumePromptBookId = null,
@@ -114,9 +118,12 @@ export default function EpubWorkspace({
     const isEn = language === "en";
     const t = getTranslator(language);
 
-    const [viewMode, setViewMode] = useState<"library" | "reader">(
-        resumePromptBookId ? "library" : (activeBookTab ? "reader" : "library"),
-    );
+    const [viewMode, setViewMode] = useState<"library" | "reader">(() => {
+        if (resumePromptBookId) return "library";
+        if (lastEpubViewMode === "library") return "library";
+        if (lastEpubViewMode === "reader" && activeBookTab) return "reader";
+        return activeBookTab ? "reader" : "library";
+    });
     const [bookMeta, setBookMeta] = useState<EpubBookMeta | null>(null);
     const [chapter, setChapter] = useState<EpubChapterContent | null>(null);
     const [loading, setLoading] = useState(false);
@@ -147,6 +154,7 @@ export default function EpubWorkspace({
     const activeTabId = activeBookTab?.id ?? null;
 
     useEffect(() => {
+        lastEpubViewMode = viewMode;
         if (viewMode !== "reader") {
             setMobileImmersive(false);
         }
@@ -450,7 +458,7 @@ export default function EpubWorkspace({
         const generation = ++loadGenerationRef.current;
         setPendingFragment(fragment || null);
         setPendingParagraphIndex(typeof paragraphIndex === "number" ? paragraphIndex : null);
-        const bookProgress = bookMeta.chapters.length > 0 ? clamped / bookMeta.chapters.length : 0;
+        const bookProgress = computeWeightedBookProgress(clamped, bookMeta.chapters, 0);
         onProgressChange(activeBookTab.id, clamped, 0, bookProgress);
         void fetchChapter(bookPath, clamped, generation);
     }, [activeBookTab, bookPath, bookMeta, fetchChapter, onProgressChange]);
@@ -465,14 +473,26 @@ export default function EpubWorkspace({
         ? (activeBookTab.epub?.title || bookMeta?.title || activeBookTab.name)
         : t("epub.library");
     const activeBookSubtitle = viewMode === "reader" && activeBookTab
-        ? [
-            activeBookTab.epub?.author || bookMeta?.author,
-            chapter?.title || t("epub.chapterOf", {
-                current: (chapter?.index ?? activeBookTab.epub?.chapterIndex ?? 0) + 1,
-                total: bookMeta?.chapters.length || activeBookTab.epub?.chapterCount || 1,
-            }),
-            `${Math.round(Math.min(1, Math.max(0, activeBookTab.epub?.progress || 0)) * 100)}%`,
-        ].filter(Boolean).join(" · ")
+        ? (() => {
+            const curSpineIdx = chapter?.index ?? activeBookTab.epub?.chapterIndex ?? 0;
+            const toc = bookMeta?.toc;
+            let tocLabel: string | undefined;
+            if (toc && toc.length > 0) {
+                let best = 0;
+                for (let i = 0; i < toc.length; i++) {
+                    if (toc[i].chapterIndex <= curSpineIdx) best = i;
+                }
+                tocLabel = toc[best]?.title || t("epub.chapterOf", { current: best + 1, total: toc.length });
+            }
+            return [
+                activeBookTab.epub?.author || bookMeta?.author,
+                tocLabel || chapter?.title || t("epub.chapterOf", {
+                    current: curSpineIdx + 1,
+                    total: activeBookTab.epub?.tocCount || bookMeta?.chapters.length || activeBookTab.epub?.chapterCount || 1,
+                }),
+                `${Math.round(Math.min(1, Math.max(0, activeBookTab.epub?.progress || 0)) * 100)}%`,
+            ].filter(Boolean).join(" · ");
+        })()
         : t("epub.booksCount", { count: visibleBooks.length });
 
     const escMenuElement = !isMobile && escMenuMounted ? (
@@ -783,6 +803,7 @@ export default function EpubWorkspace({
                 isMobile={isMobile}
                 onClose={() => setStatsOpen(false)}
                 onGoalsChange={setReadingGoals}
+                onResetStats={onResetStats}
             />
         </div>
     );
@@ -799,9 +820,10 @@ export default function EpubWorkspace({
             : String(visibleBooks.length);
 
         const isImmersiveShell = viewMode === "reader" && mobileImmersive;
+        const isReaderView = viewMode === "reader" && Boolean(activeBookTab);
 
         return (
-            <div className={`m-shell epub-mobile-shell${isImmersiveShell ? " is-immersive" : ""}`}>
+            <div className={`m-shell epub-mobile-shell${isReaderView ? " is-reading-mode" : ""}${isImmersiveShell ? " is-immersive" : ""}`}>
                 <header className="m-island-row">
                     <button
                         type="button"

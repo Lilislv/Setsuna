@@ -81,6 +81,8 @@ mod core;
 mod dictionary_import;
 mod epub_audio;
 mod epub_import;
+#[cfg(target_os = "windows")]
+mod global_lookup;
 #[cfg(target_os = "linux")]
 mod hover_lookup;
 mod japanese_tokenizer;
@@ -91,6 +93,7 @@ mod system_fonts;
 mod lookup_normalization;
 mod japanese_deinflector;
 mod local_audio;
+mod player_library;
 mod player_media;
 use dictionary_import::{import_dictionaries, import_dictionary};
 use epub_import::{epub_chapter, epub_cover, epub_drive_download, epub_drive_upload, epub_gallery, epub_open, epub_prune, epub_scan_folder, epub_search, epub_store, import_epub};
@@ -134,6 +137,10 @@ struct GlobalLookupCopyResult {
     text: Option<String>,
     context: Option<String>,
     cursor: Option<usize>,
+    source: Option<String>,
+    foreground_pid: Option<u32>,
+    foreground_title: Option<String>,
+    foreground_process: Option<String>,
 }
 
 #[tauri::command]
@@ -2994,17 +3001,44 @@ async fn take_external_lookup_screenshot(x: i32, y: i32) -> Result<Option<String
 }
 
 #[tauri::command]
-fn hide_external_lookup_window(app: AppHandle) -> Result<(), String> {
+fn hide_external_lookup_window(app: AppHandle, restore_focus: Option<bool>) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    global_lookup::clear_latest_live_lookup();
     if let Some(window) = app.get_webview_window("lookup_external") {
+        #[cfg(target_os = "windows")]
+        if let Ok(hwnd) = window.hwnd() {
+            global_lookup::hide_hwnd_no_activate(hwnd.0 as winapi::shared::windef::HWND);
+        } else {
+            window.hide().map_err(|error| error.to_string())?;
+        }
+        #[cfg(not(target_os = "windows"))]
         window.hide().map_err(|error| error.to_string())?;
     }
+    #[cfg(target_os = "windows")]
+    if restore_focus.unwrap_or(false) {
+        global_lookup::restore_external_foreground();
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = restore_focus;
     Ok(())
+}
+
+#[tauri::command]
+fn read_system_clipboard_text() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        global_lookup::read_clipboard_text()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn prepare_lookup_agent_windows(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window("lookup_external").is_none() {
-        tauri::WebviewWindowBuilder::new(
+        let lookup_win = tauri::WebviewWindowBuilder::new(
             app,
             "lookup_external",
             WebviewUrl::App("lookup-window.html".into()),
@@ -3016,12 +3050,22 @@ fn prepare_lookup_agent_windows(app: &AppHandle) -> Result<(), String> {
         .transparent(true)
         .background_color(Color(0, 0, 0, 0))
         .shadow(true)
-        .resizable(false)
+        .resizable(true)
         .always_on_top(true)
         .skip_taskbar(true)
-        .inner_size(520.0, 620.0)
+        .inner_size(440.0, 520.0)
         .build()
         .map_err(|error| format!("Failed to create lookup agent window: {error}"))?;
+
+        let app_for_blur = app.clone();
+        lookup_win.on_window_event(move |event| {
+            if let tauri::WindowEvent::Focused(false) = event {
+                let _ = app_for_blur.emit_to("lookup_external", "lookup_agent_blur", ());
+            }
+        });
+
+        #[cfg(target_os = "windows")]
+        global_lookup::start_live_hover_watcher(app.clone());
     }
 
     if app.get_webview_window("lookup_capture_region").is_none() {
@@ -3072,7 +3116,23 @@ fn register_lookup_agent_shortcut(app: &AppHandle, label: &str) -> Result<(), St
                         GetWindowThreadProcessId(foreground, &mut foreground_pid);
                     }
                     if foreground_pid == GetCurrentProcessId() {
-                        return;
+                        let lookup_hwnd = app
+                            .get_webview_window("lookup_external")
+                            .and_then(|w| w.hwnd().ok())
+                            .map(|h| h.0 as winapi::shared::windef::HWND)
+                            .unwrap_or(std::ptr::null_mut());
+                        // If the external lookup popup itself is focused:
+                        // - cursor inside popup => toggle hide cleanly
+                        // - cursor outside popup => re-capture new word under cursor!
+                        if !lookup_hwnd.is_null() && foreground == lookup_hwnd {
+                            if global_lookup::is_cursor_inside_hwnd(lookup_hwnd) {
+                                let _ = app.emit_to("lookup_external", "lookup_agent_toggle_hide", ());
+                                return;
+                            }
+                        } else {
+                            // Main Setsuna window is active; internal Shift lookup handles it.
+                            return;
+                        }
                     }
                 }
                 let _ = app.emit_to("lookup_external", "lookup_agent_activate", ());
@@ -3100,12 +3160,46 @@ fn update_lookup_agent_shortcut(app: AppHandle, shortcut: String) -> Result<Stri
 }
 
 #[tauri::command]
-fn show_lookup_agent_window(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
+fn update_global_live_scan_config(
+    enabled: bool,
+    modifier: String,
+    lookup_width: Option<u32>,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        global_lookup::set_live_scan_config(enabled, &modifier, lookup_width);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (enabled, modifier, lookup_width);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_latest_live_lookup() -> Option<serde_json::Value> {
+    #[cfg(target_os = "windows")]
+    {
+        global_lookup::get_latest_live_lookup()
+            .and_then(|payload| serde_json::to_value(payload).ok())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+pub(crate) fn show_lookup_agent_window_internal(
+    app: &AppHandle,
+    x: i32,
+    y: i32,
+    width: Option<u32>,
+    height: Option<u32>,
+    focus: bool,
+) -> Result<(), String> {
     let window = app
         .get_webview_window("lookup_external")
         .ok_or_else(|| "Lookup agent window is not ready".to_string())?;
-    let width = 520_i32;
-    let height = 620_i32;
     let monitor = app
         .available_monitors()
         .map_err(|error| error.to_string())?
@@ -3120,6 +3214,13 @@ fn show_lookup_agent_window(app: AppHandle, x: i32, y: i32) -> Result<(), String
         })
         .or_else(|| app.primary_monitor().ok().flatten());
 
+    let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
+    let logical_w = width.unwrap_or(440).clamp(320, 760) as f64;
+    let logical_h = height.unwrap_or(520).clamp(300, 760) as f64;
+    let phys_w = (logical_w * scale).round() as i32;
+    let phys_h = (logical_h * scale).round() as i32;
+    let cursor_gap = (24.0 * scale).round() as i32;
+
     let (left, top) = if let Some(monitor) = monitor {
         let pos = monitor.position();
         let size = monitor.size();
@@ -3128,34 +3229,90 @@ fn show_lookup_agent_window(app: AppHandle, x: i32, y: i32) -> Result<(), String
         let max_left = pos
             .x
             .saturating_add(size.width as i32)
-            .saturating_sub(width)
+            .saturating_sub(phys_w)
             .saturating_sub(8)
             .max(min_left);
         let max_top = pos
             .y
             .saturating_add(size.height as i32)
-            .saturating_sub(height)
+            .saturating_sub(phys_h)
             .saturating_sub(8)
             .max(min_top);
+
+        let below_top = y.saturating_add(cursor_gap);
+        let fits_below = below_top.saturating_add(phys_h)
+            <= pos.y.saturating_add(size.height as i32).saturating_sub(8);
+        let chosen_top = if fits_below {
+            below_top
+        } else {
+            let above_top = y.saturating_sub(phys_h).saturating_sub(cursor_gap);
+            if above_top >= min_top {
+                above_top
+            } else {
+                below_top.clamp(min_top, max_top)
+            }
+        };
+
         (
-            x.saturating_add(18).clamp(min_left, max_left),
-            y.saturating_add(18).clamp(min_top, max_top),
+            x.saturating_add((12.0 * scale).round() as i32)
+                .clamp(min_left, max_left),
+            chosen_top.clamp(min_top, max_top),
         )
     } else {
-        (x.saturating_add(18).max(8), y.saturating_add(18).max(8))
+        (x.saturating_add(16).max(8), y.saturating_add(16).max(8))
     };
 
-    window
-        .set_position(tauri::PhysicalPosition::new(left, top))
-        .map_err(|error| error.to_string())?;
-    window
-        .set_size(tauri::PhysicalSize::new(width as u32, height as u32))
-        .map_err(|error| error.to_string())?;
-    window.show().map_err(|error| error.to_string())?;
-    let _ = window.unminimize();
-    let _ = window.set_always_on_top(true);
-    let _ = window.set_focus();
+    if focus {
+        #[cfg(target_os = "windows")]
+        if let Ok(hwnd) = window.hwnd() {
+            global_lookup::set_hwnd_no_activate(hwnd.0 as winapi::shared::windef::HWND, false);
+        }
+        window
+            .set_size(tauri::PhysicalSize::new(phys_w as u32, phys_h as u32))
+            .map_err(|error| error.to_string())?;
+        window
+            .set_position(tauri::PhysicalPosition::new(left, top))
+            .map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
+        let _ = window.unminimize();
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_focus();
+    } else {
+        #[cfg(target_os = "windows")]
+        {
+            let win_for_ui = window.clone();
+            app.run_on_main_thread(move || {
+                let _ = win_for_ui.set_size(tauri::PhysicalSize::new(phys_w as u32, phys_h as u32));
+                let _ = win_for_ui.set_position(tauri::PhysicalPosition::new(left, top));
+                if let Ok(hwnd) = win_for_ui.hwnd() {
+                    global_lookup::show_hwnd_topmost_no_activate(
+                        hwnd.0 as winapi::shared::windef::HWND,
+                    );
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = window.set_size(tauri::PhysicalSize::new(phys_w as u32, phys_h as u32));
+            let _ = window.set_position(tauri::PhysicalPosition::new(left, top));
+            let _ = window.show();
+            let _ = window.set_always_on_top(true);
+        }
+    }
     Ok(())
+}
+
+#[tauri::command]
+fn show_lookup_agent_window(
+    app: AppHandle,
+    x: i32,
+    y: i32,
+    width: Option<u32>,
+    height: Option<u32>,
+    focus: Option<bool>,
+) -> Result<(), String> {
+    show_lookup_agent_window_internal(&app, x, y, width, height, focus.unwrap_or(true))
 }
 
 #[tauri::command]
@@ -4118,64 +4275,28 @@ async fn account_list_devices(api_base_url: String, token: String) -> Result<Val
 
 #[cfg(target_os = "windows")]
 #[tauri::command]
-fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, String> {
-    let mut point = POINT { x: 0, y: 0 };
-    unsafe {
-        if GetCursorPos(&mut point) == 0 {
-            return Err("Could not read cursor position.".to_string());
-        }
-    }
-
-    if let Some(text) = scintilla_word_under_cursor(point) {
-        return Ok(GlobalLookupCopyResult {
-            x: point.x,
-            y: point.y,
-            text: Some(text.clone()),
-            context: Some(text),
-            cursor: Some(0),
-        });
-    }
-
-    if let Some((context, cursor)) = uia_context_under_cursor(point) {
-        let text =
-            uia_text_under_cursor(point).or_else(|| english_token_near_cursor(&context, cursor));
-        return Ok(GlobalLookupCopyResult {
-            x: point.x,
-            y: point.y,
-            text,
-            context: Some(context),
-            cursor: Some(cursor),
-        });
-    }
-
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let fallback = (|| -> Option<String> {
-            let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
-            uia_name_from_point(&automation, point)
-        })();
-        CoUninitialize();
-
-        if let Some(context) = fallback {
-            let cursor = context.chars().count() / 2;
-            let text = clean_uia_lookup_text(&context).or_else(|| Some(context.clone()));
-            return Ok(GlobalLookupCopyResult {
-                x: point.x,
-                y: point.y,
-                text,
-                context: Some(context),
-                cursor: Some(cursor),
-            });
-        }
-    }
+async fn copy_hovered_text_to_clipboard(
+    allow_selection: Option<bool>,
+    restore_clipboard: Option<bool>,
+) -> Result<GlobalLookupCopyResult, String> {
+    let allow_sel = allow_selection.unwrap_or(true);
+    let restore_cb = restore_clipboard.unwrap_or(true);
+    let captured = tokio::task::spawn_blocking(move || {
+        global_lookup::capture_at_cursor(allow_sel, restore_cb)
+    })
+    .await
+    .map_err(|error| format!("Global lookup worker failed: {error}"))??;
 
     Ok(GlobalLookupCopyResult {
-        x: point.x,
-        y: point.y,
-        text: None,
-        context: None,
-        cursor: None,
+        x: captured.x,
+        y: captured.y,
+        text: captured.text,
+        context: captured.context,
+        cursor: captured.cursor,
+        source: Some(captured.source),
+        foreground_pid: captured.foreground_pid,
+        foreground_title: captured.foreground_title,
+        foreground_process: captured.foreground_process,
     })
 }
 
@@ -4199,7 +4320,10 @@ fn global_lookup_unavailable_reason(feature: &str) -> String {
 
 #[cfg(target_os = "linux")]
 #[tauri::command]
-async fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, String> {
+async fn copy_hovered_text_to_clipboard(
+    _allow_selection: Option<bool>,
+    _restore_clipboard: Option<bool>,
+) -> Result<GlobalLookupCopyResult, String> {
     if hover_lookup::is_wayland_session() {
         return Err(global_lookup_unavailable_reason("hover"));
     }
@@ -4213,12 +4337,19 @@ async fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, Stri
         text: hovered.text,
         context: hovered.context,
         cursor: hovered.cursor,
+        source: Some("atspi".to_string()),
+        foreground_pid: None,
+        foreground_title: None,
+        foreground_process: None,
     })
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 #[tauri::command]
-fn copy_hovered_text_to_clipboard() -> Result<GlobalLookupCopyResult, String> {
+fn copy_hovered_text_to_clipboard(
+    _allow_selection: Option<bool>,
+    _restore_clipboard: Option<bool>,
+) -> Result<GlobalLookupCopyResult, String> {
     Err(global_lookup_unavailable_reason("hover"))
 }
 
@@ -6063,6 +6194,10 @@ fn main() {
             player_media::player_web_text,
             player_media::prepare_player_video,
             player_media::release_player_video,
+            player_library::player_scan_folder,
+            player_library::player_allow_library_media,
+            player_library::player_forget_library_folder,
+            player_library::player_read_local_subtitle,
             dictionary_engine::delete_dictionary,
             dictionary_engine::delete_dictionaries,
             dictionary_engine::clear_database,
@@ -6098,10 +6233,13 @@ fn main() {
             take_smart_screenshot,
             take_external_lookup_screenshot,
             hide_external_lookup_window,
+            read_system_clipboard_text,
             open_external_lookup_window,
             copy_hovered_text_to_clipboard,
             select_hovered_lookup_range,
             show_lookup_agent_window,
+            update_global_live_scan_config,
+            get_latest_live_lookup,
             begin_lookup_region_capture,
             cancel_lookup_region_capture,
             finish_lookup_region_capture,

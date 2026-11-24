@@ -34,6 +34,7 @@ import {
     getDriveQuota,
     listBackups,
     startDictionaryResumableUpload,
+    storeGoogleRefreshToken,
     uploadToDrive,
     type DriveFileInfo,
     type DriveQuotaInfo,
@@ -352,10 +353,24 @@ export const MobileLayout = ({
     epubBooks = [],
     onOpenEpubFile,
     onRemoveEpubBook,
+    onRemoveEpubBooks,
+    onPatchEpubBooks,
     onUpdateEpubMeta,
     onEpubProgress,
     onEpubOrientationChange,
     onEpubBookmarksChange,
+    onEpubHighlightsChange,
+    onEpubNotesChange,
+    onEpubReadingPointChange,
+    onEpubRecordStats,
+    onResetEpubStats,
+    onImportEpubBackup,
+    epubSyncStatus,
+    epubLastSyncedAt,
+    epubSyncError,
+    epubDownloadingBookId,
+    onEpubSyncNow,
+    onOpenCloudSettings,
     onHome,
     onCloseMobileSettings,
 }: any) => {
@@ -380,7 +395,54 @@ export const MobileLayout = ({
     const [overlayResumeTick, setOverlayResumeTick] = useState(0);
     const drivePkceRef = useRef<GooglePkceSession | null>(null);
     const driveRedirectRef = useRef('http://127.0.0.1:1337');
+    const driveOauthUnlistenRef = useRef<(() => void) | null>(null);
     const mobileSettingsNavRef = useRef<HTMLDivElement | null>(null);
+
+    const DRIVE_PKCE_STORAGE_KEY = 'setsuna-mobile-drive-pkce';
+    const savePendingDrivePkce = (pkce: GooglePkceSession, redirectUri: string) => {
+        drivePkceRef.current = pkce;
+        driveRedirectRef.current = redirectUri;
+        try {
+            const raw = sessionStorage.getItem(DRIVE_PKCE_STORAGE_KEY);
+            const prev = raw ? (JSON.parse(raw) as Array<{ pkce: GooglePkceSession; redirectUri: string; at: number }>) : [];
+            const next = [...prev.filter((e) => e?.pkce?.state && Date.now() - (e.at || 0) < 20 * 60_000), { pkce, redirectUri, at: Date.now() }].slice(-4);
+            sessionStorage.setItem(DRIVE_PKCE_STORAGE_KEY, JSON.stringify(next));
+        } catch {}
+    };
+    const resolvePendingDrivePkce = (codeOrUrl: string): { pkce: GooglePkceSession; redirectUri: string } | null => {
+        let stateParam = '';
+        try {
+            const trimmed = codeOrUrl.trim();
+            if (trimmed.startsWith('http')) {
+                stateParam = new URL(trimmed).searchParams.get('state') || '';
+            }
+        } catch {}
+        if (drivePkceRef.current && (!stateParam || drivePkceRef.current.state === stateParam)) {
+            return { pkce: drivePkceRef.current, redirectUri: driveRedirectRef.current };
+        }
+        try {
+            const raw = sessionStorage.getItem(DRIVE_PKCE_STORAGE_KEY);
+            const list = raw ? (JSON.parse(raw) as Array<{ pkce: GooglePkceSession; redirectUri: string; at: number }>) : [];
+            if (stateParam) {
+                const matched = list.find((entry) => entry?.pkce?.state === stateParam);
+                if (matched) return { pkce: matched.pkce, redirectUri: matched.redirectUri };
+            }
+            const latest = list[list.length - 1];
+            if (latest?.pkce) return { pkce: latest.pkce, redirectUri: latest.redirectUri };
+        } catch {}
+        if (drivePkceRef.current) {
+            return { pkce: drivePkceRef.current, redirectUri: driveRedirectRef.current };
+        }
+        return null;
+    };
+    const clearPendingDrivePkce = () => {
+        drivePkceRef.current = null;
+        try { sessionStorage.removeItem(DRIVE_PKCE_STORAGE_KEY); } catch {}
+    };
+    useEffect(() => () => {
+        try { driveOauthUnlistenRef.current?.(); } catch {}
+        driveOauthUnlistenRef.current = null;
+    }, []);
     const [ankiStatusText, setAnkiStatusText] = useState('');
     const [ankiDecks, setAnkiDecks] = useState<string[]>([]);
     const [ankiModels, setAnkiModels] = useState<string[]>([]);
@@ -679,11 +741,15 @@ export const MobileLayout = ({
         setDriveBusy(true);
         setDriveStatus(isEn ? 'Connecting...' : 'Подключаю...');
         try {
-            const pkce = drivePkceRef.current;
-            if (!pkce) throw new Error(isEn ? 'Start Google sign-in again first.' : 'Сначала снова открой вход Google.');
-            const tokenData = await exchangeCodeForToken(code, driveRedirectRef.current, pkce.verifier, pkce.state);
+            const pending = resolvePendingDrivePkce(code);
+            if (!pending) throw new Error(isEn ? 'Start Google sign-in again first.' : 'Сначала снова открой вход Google.');
+            const tokenData = await exchangeCodeForToken(code, pending.redirectUri, pending.pkce.verifier, pending.pkce.state);
             if (!tokenData.refresh_token) throw new Error(isEn ? 'Google did not return a refresh token.' : 'Google не выдал refresh token.');
+            clearPendingDrivePkce();
+            try { driveOauthUnlistenRef.current?.(); } catch {}
+            driveOauthUnlistenRef.current = null;
             updateSetting('gdriveRefreshToken', tokenData.refresh_token);
+            void storeGoogleRefreshToken(tokenData.refresh_token).catch(() => {});
             setDriveAuthInput('');
             setDriveStatus(isEn ? 'Google Drive connected.' : 'Google Drive подключён.');
         } catch (error: any) {
@@ -945,22 +1011,29 @@ export const MobileLayout = ({
         try {
             assertGoogleOAuthConfigured();
             setDriveAuthInput('');
-            drivePkceRef.current = null;
+            try { driveOauthUnlistenRef.current?.(); } catch {}
+            driveOauthUnlistenRef.current = null;
             // Start the on-device OAuth catch server; the browser's redirect to 127.0.0.1
             // hits this app and fires the "oauth_code" event, which we exchange automatically.
             const start = await invoke<{ port: number; redirect_uri: string; reused: boolean }>('start_oauth_server');
             const redirectUri = start.redirect_uri;
             const pkce = await createGooglePkceSession();
-            drivePkceRef.current = pkce;
-            driveRedirectRef.current = redirectUri;
+            savePendingDrivePkce(pkce, redirectUri);
             const unlisten = await listen<string>('oauth_code', async (event) => {
+                const payload = String(event.payload || '');
+                const pending = resolvePendingDrivePkce(payload) || { pkce, redirectUri };
                 try { unlisten(); } catch {}
+                if (driveOauthUnlistenRef.current === unlisten) {
+                    driveOauthUnlistenRef.current = null;
+                }
                 setDriveBusy(true);
                 setDriveStatus(isEn ? 'Connecting…' : 'Подключаю…');
                 try {
-                    const tokenData = await exchangeCodeForToken(String(event.payload || ''), redirectUri, pkce.verifier, pkce.state);
+                    const tokenData = await exchangeCodeForToken(payload, pending.redirectUri, pending.pkce.verifier, pending.pkce.state);
                     if (!tokenData.refresh_token) throw new Error(isEn ? 'Google did not return a refresh token.' : 'Google не выдал refresh token.');
+                    clearPendingDrivePkce();
                     updateSetting('gdriveRefreshToken', tokenData.refresh_token);
+                    void storeGoogleRefreshToken(tokenData.refresh_token).catch(() => {});
                     setDriveAuthInput('');
                     setDriveStatus(isEn ? 'Google Drive connected.' : 'Google Drive подключён.');
                 } catch (err: any) {
@@ -969,6 +1042,7 @@ export const MobileLayout = ({
                     setDriveBusy(false);
                 }
             });
+            driveOauthUnlistenRef.current = unlisten;
             const url = getAuthUrl(redirectUri, pkce);
             await openUrl(url).catch(() => window.open(url, '_blank'));
             setDriveStatus(isEn ? 'Sign in in the browser, then return to the app.' : 'Войди в браузере и вернись в приложение.');
@@ -985,11 +1059,15 @@ export const MobileLayout = ({
         setDriveBusy(true);
         setDriveStatus(isEn ? 'Connecting...' : 'Подключаю...');
         try {
-            const pkce = drivePkceRef.current;
-            if (!pkce) throw new Error(isEn ? 'Start Google sign-in again first.' : 'Сначала снова открой вход Google.');
-            const tokenData = await exchangeCodeForToken(code, driveRedirectRef.current, pkce.verifier, pkce.state);
+            const pending = resolvePendingDrivePkce(code);
+            if (!pending) throw new Error(isEn ? 'Start Google sign-in again first.' : 'Сначала снова открой вход Google.');
+            const tokenData = await exchangeCodeForToken(code, pending.redirectUri, pending.pkce.verifier, pending.pkce.state);
             if (!tokenData.refresh_token) throw new Error(isEn ? 'Google did not return refresh token.' : 'Google не выдал refresh token.');
+            clearPendingDrivePkce();
+            try { driveOauthUnlistenRef.current?.(); } catch {}
+            driveOauthUnlistenRef.current = null;
             updateSetting('gdriveRefreshToken', tokenData.refresh_token);
+            void storeGoogleRefreshToken(tokenData.refresh_token).catch(() => {});
             setDriveAuthInput('');
             setDriveStatus(isEn ? 'Google Drive connected.' : 'Google Drive подключен.');
         } catch (error: any) {
@@ -1308,10 +1386,24 @@ export const MobileLayout = ({
                         onOpenFile={() => onOpenEpubFile?.()}
                         onSelectBook={(tabId) => switchTab(tabId)}
                         onRemoveBook={(tabId) => onRemoveEpubBook?.(tabId)}
+                        onRemoveBooks={(tabIds) => onRemoveEpubBooks?.(tabIds)}
+                        onPatchBooks={(tabIds, patch) => onPatchEpubBooks?.(tabIds, patch)}
                         onUpdateBookMeta={(tabId, meta) => onUpdateEpubMeta?.(tabId, meta)}
                         onProgressChange={(tabId, chIdx, offset, prog) => onEpubProgress?.(tabId, chIdx, offset, prog)}
                         onChangeBookOrientation={(tabId, orient) => onEpubOrientationChange?.(tabId, orient)}
                         onChangeBookBookmarks={(tabId, bookmarks) => onEpubBookmarksChange?.(tabId, bookmarks)}
+                        onChangeBookHighlights={(tabId, highlights) => onEpubHighlightsChange?.(tabId, highlights)}
+                        onChangeBookNotes={(tabId, notes) => onEpubNotesChange?.(tabId, notes)}
+                        onChangeReadingPoint={(tabId, point) => onEpubReadingPointChange?.(tabId, point)}
+                        onRecordReadingStats={(tabId, chars, secs) => onEpubRecordStats?.(tabId, chars, secs)}
+                        onResetStats={onResetEpubStats}
+                        onImportBackup={onImportEpubBackup}
+                        syncStatus={epubSyncStatus}
+                        lastSyncedAt={epubLastSyncedAt}
+                        syncError={epubSyncError}
+                        downloadingBookId={epubDownloadingBookId}
+                        onSyncNow={onEpubSyncNow}
+                        onOpenCloudSettings={onOpenCloudSettings}
                         onUpdateSettings={(patch) => updateSettings({ ...settings, ...patch })}
                         onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
                     />

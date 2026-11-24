@@ -1,0 +1,109 @@
+.sp-library {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: clamp(14px, 3vw, 36px);
+    color: var(--text-main);
+}
+.sp-library-header,
+.sp-library-folder > header,
+.sp-library-actions,
+.sp-library-series-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+.sp-library-header h1 {
+    margin: 0;
+    font-size: 24px;
+}
+.sp-library-folder {
+    margin-top: 18px;
+    padding: 14px;
+    border: 1px solid var(--border-main);
+    border-radius: 10px;
+    background: var(--bg-topbar);
+}
+.sp-library-folder > header > div {
+    overflow: hidden;
+    min-width: 0;
+}
+.sp-library-folder h2,
+.sp-library-series h3 {
+    margin: 0;
+    font-size: 16px;
+    overflow-wrap: anywhere;
+}
+.sp-library-folder > header span {
+    display: block;
+    color: var(--text-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sp-library-empty {
+    margin-top: 22px;
+    color: var(--text-muted);
+}
+.sp-library-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+    gap: 10px;
+    margin-top: 12px;
+    align-items: start;
+}
+.sp-library-series {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    min-width: 0;
+    border: 1px solid var(--border-main);
+    border-radius: 8px;
+    background: var(--bg-panel);
+}
+.sp-library-series-heading span,
+.sp-library-series time {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.sp-library-series h3 {
+    flex: 1;
+}
+.sp-library-series progress {
+    width: 100%;
+    height: 7px;
+    accent-color: var(--accent-blue);
+}
+.sp-library-series summary {
+    cursor: pointer;
+    font-size: 13px;
+}
+.sp-library-series ol {
+    padding-left: 18px;
+    margin: 6px 0 0;
+    max-height: 45vh;
+    overflow: auto;
+}
+.sp-library-series li {
+    margin-bottom: 4px;
+}
+.sp-library-series li button {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+.sp-library .sp-library-play,
+.sp-library .sp-library-add {
+    border-color: var(--accent-blue);
+}
+.sp-library-error {
+    color: var(--text-main);
+    overflow-wrap: anywhere;
+}

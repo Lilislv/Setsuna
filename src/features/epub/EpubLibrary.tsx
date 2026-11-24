@@ -452,7 +452,7 @@ export default function EpubLibrary({
     const renderBookCard = (book: Tab, cardIdx: number) => {
         const progress = Math.round(Math.min(1, Math.max(0, book.epub?.progress || 0)) * 100);
         const bookLang = book.epub?.language === "ja" ? "JA" : "EN";
-        const chaptersCount = book.epub?.chapterCount || 0;
+        const chaptersCount = book.epub?.tocCount || book.epub?.chapterCount || 0;
         const totalChars = book.epub?.totalChars || 0;
         const title = book.epub?.title || book.name;
         const author = book.epub?.author?.trim() || "";
@@ -838,6 +838,35 @@ export default function EpubLibrary({
                     </button>
                 </div>
             </div>
+
+            {syncStatus === "error" && syncError && (
+                <div
+                    role="alert"
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 10,
+                        padding: "8px 12px",
+                        borderRadius: 12,
+                        background: "color-mix(in srgb, #e05a5a 14%, transparent)",
+                        border: "1px solid color-mix(in srgb, #e05a5a 36%, transparent)",
+                        color: "var(--text-main)",
+                        fontSize: 12.5,
+                    }}
+                >
+                    <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>☁ Drive: {syncError}</span>
+                    {onSyncNow && (
+                        <button
+                            type="button"
+                            className="epub-glass-btn"
+                            onClick={onSyncNow}
+                        >
+                            {isEn ? "Retry" : "Повторить"}
+                        </button>
+                    )}
+                </div>
+            )}
 
             {/* Reading status shelves + custom shelves */}
             <div className="epub-library-shelves">

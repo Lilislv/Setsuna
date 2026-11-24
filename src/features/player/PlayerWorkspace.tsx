@@ -1,16 +1,21 @@
 import { useCompatibleVideo } from "./useCompatibleVideo";
 import { readWebText, webVideoPage, type WebTrack } from "./webMedia";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePlayerSource } from "./usePlayerSource";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AppSettings } from "../../components/SettingsModal";
+import DeckPicker from "../../components/DeckPicker";
 import { FuriganaLine } from "../../components/TextContainer";
 import { PlayerCardEditor, type SceneDraft } from "./PlayerCardEditor";
 import {
     escapeCardText,
     clipInterval,
     previousCue,
+    nextCue,
     cueAt,
     formatClock,
     sceneForCue,
@@ -19,6 +24,10 @@ import {
 } from "./model";
 import { addPlayerNote, subtitleScenes } from "./mining";
 import { SubtitleTracks } from "./SubtitleTracks";
+import { fileName, mediaExtensions, isMediaPath, isSubtitlePath, matchSubtitlePaths } from "./localMedia";
+import { PlayerLibrary } from "./PlayerLibrary";
+import { usePlayerLibrary } from "./usePlayerLibrary";
+import { episodeProgress, naturalOrder, positionKey, readProgress, type LibraryDirectory } from "./libraryModel";
 import "./player.css";
 
 type Props = { settings: AppSettings; language?: "ru" | "en"; shortcutsBlocked: boolean };
@@ -27,17 +36,6 @@ function availableAudio(element: HTMLVideoElement) {
     return (element as HTMLVideoElement & { audioTracks?: AudioTrackList }).audioTracks;
 }
 type Mode = "normal" | "pause" | "pauseStart" | "fast" | "repeat" | "skip";
-const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
-const positionKey = "setsuna.player.positions";
-
-function positions(): Record<string, number> {
-    try {
-        return JSON.parse(localStorage.getItem(positionKey) || "{}") || {};
-    } catch {
-        return {};
-    }
-}
-
 function CueText({ cue, scene, furigana }: { cue: Cue; scene?: PlayerScene; furigana: string }) {
     return (
         <span
@@ -54,8 +52,16 @@ function CueText({ cue, scene, furigana }: { cue: Cue; scene?: PlayerScene; furi
     );
 }
 
-export default function PlayerWorkspace(props: Props) {
+export default function PlayerWorkspace(props: Props & { onDeckChange?: (deck: string | null) => void }) {
     const en = props.language === "en";
+    const library = usePlayerLibrary();
+    const [libraryOpen, setLibraryOpen] = useState(true);
+    const [libraryQueue, setLibraryQueue] = useState<{ root: string; directory: LibraryDirectory } | null>(null);
+    const [deckPickerOpen, setDeckPickerOpen] = useState(false);
+    const closeDeckPicker = useCallback(() => setDeckPickerOpen(false), []);
+    const [droppedTracks, setDroppedTracks] = useState<string[]>([]);
+    const [matchOnly, setMatchOnly] = useState(false);
+    const [overMedia, setOverMedia] = useState(false);
     const [sources, setSources] = useState<string[]>([]);
     const [autoNext, setAutoNext] = useState(false);
     const [index, setIndex] = useState(0);
@@ -66,34 +72,122 @@ export default function PlayerWorkspace(props: Props) {
     const [urlVisible, setUrlVisible] = useState(false);
     const [url, setUrl] = useState("");
     const [error, setError] = useState("");
+    const openLocalMedia = (paths: string[]) => {
+        request.current++;
+        setLoading(false);
+        setWebTracks([]);
+        setSources([...new Set(paths)].sort(naturalOrder));
+        setLibraryQueue(null);
+        setLibraryOpen(false);
+        setAutoNext(false);
+        setIndex(0);
+        setError("");
+        setUrlVisible(false);
+    };
     const choose = async () => {
         try {
             const paths = await open({
                 multiple: true,
-                filters: [
-                    {
-                        name: en ? "Media" : "Видео",
-                        extensions: ["mp4", "mkv", "webm", "mov", "m4v", "ogv", "mp3", "m4a", "ogg"],
-                    },
-                ],
+                filters: [{ name: en ? "Media" : "Видео и аудио", extensions: mediaExtensions }],
             });
             if (paths?.length) {
-                request.current++;
-                setLoading(false);
-                setWebTracks([]);
-                setSources([...paths].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
-                setAutoNext(false);
-                setIndex(0);
-                setError("");
-                setUrlVisible(false);
+                setDroppedTracks([]);
+                openLocalMedia(paths);
             }
         } catch (e) {
             setError(String(e));
         }
     };
+    useEffect(() => {
+        if (!isTauri()) return;
+        let disposed = false;
+        let stop: (() => void) | undefined;
+        void getCurrentWebview()
+            .onDragDropEvent(({ payload }) => {
+                if (payload.type === "leave") setOverMedia(false);
+                if (payload.type === "enter")
+                    setOverMedia(payload.paths.some((path) => isMediaPath(path) || isSubtitlePath(path)));
+                if (payload.type !== "drop") return;
+                setOverMedia(false);
+                const media = payload.paths.filter(isMediaPath);
+                const subtitles = payload.paths.filter(isSubtitlePath);
+                if (media.length) {
+                    setMatchOnly(media.length > 1);
+                    setDroppedTracks(subtitles);
+                    openLocalMedia(media);
+                } else if (subtitles.length) {
+                    setMatchOnly(false);
+                    setDroppedTracks(subtitles);
+                }
+            })
+            .then((unlisten) => {
+                if (disposed) unlisten();
+                else stop = unlisten;
+            })
+            .catch(console.warn);
+        return () => {
+            disposed = true;
+            stop?.();
+        };
+    }, []);
+
+    const openLibraryEpisode = async (
+        root: string,
+        directory: LibraryDirectory,
+        episodeIndex: number,
+        autoplay = false,
+    ) => {
+        const selected = directory.episodes[episodeIndex];
+        if (!selected) return;
+        const id = ++request.current;
+        setLoading(true);
+        setError("");
+        try {
+            await invoke("player_allow_library_media", { root, path: selected.path });
+            if (request.current !== id) return;
+            setLibraryQueue({ root, directory });
+            setSources(directory.episodes.map((episode) => episode.path));
+            setDroppedTracks([]);
+            setMatchOnly(true);
+            setWebTracks([]);
+            setIndex(episodeIndex);
+            setAutoNext(autoplay);
+            setLibraryOpen(false);
+            setUrlVisible(false);
+        } catch (failure) {
+            if (request.current === id) setError(String(failure));
+        } finally {
+            if (request.current === id) setLoading(false);
+        }
+    };
+    const switchEpisode = (nextIndex: number, autoplay: boolean) => {
+        if (libraryQueue) {
+            void openLibraryEpisode(libraryQueue.root, libraryQueue.directory, nextIndex, autoplay);
+            return;
+        }
+        setAutoNext(autoplay);
+        if (!matchOnly) setDroppedTracks([]);
+        setIndex(nextIndex);
+    };
+    const currentSource = sources[index] || "";
+    const sidecars = droppedTracks.length ? droppedTracks : libraryQueue?.directory.subtitles || [];
+    const [primaryFile, translationFile] = matchSubtitlePaths(currentSource, sidecars, !matchOnly);
     return (
         <div className="sp-workspace">
             <div className="sp-source">
+                {!libraryOpen && (
+                    <button
+                        onClick={() => {
+                            setAutoNext(false);
+                            setLibraryOpen(true);
+                        }}
+                    >
+                        {en ? "Library" : "Видеотека"}
+                    </button>
+                )}
+                {libraryOpen && currentSource && (
+                    <button onClick={() => setLibraryOpen(false)}>{en ? "Back to video" : "К видео"}</button>
+                )}
                 <button onClick={() => void choose()}>{en ? "Open media…" : "Открыть видео…"}</button>
                 <button aria-expanded={urlVisible} onClick={() => setUrlVisible(!urlVisible)}>
                     URL
@@ -125,8 +219,11 @@ export default function PlayerWorkspace(props: Props) {
                                     source = media.source;
                                     tracks = media.tracks;
                                 }
+                                setDroppedTracks([]);
                                 setWebTracks(tracks);
                                 setSources([source]);
+                                setLibraryQueue(null);
+                                setLibraryOpen(false);
                                 setAutoNext(false);
                                 setIndex(0);
                                 setUrlVisible(false);
@@ -158,14 +255,12 @@ export default function PlayerWorkspace(props: Props) {
                         <button disabled={loading}>{loading ? "…" : en ? "Open" : "Открыть"}</button>
                     </form>
                 )}
-                {sources.length > 1 ? (
+                {libraryOpen ? null : sources.length > 1 ? (
                     <select
                         aria-label={en ? "Episode" : "Серия"}
                         value={index}
-                        onChange={(e) => {
-                            setAutoNext(false);
-                            setIndex(Number(e.target.value));
-                        }}
+                        disabled={loading}
+                        onChange={(e) => switchEpisode(Number(e.target.value), false)}
                     >
                         {sources.map((s, i) => (
                             <option key={s} value={i}>
@@ -176,24 +271,59 @@ export default function PlayerWorkspace(props: Props) {
                 ) : (
                     <span className="sp-name">{sources[0] && fileName(sources[0]).split("?")[0]}</span>
                 )}
+                {props.onDeckChange && (
+                    <button
+                        className="sp-deck"
+                        onClick={() => setDeckPickerOpen(true)}
+                        title={en ? "Choose the Anki deck for this mode" : "Выбрать колоду Anki для плеера"}
+                    >
+                        {props.settings.playerAnkiDeck || "Anki"}
+                    </button>
+                )}
                 {error && <span role="alert">{error}</span>}
             </div>
-            <Session
-                key={sources[index] || ""}
-                {...props}
-                source={sources[index] || ""}
-                openFile={choose}
-                webTracks={webTracks}
-                autoNext={autoNext}
-                nextEpisode={
-                    index + 1 < sources.length
-                        ? () => {
-                              setAutoNext(true);
-                              setIndex(index + 1);
-                          }
-                        : undefined
-                }
-            />
+            {deckPickerOpen &&
+                createPortal(
+                    <DeckPicker
+                        open={deckPickerOpen}
+                        en={en}
+                        current={props.settings.playerAnkiDeck}
+                        defaultDeck={props.settings.ankiDeck}
+                        tabName={en ? "Anime Player" : "Аниме-плеер"}
+                        onClose={closeDeckPicker}
+                        onPick={(deck) => {
+                            props.onDeckChange?.(deck);
+                            closeDeckPicker();
+                        }}
+                    />,
+                    document.body,
+                )}
+            {overMedia && (
+                <div className="sp-drop" aria-hidden="true">
+                    {en ? "Drop video or subtitles" : "Отпусти видео или субтитры"}
+                </div>
+            )}
+            {libraryOpen ? (
+                <PlayerLibrary library={library} en={en} opening={loading} openEpisode={openLibraryEpisode} />
+            ) : (
+                <Session
+                    key={currentSource}
+                    language={props.language}
+                    settings={
+                        props.settings.playerAnkiDeck
+                            ? { ...props.settings, ankiDeck: props.settings.playerAnkiDeck }
+                            : props.settings
+                    }
+                    shortcutsBlocked={props.shortcutsBlocked || deckPickerOpen}
+                    source={currentSource}
+                    primaryFile={primaryFile}
+                    translationFile={translationFile}
+                    openFile={choose}
+                    webTracks={webTracks}
+                    autoNext={autoNext}
+                    nextEpisode={index + 1 < sources.length ? () => switchEpisode(index + 1, true) : undefined}
+                />
+            )}
         </div>
     );
 }
@@ -204,6 +334,8 @@ function Session({
     nextEpisode,
     autoNext,
     webTracks,
+    primaryFile,
+    translationFile,
     language,
     settings,
     shortcutsBlocked,
@@ -213,6 +345,8 @@ function Session({
     nextEpisode?: () => void;
     autoNext: boolean;
     webTracks: WebTrack[];
+    primaryFile?: string;
+    translationFile?: string;
 }) {
     const tr = (en: string, ru: string) => (language === "en" ? en : ru);
     const video = useRef<HTMLVideoElement>(null);
@@ -220,7 +354,9 @@ function Session({
     const list = useRef<HTMLDivElement>(null);
     const [cues, setCues] = useState<Cue[]>([]);
     const [translations, setTranslations] = useState<Cue[]>([]);
-    const [offset, setOffset] = useState(0);
+    const [resume] = useState(() => episodeProgress(readProgress()[source]));
+    const [offset, setOffset] = useState(resume.offset);
+    const [translationOffset, setTranslationOffset] = useState(resume.translationOffset);
     const [current, setCurrent] = useState(0);
     const [draft, setDraft] = useState<SceneDraft | null>(null);
     const [tracks, setTracks] = useState<string[]>([]);
@@ -228,6 +364,7 @@ function Session({
     const [audioOnly, setAudioOnly] = useState(false);
     const [duration, setDuration] = useState(0);
     const [query, setQuery] = useState("");
+    const [pausedLine, setPausedLine] = useState<Cue>();
     const [mode, setMode] = useState<Mode>("normal");
     const [rate, setRate] = useState(1);
     const [repeatLimit, setRepeatLimit] = useState(0);
@@ -242,10 +379,13 @@ function Session({
     const [busy, setBusy] = useState(false);
     const lastTime = useRef(0);
     const lastSaved = useRef(-1);
+    const playing = useRef(false);
+    const ended = useRef(false);
+    const saveOnLeave = useRef<(element: HTMLVideoElement | null) => void>(() => {});
     const replayEnd = useRef<number | null>(null);
     const clock = current + offset;
-    const cue = cueAt(cues, clock);
-    const translation = cueAt(translations, clock);
+    const cue = pausedLine && cues.includes(pausedLine) ? pausedLine : cueAt(cues, clock);
+    const translation = cueAt(translations, clock + translationOffset);
     const filtered = useMemo(() => {
         const needle = query.trim().toLocaleLowerCase();
         return needle ? cues.filter((c) => c.text.toLocaleLowerCase().includes(needle)) : cues;
@@ -265,30 +405,61 @@ function Session({
     const seek = (time: number) => {
         const el = video.current;
         if (!el || !Number.isFinite(el.duration)) return;
+        setPausedLine(undefined);
         lastTime.current = Math.max(0, Math.min(el.duration, time));
+        setCurrent(lastTime.current);
         el.currentTime = lastTime.current;
     };
     const play = () => {
         void video.current?.play().catch((e) => report(String(e)));
     };
     const moveCue = (forward: boolean) => {
-        const prev = previousCue(cues, clock - 0.12);
-        const target = forward ? cues.find((c) => c.start > clock + 0.12) : prev;
-        if (target) seek(target.start - offset);
+        const target = nextCue(cues, clock, forward ? 1 : -1, offset, duration);
+        if (!target) return;
+        replayEnd.current = null;
+        repeats.current = { id: -1, count: 0 };
+        seek(target.start - offset);
     };
-    const persist = (time: number) => {
+    const persist = (time: number, played = false, complete = false) => {
         if (!source || source.startsWith("https:") || !Number.isFinite(time)) return;
-        const saved = positions();
+        const saved = readProgress();
+        const item = episodeProgress(saved[source]);
         delete saved[source];
         try {
             localStorage.setItem(
                 positionKey,
-                JSON.stringify(Object.fromEntries([...Object.entries(saved).slice(-49), [source, time]])),
+                JSON.stringify(
+                    Object.fromEntries([
+                        ...Object.entries(saved).slice(-4999),
+                        [
+                            source,
+                            {
+                                ...item,
+                                time,
+                                offset,
+                                translationOffset,
+                                duration: duration || item.duration,
+                                lastPlayedAt: played ? Date.now() : item.lastPlayedAt,
+                                completed: complete || item.completed,
+                            },
+                        ],
+                    ]),
+                ),
             );
         } catch {
             /* Storage may be unavailable. */
         }
     };
+    saveOnLeave.current = (element) => {
+        if (playing.current && !ended.current) persist(element?.currentTime ?? lastTime.current, true);
+    };
+    useLayoutEffect(() => {
+        const element = video.current;
+        return () => saveOnLeave.current(element);
+    }, []);
+    useEffect(() => {
+        persist(video.current?.readyState ? video.current.currentTime : resume.time);
+    }, [offset, translationOffset]);
     const tick = (el: HTMLVideoElement) => {
         const now = el.currentTime;
         const previous = lastTime.current;
@@ -296,7 +467,7 @@ function Session({
         setCurrent(now);
         const bucket = Math.floor(now / 3);
         if (bucket !== lastSaved.current && !el.seeking) {
-            persist(now);
+            if (!el.ended) persist(now, now > 0);
             lastSaved.current = bucket;
         }
         if (el.paused || el.seeking) return;
@@ -330,6 +501,7 @@ function Session({
             } else {
                 el.pause();
                 seek(ending.end - offset);
+                setPausedLine(ending);
             }
         } else if (mode === "skip" && !cueAt(cues, now + offset)) {
             const next = cues.find((c) => c.start > now + offset);
@@ -393,7 +565,9 @@ function Session({
         const data = {
             word: selected?.text || "",
             sentence: selected?.text || "",
-            meaning: selected ? cueAt(translations, (selected.start + selected.end) / 2)?.text || "" : "",
+            meaning: selected
+                ? cueAt(translations, (selected.start + selected.end) / 2 + translationOffset)?.text || ""
+                : "",
             scene,
         };
         if (!selectedScene || edit) {
@@ -496,12 +670,27 @@ function Session({
                                 setAudioOnly(el.videoWidth === 0);
                                 setDuration(Number.isFinite(el.duration) ? el.duration : 0);
                                 el.playbackRate = rate;
-                                const saved = positions()[source];
+                                const saved = resume.time;
                                 if (saved > 0 && saved < el.duration - 2) seek(saved);
                             }}
-                            onPause={(e) => persist(e.currentTarget.currentTime)}
+                            onPlay={() => {
+                                playing.current = true;
+                                ended.current = false;
+                                setPausedLine(undefined);
+                            }}
+                            onSeeking={(e) => {
+                                if (Math.abs(lastTime.current - e.currentTarget.currentTime) > 0.005) {
+                                    setPausedLine(undefined);
+                                    replayEnd.current = null;
+                                    lastTime.current = e.currentTarget.currentTime;
+                                }
+                            }}
+                            onPause={(e) => {
+                                if (!e.currentTarget.ended) persist(e.currentTarget.currentTime, playing.current);
+                            }}
                             onEnded={() => {
-                                persist(0);
+                                ended.current = true;
+                                persist(0, true, true);
                                 nextEpisode?.();
                             }}
                             onError={() => {
@@ -516,7 +705,7 @@ function Session({
                         />
                     ) : (
                         <button className="sp-open" onClick={openFile}>
-                            ▶　{tr("Open a film or episodes", "Открыть фильм или серии")}
+                            ▶　{tr("Open or drop a video", "Открыть или перетащить видео")}
                         </button>
                     )}
                     {showSubs && (cue || translation) && (
@@ -669,8 +858,10 @@ function Session({
             <aside className="sp-side">
                 <SubtitleTracks
                     webTracks={webTracks}
+                    primaryFile={primaryFile}
+                    translationFile={translationFile}
                     en={language === "en"}
-                    source={source.startsWith("https:") && !duration ? "" : source}
+                    source={source}
                     onPrimary={setCues}
                     onTranslation={setTranslations}
                     report={report}
@@ -682,10 +873,30 @@ function Session({
                             aria-label={tr("Subtitle offset", "Сдвиг субтитров")}
                             type="number"
                             step={settings.playerSubtitleStep || 0.1}
-                            value={Number(offset.toFixed(2))}
-                            onChange={(e) => setOffset(Number(e.target.value))}
+                            key={Math.round(offset * 100)}
+                            defaultValue={Number(offset.toFixed(2))}
+                            onBlur={(e) => setOffset(Number(e.target.value))}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter") e.currentTarget.blur();
+                            }}
                         />
                     </label>
+                    {translations.length > 0 && (
+                        <label>
+                            {tr("Translation (s)", "Перевод (с)")}{" "}
+                            <input
+                                aria-label={tr("Translation offset", "Сдвиг перевода")}
+                                type="number"
+                                step={settings.playerSubtitleStep || 0.1}
+                                key={Math.round(translationOffset * 100)}
+                                defaultValue={Number(translationOffset.toFixed(2))}
+                                onBlur={(e) => setTranslationOffset(Number(e.target.value))}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter") e.currentTarget.blur();
+                                }}
+                            />
+                        </label>
+                    )}
                     <label>
                         <input
                             type="checkbox"

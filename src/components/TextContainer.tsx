@@ -215,6 +215,103 @@ const useFuriganaTokens = (text: string, contextBefore: string, contextAfter: st
 
 const JAPANESE_TOKEN_RE = /[぀-ヿ㐀-鿿豈-﫿ｦ-ﾟー々〆ヶ]/;
 const LATIN_TOKEN_RE = /[A-Za-zÀ-ɏ]/;
+const KINSOKU_CLOSING_RE = /^[。、」』）］】〕〉》！？…・,.!?;:]+$/;
+type RubySpan = { start: number; end: number; reading: string };
+const epubRubySpanCache = new Map<string, RubySpan[]>();
+const MAX_EPUB_RUBY_CACHE = 800;
+
+const extractEpubRubySpans = (html?: string): RubySpan[] => {
+    if (!html || !/<ruby\b/i.test(html)) return [];
+    const cached = epubRubySpanCache.get(html);
+    if (cached) return cached;
+    const spans: RubySpan[] = [];
+    try {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        let offset = 0;
+        const walk = (node: Node) => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                offset += Array.from(node.textContent || '').length;
+                return;
+            }
+            if (!(node instanceof HTMLElement)) return;
+            const tag = node.tagName.toLowerCase();
+            if (tag === 'rt' || tag === 'rp') return;
+            if (tag === 'ruby') {
+                const start = offset;
+                const rtParts: string[] = [];
+                node.childNodes.forEach((child) => {
+                    if (child instanceof HTMLElement) {
+                        const ctag = child.tagName.toLowerCase();
+                        if (ctag === 'rt') {
+                            const r = (child.textContent || '').trim();
+                            if (r) rtParts.push(r);
+                            return;
+                        }
+                        if (ctag === 'rp') return;
+                    }
+                    walk(child);
+                });
+                const reading = rtParts.join('');
+                if (reading && offset > start) {
+                    spans.push({ start, end: offset, reading });
+                }
+                return;
+            }
+            node.childNodes.forEach(walk);
+        };
+        walk(doc.body);
+    } catch {
+        // ignore parse errors
+    }
+    epubRubySpanCache.set(html, spans);
+    while (epubRubySpanCache.size > MAX_EPUB_RUBY_CACHE) {
+        const firstKey = epubRubySpanCache.keys().next().value;
+        if (firstKey === undefined) break;
+        epubRubySpanCache.delete(firstKey);
+    }
+    return spans;
+};
+
+const renderSurfaceWithEpubRuby = (
+    surface: string,
+    cursor: number,
+    spans: RubySpan[],
+    searchQuery: string,
+): ReactNode => {
+    if (spans.length === 0) return highlightText(surface, searchQuery);
+    const chars = Array.from(surface);
+    const tokenEnd = cursor + chars.length;
+    const overlapping = spans.filter((s) => s.start < tokenEnd && s.end > cursor);
+    if (overlapping.length === 0) return highlightText(surface, searchQuery);
+
+    const out: ReactNode[] = [];
+    let pos = cursor;
+    for (let i = 0; i < overlapping.length; i += 1) {
+        const span = overlapping[i];
+        const segStart = Math.max(pos, span.start);
+        const segEnd = Math.min(tokenEnd, span.end);
+        if (segStart > pos) {
+            out.push(highlightText(chars.slice(pos - cursor, segStart - cursor).join(''), searchQuery));
+        }
+        if (segEnd > segStart) {
+            const base = chars.slice(segStart - cursor, segEnd - cursor).join('');
+            out.push(
+                <ruby key={`er-${i}-${segStart}`} style={{ WebkitRubyPosition: 'over', rubyPosition: 'over' }}>
+                    {highlightText(base, searchQuery)}
+                    <rt style={{ fontSize: '0.55em', color: 'var(--epub-fg, var(--text-main))', opacity: 0.85, fontWeight: 500, userSelect: 'none', lineHeight: 1 }}>
+                        {span.reading}
+                    </rt>
+                </ruby>,
+            );
+            pos = segEnd;
+        }
+    }
+    if (pos < tokenEnd) {
+        out.push(highlightText(chars.slice(pos - cursor).join(''), searchQuery));
+    }
+    return <>{out}</>;
+};
+
 type LookupMatch = { start: number; length: number };
 type LookupTokenHandler = (
     token: string,
@@ -224,23 +321,26 @@ type LookupTokenHandler = (
     lemma?: string,
 ) => LookupMatch | null | void | Promise<LookupMatch | null | void>;
 
-export const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none', contextBefore = '', contextAfter = '', activeRange = null }: { text: string; searchQuery: string; onLookupToken?: LookupTokenHandler; furiganaMode?: string; contextBefore?: string; contextAfter?: string; activeRange?: LookupMatch | null }) => {
+export const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode = 'none', epubHtml, contextBefore = '', contextAfter = '', activeRange = null }: { text: string; searchQuery: string; onLookupToken?: LookupTokenHandler; furiganaMode?: string; epubHtml?: string; contextBefore?: string; contextAfter?: string; activeRange?: LookupMatch | null }) => {
     const tokens = useFuriganaTokens(text, contextBefore, contextAfter);
+    const epubRubySpans = furiganaMode === 'epub' ? extractEpubRubySpans(epubHtml) : [];
 
     if (!onLookupToken) return <>{highlightText(text, searchQuery)}</>;
 
     // Word-level: render each analyzer token as a highlighted, tappable chip.
     if (tokens && tokens.length) {
-        const showRuby = furiganaMode === 'auto';
+        const showAutoRuby = furiganaMode === 'auto';
+        const showEpubRuby = furiganaMode === 'epub' && epubRubySpans.length > 0;
         // Character offsets where analyzer words end; the lookup uses them to
         // avoid matches that stop in the middle of the next word.
         const boundaries = tokens
             .map((tk) => Number(tk?.end))
             .filter((value) => Number.isInteger(value) && value > 0);
         let searchFromCodeUnits = 0;
-        const nodes: ReactNode[] = tokens.map((tk, index) => {
+        const renderedItems: Array<{ key: string; node: ReactNode; isClosingPunct: boolean; isWord: boolean }> = [];
+        tokens.forEach((tk, index) => {
             const surface = typeof tk?.text === 'string' ? tk.text : String(tk?.text ?? '');
-            if (!surface) return null;
+            if (!surface) return;
             // Native segmentation returns Unicode character offsets. Falling back to
             // indexOf is only needed for older backends and cached legacy results.
             const nativeStart = Number(tk?.start);
@@ -253,35 +353,71 @@ export const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode =
 
             const tappable = JAPANESE_TOKEN_RE.test(surface) || LATIN_TOKEN_RE.test(surface);
             if (!tappable) {
-                return <span key={`plain-${index}-${cursor}`}>{highlightText(surface, searchQuery)}</span>;
+                renderedItems.push({
+                    key: `plain-${index}-${cursor}`,
+                    node: <span key={`plain-${index}-${cursor}`}>{highlightText(surface, searchQuery)}</span>,
+                    isClosingPunct: KINSOKU_CLOSING_RE.test(surface),
+                    isWord: false,
+                });
+                return;
             }
 
-            const inner = showRuby && tk.reading ? (
-                <ruby style={{ WebkitRubyPosition: 'over', rubyPosition: 'over' }}>
-                    {highlightText(surface, searchQuery)}
-                    <rt style={{ fontSize: '0.55em', color: 'var(--text-main)', opacity: 0.85, fontWeight: 500, userSelect: 'none', lineHeight: 1 }}>{tk.reading}</rt>
-                </ruby>
-            ) : highlightText(surface, searchQuery);
+            const inner = showEpubRuby
+                ? renderSurfaceWithEpubRuby(surface, cursor, epubRubySpans, searchQuery)
+                : showAutoRuby && tk.reading ? (
+                    <ruby style={{ WebkitRubyPosition: 'over', rubyPosition: 'over' }}>
+                        {highlightText(surface, searchQuery)}
+                        <rt style={{ fontSize: '0.55em', color: 'var(--text-main)', opacity: 0.85, fontWeight: 500, userSelect: 'none', lineHeight: 1 }}>{tk.reading}</rt>
+                    </ruby>
+                ) : highlightText(surface, searchQuery);
 
             const surfaceLength = Array.from(surface).length;
             const isActive = Boolean(activeRange
                 && cursor < activeRange.start + activeRange.length
                 && cursor + surfaceLength > activeRange.start);
-            return (
-                <button
-                    key={`word-${index}-${cursor}-${surface}`}
-                    type="button"
-                    className={isActive ? "lookup-word active" : "lookup-word"}
-                    aria-label={surface}
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        onLookupToken(surface, text, cursor, boundaries, typeof tk?.lemma === 'string' ? tk.lemma : undefined);
-                    }}
-                >
-                    {inner}
-                </button>
-            );
+            renderedItems.push({
+                key: `word-${index}-${cursor}-${surface}`,
+                node: (
+                    <button
+                        key={`word-${index}-${cursor}-${surface}`}
+                        type="button"
+                        className={isActive ? "lookup-word active" : "lookup-word"}
+                        aria-label={surface}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onLookupToken(surface, text, cursor, boundaries, typeof tk?.lemma === 'string' ? tk.lemma : undefined);
+                        }}
+                    >
+                        {inner}
+                    </button>
+                ),
+                isClosingPunct: false,
+                isWord: true,
+            });
         });
+
+        // Glue closing Japanese punctuation (。、」』！？ etc.) to the preceding word button
+        // so browser line-breaking never orphans punctuation onto the next line or vertical column.
+        const nodes: ReactNode[] = [];
+        for (let i = 0; i < renderedItems.length; i += 1) {
+            const item = renderedItems[i];
+            if (item.isWord && i + 1 < renderedItems.length && renderedItems[i + 1].isClosingPunct) {
+                const grouped: ReactNode[] = [item.node];
+                let j = i + 1;
+                while (j < renderedItems.length && renderedItems[j].isClosingPunct) {
+                    grouped.push(renderedItems[j].node);
+                    j += 1;
+                }
+                nodes.push(
+                    <span key={`kp-${item.key}`} className="lookup-kinsoku-pair" style={{ whiteSpace: 'nowrap' }}>
+                        {grouped}
+                    </span>,
+                );
+                i = j - 1;
+            } else {
+                nodes.push(item.node);
+            }
+        }
         return <>{nodes}</>;
     }
 
@@ -289,8 +425,11 @@ export const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode =
     // tokens. The fallback groups scripts into stable word-like chunks rather
     // than creating a button for every character.
     return <>{tokenizeLookupText(text).map((part, index) => {
+        const renderedPart = furiganaMode === 'epub' && epubRubySpans.length > 0
+            ? renderSurfaceWithEpubRuby(part.text, part.cursor, epubRubySpans, searchQuery)
+            : highlightText(part.text, searchQuery);
         if (!part.lookup) {
-            return <span key={`fallback-plain-${part.cursor}-${index}`}>{highlightText(part.text, searchQuery)}</span>;
+            return <span key={`fallback-plain-${part.cursor}-${index}`}>{renderedPart}</span>;
         }
         const partLength = Array.from(part.text).length;
         const isActive = Boolean(activeRange
@@ -307,7 +446,7 @@ export const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode =
                     onLookupToken(part.text, text, part.cursor);
                 }}
             >
-                {highlightText(part.text, searchQuery)}
+                {renderedPart}
             </button>
         );
     })}</>;

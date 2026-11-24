@@ -130,7 +130,7 @@ class MainActivity : TauriActivity() {
         cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
       }
     } ?: "book-${System.currentTimeMillis()}.epub"
-    require(displayName.endsWith(".epub", true)) { "Unsupported format: $displayName" }
+    require(listOf(".epub", ".txt", ".htmlz").any { displayName.endsWith(it, true) }) { "Unsupported format: $displayName" }
     val safeName = File(displayName).name
     require(safeName != "." && safeName != "..") { "Invalid filename" }
     require(size <= 0 || directory.usableSpace > size + 16L * 1024 * 1024) { "Not enough space to copy $displayName" }

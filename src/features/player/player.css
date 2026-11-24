@@ -210,7 +210,7 @@
 @media (max-width: 760px) {
     .sp-body {
         grid-template-columns: 1fr;
-        grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+        grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     }
     .sp-tracks {
         grid-template-columns: 1fr 1fr;
@@ -224,6 +224,16 @@
     }
     .sp-tools {
         padding-bottom: 3px;
+    }
+    .sp-controls {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+    }
+    .sp-controls > * {
+        flex: 0 0 auto;
+    }
+    .sp-workspace .sp-source {
+        padding-block: 5px;
     }
 }
 
@@ -268,4 +278,29 @@
 .sp-interval label {
     min-width: 0;
     flex: 1;
+}
+
+.sp-workspace {
+    position: relative;
+}
+.sp-drop {
+    position: absolute;
+    inset: 8px;
+    z-index: 10;
+    display: grid;
+    place-items: center;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-main);
+    background: color-mix(in srgb, var(--bg-main) 85%, transparent);
+    border: 2px dashed var(--accent-blue);
+    border-radius: 8px;
+    pointer-events: none;
+}
+
+.sp-deck {
+    max-width: 16em;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
 }

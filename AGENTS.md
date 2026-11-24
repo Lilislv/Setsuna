@@ -36,10 +36,10 @@ git merge origin/dev
 **After finishing a working milestone:**
 1. Run the verification checks (Section 4).
 2. Add a concise entry at the **top** of **your own** `dev-logs/<model-name>-<developer>-side.md` (newest first: date, commit/feature summary, touched modules, new Tauri commands/settings/storage keys, and any gotchas for other agents).
-3. Commit with a clear conventional message (`feat:`, `fix:`, `refactor:`, `docs:`).
-4. Push to `dev` (if collaborator) or to your feature branch and open/update a PR into `dev`.
+3. **Do NOT `git push` automatically** — pushing to `dev` pings the other developer in Discord. Only commit/push to GitHub when the user explicitly asks (e.g. "загрузи на гитхаб" / "запушь").
 
 ### Hard Git Safety Rules
+- **NEVER** `git push` without explicit user request.
 - **NEVER** force-push (`git push --force` / `--force-with-lease`) to `main` or `dev`.
 - **NEVER** `git reset --hard` or rewrite commits that have already been pushed to a shared branch.
 - **NEVER** commit untracked personal/scratch files, build artifacts, `dictionary.db*`, `.env`, or Android signing files (`src-tauri/gen/android/key.properties`, `*.jks`, `*.keystore`).

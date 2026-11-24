@@ -58,6 +58,8 @@ export interface LookuperProps {
     onClose?: () => void;
     /** Phone sheet: tapping a word in the sentence card above the sheet. */
     onSentenceLookup?: (word: string, sentence: string, cursor?: number, boundaries?: number[], lemma?: string) => unknown;
+    /** Phone sheet: render the sentence context card vertically when reading in vertical-rl mode. */
+    verticalContext?: boolean;
 }
 
 const normalizeCodeUnitOffset = (text: string, offset: number) => {
@@ -1121,7 +1123,7 @@ function LookupPage({ entries, english, children }: { entries: any[]; english: b
     </>;
 }
 
-export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt, onSlice, settings: baseSettings, captureSource, screenshotSource = { kind: 'internal' }, ankiDeck, onClose, onSentenceLookup }: LookuperProps) {
+export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt, onSlice, settings: baseSettings, captureSource, screenshotSource = { kind: 'internal' }, ankiDeck, onClose, onSentenceLookup, verticalContext = false }: LookuperProps) {
   const settings = useMemo(
       () => baseSettings ? { ...baseSettings, ankiDeck: ankiDeck || baseSettings.ankiDeck } : baseSettings,
       [baseSettings, ankiDeck],
@@ -1302,7 +1304,8 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
               selectScanRange(nodes, base + startUnit, entries.length ? endUnit - startUnit : 0);
               const current = scanLive.current;
               const parent = popup ? current.stack[popupIndex] : undefined;
-              const data: LookupData = { rect: point.rect, entries, word, sentence, playerScene, source: parent?.source,
+              const sceneContext = playerScene ?? parent?.playerScene;
+              const data: LookupData = { rect: point.rect, entries, word, sentence: parent?.playerScene ? parent.sentence : sentence, playerScene: sceneContext, source: parent?.source,
                   screenPoint: parent?.screenPoint, externalScreenshot: parent?.externalScreenshot };
               if (popup) current.onReplaceAt?.(popupIndex, data);
               else current.onReplace?.(data);
@@ -1533,9 +1536,18 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
             if (!top?.sentence || !onSentenceLookup) return null;
             return (
                 <div
-                    key={top.sentence}
-                    ref={contextCardRef}
-                    className={`dict-mobile-context${isLeaving ? ' is-leaving' : ''}${sheetHeight ? '' : ' is-measuring'}`}
+                    key={`${top.sentence}:${verticalContext ? 'v' : 'h'}`}
+                    ref={(el) => {
+                        contextCardRef.current = el;
+                        if (el && verticalContext) {
+                            requestAnimationFrame(() => {
+                                const activeWord = el.querySelector<HTMLElement>('.lookup-word.active');
+                                activeWord?.scrollIntoView({ block: 'nearest', inline: 'center' });
+                            });
+                        }
+                    }}
+                    lang="ja"
+                    className={`dict-mobile-context${verticalContext ? ' is-vertical' : ''}${isLeaving ? ' is-leaving' : ''}${sheetHeight ? '' : ' is-measuring'}`}
                     style={{ bottom: sheetHeight + 10 }}
                     onClick={(event) => event.stopPropagation()}
                 >

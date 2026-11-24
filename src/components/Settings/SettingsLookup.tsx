@@ -447,6 +447,77 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
                             });
                         }}
                     />
+                    <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: "8px", paddingTop: "8px", borderTop: "1px solid var(--border-main)" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12.5px", color: "var(--text-main)", cursor: "pointer", fontWeight: 500 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={settings.globalLiveScanEnabled !== false}
+                                    onChange={(e) => {
+                                        const enabled = e.target.checked;
+                                        updateSetting("globalLiveScanEnabled", enabled);
+                                        void invoke("update_global_live_scan_config", {
+                                            enabled,
+                                            modifier: settings.globalLiveScanModifier || "Shift",
+                                        }).catch(() => {});
+                                    }}
+                                />
+                                <span>
+                                    {settings.appLanguage === "en"
+                                        ? "Live hover-scan across Windows (like TextHooker)"
+                                        : "Живой скан при наведении по всему Windows (как в TextHooker)"}
+                                </span>
+                            </label>
+                            <select
+                                className="modern-input"
+                                style={{ width: "auto", minWidth: "125px", height: "30px", padding: "0 8px", fontSize: "12px" }}
+                                disabled={settings.globalLiveScanEnabled === false}
+                                value={settings.globalLiveScanModifier || "Shift"}
+                                onChange={(e) => {
+                                    const modifier = e.target.value;
+                                    updateSetting("globalLiveScanModifier", modifier);
+                                    void invoke("update_global_live_scan_config", {
+                                        enabled: settings.globalLiveScanEnabled !== false,
+                                        modifier,
+                                    }).catch(() => {});
+                                }}
+                            >
+                                <option value="Shift">Shift</option>
+                                <option value="Alt">Alt</option>
+                                <option value="Ctrl+Shift">Ctrl + Shift</option>
+                                <option value="Ctrl+Alt">Ctrl + Alt</option>
+                            </select>
+                        </div>
+                        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12.5px", color: "var(--text-main)", cursor: "pointer" }}>
+                            <input
+                                type="checkbox"
+                                checked={settings.globalLookupUseSelection !== false}
+                                onChange={(e) => updateSetting("globalLookupUseSelection", e.target.checked)}
+                            />
+                            <span>
+                                {settings.appLanguage === "en"
+                                    ? "Capture highlighted text via safe Ctrl+C (Discord, Telegram, PDF, browsers) while preserving clipboard"
+                                    : "Захватывать выделенный текст (Discord, Telegram, PDF, браузеры) с сохранением буфера обмена"}
+                            </span>
+                        </label>
+                        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12.5px", color: "var(--text-main)", cursor: "pointer" }}>
+                            <input
+                                type="checkbox"
+                                checked={settings.globalLookupAutoClose !== false}
+                                onChange={(e) => updateSetting("globalLookupAutoClose", e.target.checked)}
+                            />
+                            <span>
+                                {settings.appLanguage === "en"
+                                    ? "Auto-close global popup on click outside (can still pin with 📌)"
+                                    : "Автоматически закрывать окно при клике мимо (можно закрепить кнопкой 📌)"}
+                            </span>
+                        </label>
+                        <span style={{ fontSize: "11.5px", color: "var(--text-muted)", lineHeight: 1.4 }}>
+                            {settings.appLanguage === "en"
+                                ? "Hold Shift (or your chosen key) and glide your mouse over any text without losing focus — or press Alt+Q on highlighted text."
+                                : "Зажми Shift (или выбранную клавишу) и води мышкой по тексту в браузере/Discord/YouTube — окно обновляется на лету без потери фокуса. Для выделенного текста и Telegram/PDF также работает Alt+Q."}
+                        </span>
+                    </div>
                 </div>
                 {[
                     [t.zoom, <><input type="range" min="0.5" max="1.5" step="0.1" value={settings.lookupScale || 1.0} onChange={(e) => updateSetting("lookupScale", Number(e.target.value))} style={{ flex: 1 }} /><span style={{ color: "var(--text-main)", width: "40px", textAlign: "center", fontWeight: "bold" }}>{Math.round((settings.lookupScale || 1.0) * 100)}%</span></>],

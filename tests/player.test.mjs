@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
-import { parseSubtitleFile, cueAt, sceneForCue, clipInterval } from "../src/features/player/model.ts";
+import { suggestedEpisode } from "../src/features/player/libraryModel.ts";
+import { matchSubtitlePaths } from "../src/features/player/localMedia.ts";
+import { parseSubtitleFile, cueAt, nextCue, sceneForCue, clipInterval } from "../src/features/player/model.ts";
 
 test("subtitle parsing sorts cues, ignores bad intervals and keeps ASS dialogue commas", () => {
     const srt =
@@ -26,6 +28,68 @@ test("scene uses the media clock, includes five seconds before speech, clamps to
         end: 2.25,
     });
     assert.equal(sceneForCue("ep", cue, -5, 10), undefined);
+});
+
+test("line navigation jumps to the neighboring cue even mid-line, and skips cues outside the media", () => {
+    const cues = [
+        [0, 1],
+        [1, 3],
+        [5, 7],
+        [9, 11],
+    ].map(([start, end], id) => ({ id, start, end, text: String(id) }));
+    assert.equal(nextCue(cues, 5.5, -1, 1, 7)?.id, 1);
+    assert.equal(nextCue(cues, 5.5, 1, 1, 7), undefined);
+    assert.equal(nextCue(cues, 4, 1, 1, 7)?.id, 2);
+    assert.equal(nextCue(cues, 4, -1, 3, 7), undefined);
+});
+
+test("dropped subtitle packs select Japanese first and never match the next episode number", () => {
+    const paths = ["Series E01.ru.srt", "Series E01.ja.ass", "Series E010.ja.ass", "Series E02.srt"];
+    assert.deepEqual(matchSubtitlePaths("series E01.MKV", paths, false), [paths[1], paths[0]]);
+    assert.deepEqual(matchSubtitlePaths("series E02.mkv", paths, false), [paths[3], undefined]);
+    assert.deepEqual(matchSubtitlePaths("series E03.mkv", paths, false), [undefined, undefined]);
+    assert.deepEqual(matchSubtitlePaths("clip.mp4", ["different.vtt"], true), ["different.vtt", undefined]);
+});
+
+test("ASS removes vector paths and duplicate karaoke layers without dropping lyrics", () => {
+    const ass = String.raw`[Events]
+Format: Layer, Start, End, Text
+Dialogue: 0,0:01:10.70,0:01:14.98,{\p1\pos(120,40)}m -7 0 b -7 -9 7 -9 7 0
+Dialogue: 0,0:01:10.70,0:01:14.98,{\pos(120,40)\blur4}歌の言葉
+Dialogue: 1,0:01:10.70,0:01:14.98,{\pos(120,40)\blur8}歌の言葉
+Dialogue: 1,0:01:11.70,0:01:14.98,{\p1}m 1 2 l 3 4{\p0}台詞\hここ
+Dialogue: 0,0:01:17.00,0:01:20.98,歌の言葉`;
+    assert.deepEqual(
+        parseSubtitleFile(ass, "karaoke.ass").map((cue) => cue.text),
+        ["歌の言葉", "台詞 ここ", "歌の言葉"],
+    );
+});
+
+test("library matches the episode across release groups and technical tags", () => {
+    const first = "[Group] Watashi wo Tabetai, Hitodenashi - 01 [WebRip][1080p][JPN].ass";
+    const second = "[Group] Watashi wo Tabetai, Hitodenashi - 02 [WebRip][1080p][JPN].ass";
+    const russian = "Watashi wo Tabetai, Hitodenashi - 01.ru.ass";
+    assert.deepEqual(
+        matchSubtitlePaths(
+            "Watashi wo Tabetai, Hitodenashi - 01 [1080p AVC EAC3] [AAC].mkv",
+            [second, russian, first],
+            false,
+        ),
+        [first, russian],
+    );
+});
+
+test("library resumes legacy positions and advances after a completed episode", () => {
+    const episodes = [{ path: "e1" }, { path: "e2" }, { path: "e3" }];
+    assert.equal(suggestedEpisode(episodes, { e2: 60 }), 1);
+    assert.equal(suggestedEpisode(episodes, { e2: { time: 0, lastPlayedAt: 100, completed: true } }), 2);
+    assert.equal(
+        suggestedEpisode(episodes, {
+            e1: { time: 120, lastPlayedAt: 200 },
+            e2: { time: 0, lastPlayedAt: 100, completed: true },
+        }),
+        0,
+    );
 });
 
 const bundle = await build({

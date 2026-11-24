@@ -27,6 +27,7 @@ import { useEpubSync } from "./features/epub/useEpubSync";
 import { openEpubBook, pruneEpubFiles, scanEpubFolder, storeEpubFile } from "./features/epub/epubApi";
 import {
     isSupportedBookPath,
+    resolveEpubOrientation,
     type EpubBookMeta,
     type EpubBookNote,
     type EpubHighlight,
@@ -37,7 +38,7 @@ import "./App.css";
 
 import { calculateStats } from "./utils/helpers";
 import { countLineStats, sumLineStats } from "./utils/textStats";
-import { mergeDailyStatsSnapshot, recordDailyChars, recordDailyLine, recordDailySeconds } from "./utils/dailyStats";
+import { mergeDailyStatsSnapshot, recordDailyChars, recordDailyLine, recordDailySeconds, resetDailyStatsForTabs } from "./utils/dailyStats";
 import { cachedGlyphScale, glyphScaleFor } from "./utils/fontNormalize";
 import { appendSpeedSample } from "./utils/speedSamples";
 import { listTabHistoryIds, loadTabHistory, markTabHistorySaved, mergeTabHistory, pruneTabHistories, saveChangedTabHistories, slimTabForWorkspace, tailTabForCache } from "./utils/tabHistory";
@@ -1659,6 +1660,7 @@ export default function App() {
                     chapterIndex: retained?.epub?.chapterIndex ?? 0,
                     chapterOffset: retained?.epub?.chapterOffset ?? 0,
                     chapterCount: meta.chapters.length,
+                    tocCount: meta.toc && meta.toc.length > 0 ? meta.toc.length : undefined,
                     lastOpenedAt: options?.activate ? Date.now() : 0,
                     lines: [],
                     progress: retained?.epub?.progress ?? 0,
@@ -1798,6 +1800,7 @@ export default function App() {
             const nextSeries = tab.epub.series || meta.series || undefined;
             const nextSeriesPos = tab.epub.seriesPosition ?? meta.seriesPosition ?? null;
             const nextTotalChars = meta.totalChars ?? tab.epub.totalChars;
+            const nextTocCount = meta.toc && meta.toc.length > 0 ? meta.toc.length : tab.epub.tocCount;
             if (
                 tab.epub.title === meta.title
                 && tab.epub.author === nextAuthor
@@ -1807,6 +1810,7 @@ export default function App() {
                 && tab.epub.language === meta.language
                 && tab.epub.defaultVertical === meta.defaultVertical
                 && tab.epub.chapterCount === meta.chapters.length
+                && tab.epub.tocCount === nextTocCount
             ) {
                 return tab;
             }
@@ -1823,6 +1827,7 @@ export default function App() {
                     language: meta.language,
                     defaultVertical: meta.defaultVertical,
                     chapterCount: meta.chapters.length,
+                    tocCount: nextTocCount,
                     lines: [],
                 },
             };
@@ -1967,6 +1972,24 @@ export default function App() {
             retainedBooks: result.unmatchedEntries.length,
         };
     }, []);
+
+    const handleResetEpubStats = useCallback(() => {
+        const epubIds = tabsRef.current.filter((tab) => tab.mode === "epub").map((tab) => tab.id);
+        setConfirmDialog({
+            title: settings.appLanguage === "en" ? "Reset EPUB statistics" : "Сбросить статистику EPUB",
+            message: settings.appLanguage === "en"
+                ? "Reset character and time counters for all EPUB books? Reading positions and bookmarks will not be affected."
+                : "Обнулить счётчики символов и времени для всех EPUB-книг? Позиции чтения, закладки и статистика TextHooker не пострадают.",
+            onConfirm: () => {
+                resetDailyStatsForTabs(epubIds);
+                setTabs((prev) => prev.map((tab) => (
+                    tab.mode === "epub"
+                        ? { ...tab, stats: { ...defaultStats } }
+                        : tab
+                )));
+            },
+        });
+    }, [settings.appLanguage]);
 
     const handleEpubRecordStats = useCallback((tabId: number, deltaChars: number, deltaSeconds: number) => {
         if (deltaChars > 0) recordDailyChars(tabId, deltaChars);
@@ -2907,6 +2930,7 @@ export default function App() {
         enabled: settings.epubAutoSync !== false,
         uploadFiles: settings.epubSyncUploadFiles !== false,
         activeInEpub: activeWorkspace === "epub",
+        fallbackRefreshToken: settings.gdriveRefreshToken,
         tabs,
         tabsRef,
         setTabs,
@@ -4291,6 +4315,7 @@ export default function App() {
                         onChangeBookNotes={handleEpubNotesChange}
                         onChangeReadingPoint={handleEpubReadingPointChange}
                         onRecordReadingStats={handleEpubRecordStats}
+                        onResetStats={handleResetEpubStats}
                         onUpdateSettings={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
                         onLookupToken={isMobileLayout ? runSentenceTokenLookup : undefined}
                         resumePromptBookId={epubResumePromptId}
@@ -4300,7 +4325,7 @@ export default function App() {
                         syncError={epubSync.error}
                         downloadingBookId={epubSync.downloadingBookId}
                         onSyncNow={() => void epubSync.syncNow({ forcePush: true })}
-                        onOpenCloudSettings={() => isMobileLayout ? openMobileSettingsPanel('') : openSettingsPanel("cloud-drive")}
+                        onOpenCloudSettings={() => isMobileLayout ? openMobileSettingsPanel('drive') : openSettingsPanel("cloud-drive")}
                     />
                 )) : resolvedWorkspace === "player" ? (
                     <WorkspaceShell
@@ -4314,6 +4339,7 @@ export default function App() {
                         <PlayerWorkspace
                             language={settings.appLanguage}
                             settings={settings}
+                            onDeckChange={(deck) => setSettings((prev) => ({ ...prev, playerAnkiDeck: deck || undefined }))}
                             shortcutsBlocked={isSettingsOpen || lookupStack.length > 0 || Boolean(confirmDialog) || Boolean(updateDialog)}
                         />
                     </WorkspaceShell>
@@ -4357,10 +4383,24 @@ export default function App() {
                         epubBooks={tabs.filter((tab) => tab.mode === "epub")}
                         onOpenEpubFile={openEpubFilePicker}
                         onRemoveEpubBook={handleRemoveEpubBook}
+                        onRemoveEpubBooks={handleRemoveEpubBooks}
+                        onPatchEpubBooks={handleEpubPatchBooks}
                         onUpdateEpubMeta={handleEpubUpdateMeta}
                         onEpubProgress={handleEpubProgress}
                         onEpubOrientationChange={handleEpubOrientationChange}
                         onEpubBookmarksChange={handleEpubBookmarksChange}
+                        onEpubHighlightsChange={handleEpubHighlightsChange}
+                        onEpubNotesChange={handleEpubNotesChange}
+                        onEpubReadingPointChange={handleEpubReadingPointChange}
+                        onEpubRecordStats={handleEpubRecordStats}
+                        onResetEpubStats={handleResetEpubStats}
+                        onImportEpubBackup={handleImportEpubBackup}
+                        epubSyncStatus={epubSync.status}
+                        epubLastSyncedAt={epubSync.lastSyncedAt}
+                        epubSyncError={epubSync.error}
+                        epubDownloadingBookId={epubSync.downloadingBookId}
+                        onEpubSyncNow={() => void epubSync.syncNow({ forcePush: true })}
+                        onOpenCloudSettings={() => openMobileSettingsPanel('drive')}
                         onHome={() => setActiveWorkspace("hub")}
                         onCloseMobileSettings={handleCloseMobileSettings}
                     />
@@ -4506,9 +4546,20 @@ export default function App() {
                         onSlice={sliceLookupStack}
                         settings={settings}
                         captureSource={resolvedWorkspace === "texthooker" ? (activeTab?.captureSource || null) : null}
-                        ankiDeck={(resolvedWorkspace === "texthooker" || resolvedWorkspace === "epub") ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
+                        ankiDeck={resolvedWorkspace === "player" ? (settings.playerAnkiDeck || settings.ankiDeck)
+                            : (resolvedWorkspace === "texthooker" || resolvedWorkspace === "epub") ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
                         onClose={() => setLookupStack([])}
                         onSentenceLookup={isMobileLayout ? runSentenceTokenLookup : undefined}
+                        verticalContext={isMobileLayout && (
+                            resolvedWorkspace === "epub" && activeTab?.mode === "epub"
+                                ? resolveEpubOrientation(
+                                    activeTab.epub?.language || "en",
+                                    settings.epubTextOrientation,
+                                    activeTab.epub?.defaultVertical,
+                                    activeTab.epub?.orientation,
+                                ) === "vertical"
+                                : settings.textOrientation === "vertical"
+                        )}
                     />
                 )}
             </div>

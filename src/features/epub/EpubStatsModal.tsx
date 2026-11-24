@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { IconClose } from "../../components/Icons";
 import type { Tab } from "../../utils/constants";
-import { getDay, getRecentDays, useDailyStatsVersion } from "../../utils/dailyStats";
+import { getDay, getRecentDays, sumDayForTabs, useDailyStatsVersion } from "../../utils/dailyStats";
 import { getTranslator, type AppLanguage } from "../../utils/i18n";
 import {
     computeReadingStreak,
@@ -18,6 +18,7 @@ interface EpubStatsModalProps {
     isMobile: boolean;
     onClose: () => void;
     onGoalsChange?: (goals: EpubReadingGoals) => void;
+    onResetStats?: () => void;
 }
 
 function formatDuration(seconds: number, isEn: boolean): string {
@@ -37,6 +38,7 @@ export default function EpubStatsModal({
     isMobile,
     onClose,
     onGoalsChange,
+    onResetStats,
 }: EpubStatsModalProps) {
     const t = getTranslator(language);
     const isEn = language === "en";
@@ -66,17 +68,28 @@ export default function EpubStatsModal({
         });
     };
 
+    const epubBookIdSet = useMemo(
+        () => new Set(books.filter((b) => b.mode === "epub").map((b) => String(b.id))),
+        [books],
+    );
+
     const heatmapDays = useMemo(() => {
         const count = isMobile ? 56 : 112;
-        return getRecentDays(count).map((d) => ({
-            key: d.key,
-            date: d.date,
-            chars: d.record.total.chars,
-            seconds: d.record.total.seconds,
-        }));
-    }, [isMobile, statsVersion, open]);
+        return getRecentDays(count).map((d) => {
+            const epubCounts = sumDayForTabs(d.record, epubBookIdSet);
+            return {
+                key: d.key,
+                date: d.date,
+                chars: epubCounts.chars,
+                seconds: epubCounts.seconds,
+            };
+        });
+    }, [isMobile, statsVersion, open, epubBookIdSet]);
 
-    const today = useMemo(() => getDay().total, [statsVersion, open]);
+    const today = useMemo(
+        () => sumDayForTabs(getDay(), epubBookIdSet),
+        [statsVersion, open, epubBookIdSet],
+    );
     const summary = useMemo(
         () => evaluateGoalProgress(today.chars, today.seconds, goals, false),
         [today.chars, today.seconds, goals],
@@ -114,9 +127,20 @@ export default function EpubStatsModal({
             <div className="epub-modal-card epub-stats-modal" onClick={(e) => e.stopPropagation()}>
                 <div className="epub-modal-head">
                     <strong>{t("epub.statsTitle")}</strong>
-                    <button type="button" className="epub-glass-btn epub-glass-circle" aria-label={t("common.close")} onClick={onClose}>
-                        <IconClose />
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {onResetStats && (
+                            <button
+                                type="button"
+                                className="epub-glass-btn is-danger"
+                                onClick={onResetStats}
+                            >
+                                {isEn ? "Reset EPUB stats" : "Сбросить статистику"}
+                            </button>
+                        )}
+                        <button type="button" className="epub-glass-btn epub-glass-circle" aria-label={t("common.close")} onClick={onClose}>
+                            <IconClose />
+                        </button>
+                    </div>
                 </div>
 
                 {/* Today's KPI cards */}

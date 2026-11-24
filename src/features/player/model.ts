@@ -40,12 +40,23 @@ export function escapeCardText(text: string) {
     return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\r?\n/g, "<br>");
 }
 
-const stripAssTags = (value: string) =>
-    value
-        .replace(/\{[^}]*\}/g, "")
-        .replace(/\\N/g, "\n")
-        .replace(/\\n/g, "\n")
+function assDialogueText(value: string) {
+    let drawing = false;
+    let text = "";
+    for (const match of value.matchAll(/\{([^}]*)\}|([^{]+|\{)/g)) {
+        if (match[1] !== undefined) {
+            for (const command of match[1].matchAll(/\\p\s*(\d+)/gi)) {
+                drawing = Number(command[1]) > 0;
+            }
+        } else if (!drawing) {
+            text += match[2];
+        }
+    }
+    return text
+        .replace(/\\[Nn]/g, "\n")
+        .replace(/\\h/g, " ")
         .trim();
+}
 
 const parseSrtOrVtt = (text: string): Cue[] => {
     const blocks = text
@@ -101,7 +112,7 @@ const parseAss = (text: string): Cue[] => {
         if (textIndex < 0 || startIndex < 0 || endIndex < 0 || parts.length <= minParts) return;
         const prefix = parts.slice(0, textIndex);
         const cueText = raw.split(",").slice(textIndex).join(",");
-        const body = stripAssTags(cueText);
+        const body = assDialogueText(cueText);
         if (!body) return;
         cues.push({
             id: cues.length,
@@ -117,8 +128,15 @@ const parseAss = (text: string): Cue[] => {
 export function parseSubtitleFile(text: string, name: string): Cue[] {
     const raw = text.replace(/^\uFEFF/, "");
     const cues = /\.(ass|ssa)$/i.test(name) ? parseAss(raw) : parseSrtOrVtt(raw);
+    const seen = new Set<string>();
     return cues
-        .filter((cue) => Number.isFinite(cue.start) && Number.isFinite(cue.end) && cue.end > cue.start)
+        .filter((cue) => {
+            if (!Number.isFinite(cue.start) || !Number.isFinite(cue.end) || cue.end <= cue.start) return false;
+            const key = JSON.stringify([cue.start, cue.end, cue.text]);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        })
         .sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
@@ -153,5 +171,27 @@ export function cueAt(cues: Cue[], time: number) {
 export function previousCue(cues: Cue[], time: number) {
     for (let i = cues.length - 1; i >= 0; i--) {
         if (cues[i].start <= time) return cues[i];
+    }
+}
+
+function previousCueIndex(cues: Cue[], time: number) {
+    for (let i = cues.length - 1; i >= 0; i--) {
+        if (cues[i].start < time) return i;
+    }
+    return -1;
+}
+
+export function nextCue(cues: Cue[], time: number, direction: -1 | 1, offset: number, duration: number) {
+    const active = cueAt(cues, time);
+    const activeIndex = active ? cues.indexOf(active) : -1;
+    const first =
+        activeIndex >= 0
+            ? activeIndex + direction
+            : direction > 0
+              ? cues.findIndex((cue) => cue.start > time)
+              : previousCueIndex(cues, time);
+    for (let i = first; i >= 0 && i < cues.length; i += direction) {
+        const cue = cues[i];
+        if (cue.end > offset && cue.start < duration + offset) return cue;
     }
 }

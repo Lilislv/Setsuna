@@ -25,6 +25,7 @@ export interface UseEpubSyncOptions {
     enabled: boolean;
     uploadFiles: boolean;
     activeInEpub: boolean;
+    fallbackRefreshToken?: string;
     tabs: Tab[];
     tabsRef: React.MutableRefObject<Tab[]>;
     setTabs: React.Dispatch<React.SetStateAction<Tab[]>>;
@@ -47,13 +48,14 @@ const PERIODIC_SYNC_MS = 180_000;
 
 let cachedToken: { value: string; expiresAt: number } | null = null;
 
-async function getValidAccessToken(): Promise<string | null> {
+async function getValidAccessToken(fallbackRefreshToken?: string): Promise<string | null> {
     const now = Date.now();
     if (cachedToken && now < cachedToken.expiresAt) {
         return cachedToken.value;
     }
-    const refreshToken = await loadStoredGoogleRefreshToken().catch(() => null);
-    if (!refreshToken || !refreshToken.trim()) {
+    const stored = await loadStoredGoogleRefreshToken().catch(() => null);
+    const refreshToken = (stored && stored.trim()) ? stored.trim() : (fallbackRefreshToken?.trim() || '');
+    if (!refreshToken) {
         cachedToken = null;
         return null;
     }
@@ -66,6 +68,7 @@ export function useEpubSync({
     enabled,
     uploadFiles,
     activeInEpub,
+    fallbackRefreshToken,
     tabs,
     tabsRef,
     setTabs,
@@ -84,6 +87,8 @@ export function useEpubSync({
     allocateTabIdRef.current = allocateTabId;
     const uploadFilesRef = useRef(uploadFiles);
     uploadFilesRef.current = uploadFiles;
+    const fallbackRefreshTokenRef = useRef(fallbackRefreshToken);
+    fallbackRefreshTokenRef.current = fallbackRefreshToken;
 
     const syncNow = useCallback(async (opts?: { silent?: boolean; forcePush?: boolean }) => {
         if (!enabled || syncingRef.current) return;
@@ -96,11 +101,11 @@ export function useEpubSync({
         try {
             let accessToken: string | null;
             try {
-                accessToken = await getValidAccessToken();
+                accessToken = await getValidAccessToken(fallbackRefreshTokenRef.current);
             } catch {
                 // Retry once by clearing cached token
                 cachedToken = null;
-                accessToken = await getValidAccessToken();
+                accessToken = await getValidAccessToken(fallbackRefreshTokenRef.current);
             }
             if (!accessToken) {
                 setStatus("disconnected");
@@ -198,7 +203,7 @@ export function useEpubSync({
         setDownloadingBookId(tab.id);
         setError(null);
         try {
-            const accessToken = await getValidAccessToken();
+            const accessToken = await getValidAccessToken(fallbackRefreshTokenRef.current);
             if (!accessToken) {
                 setStatus("disconnected");
                 return false;
@@ -238,11 +243,12 @@ export function useEpubSync({
         }
     }, [setTabs]);
 
-    // Auto-pull whenever user enters EPUB workspace
+    // Auto-pull whenever user enters EPUB workspace or connects Google Drive
     useEffect(() => {
         if (!enabled || !activeInEpub) return;
+        cachedToken = null;
         void syncNow({ silent: false });
-    }, [enabled, activeInEpub, syncNow]);
+    }, [enabled, activeInEpub, fallbackRefreshToken, syncNow]);
 
     // Auto-pull on window focus / visibility regain & flush on hide
     useEffect(() => {

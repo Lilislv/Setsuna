@@ -30,7 +30,7 @@ export interface AppSettings {
   
   lookupHotkey: string;
   lookupScale: number; lookupFontSize: number; lookupFontFamily?: string; lookupTagFontSize: number; lookupWidth: number; lookupShowTags: boolean; lookupShowAudio: boolean;
-  globalLookupEnabled?: boolean; globalLookupRestoreClipboard?: boolean; globalLookupShortcut?: string;
+  globalLookupEnabled?: boolean; globalLookupRestoreClipboard?: boolean; globalLookupUseSelection?: boolean; globalLookupAutoClose?: boolean; globalLiveScanEnabled?: boolean; globalLiveScanModifier?: string; globalLookupShortcut?: string;
   hookProcesses: { name: string; active: boolean; icon?: string; path?: string; pid?: number }[];
 
   ankiDeck: string; ankiModel: string;
@@ -60,7 +60,7 @@ export interface AppSettings {
   mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
   mobileOverlayLocked?: boolean; mobileOverlayToolbarExpanded?: boolean;
   epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'auto' | 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubParagraphSpacingJa?: number; epubPagePadding?: number; epubShowImages?: boolean; epubBlurImages?: boolean; epubBlurImagesMode?: 'off' | 'after-toc' | 'all'; epubFuriganaMode?: 'show' | 'hover' | 'hide'; epubJustify?: boolean; epubPrettyWrap?: boolean; epubVerticalGrid?: boolean; epubTextIndent?: 'auto' | 'none' | 'indent'; epubAutoscrollSpeed?: number; epubAutoSync?: boolean; epubSyncUploadFiles?: boolean; epubVolumeKeyPaging?: boolean; epubEinkMode?: boolean; epubImageMaxWidth?: number;
-  playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerCardFormat?: "audio" | "video"; playerSceneLeadIn?: number; playerMiningUseClipForAnki: boolean;
+  playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerCardFormat?: "audio" | "video"; playerSceneLeadIn?: number; playerAnkiDeck?: string; playerMiningUseClipForAnki: boolean;
   playerKeyPlayPause: string; playerKeyBack: string; playerKeyForward: string; playerKeyMine: string; playerKeyOffsetMinus: string; playerKeyOffsetPlus: string;
   discordEnabled: boolean; discordClientId: string; discordShowTab: boolean; discordShowStats: boolean; discordShowChars: boolean; discordShowWords: boolean; discordShowSentences: boolean; discordShowProgress: boolean; discordShowPaused: boolean; discordShowTimer: boolean; discordShowButtons: boolean; discordShowSpeed?: boolean; discordTitleInMemberList?: boolean;
   discordTextActivityType: 'playing' | 'watching' | 'listening' | 'competing'; discordTextStatus: 'playing' | 'reading' | 'watching' | 'mining' | 'custom'; discordCustomTextStatus: string;
