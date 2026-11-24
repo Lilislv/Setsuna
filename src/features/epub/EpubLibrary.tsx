@@ -28,6 +28,7 @@ import {
 } from "./epubBackup";
 import { loadEpubGoals } from "./epubTracker";
 import { exportDailyStatsSnapshot } from "../../utils/dailyStats";
+import { isMangaTabData } from "../manga/mangaModel";
 
 import type { EpubSyncStatus } from "./useEpubSync";
 
@@ -92,6 +93,7 @@ export default function EpubLibrary({
     const [authorFilter, setAuthorFilter] = useState<string>("all");
     const [tagFilter, setTagFilter] = useState<string>("all");
     const [shelfFilter, setShelfFilter] = useState<string>("all");
+    const [formatFilter, setFormatFilter] = useState<"all" | "book" | "manga">("all");
     const [customShelves, setCustomShelves] = useState<string[]>(() => loadCustomShelves());
     const [addingShelf, setAddingShelf] = useState(false);
     const [newShelfName, setNewShelfName] = useState("");
@@ -239,9 +241,21 @@ export default function EpubLibrary({
         }
     }, [onImportBackup, t]);
 
+    const formatCounts = useMemo(() => {
+        let manga = 0;
+        let book = 0;
+        for (const item of activeBooks) {
+            if (isMangaTabData(item.epub)) manga += 1;
+            else book += 1;
+        }
+        return { all: activeBooks.length, book, manga };
+    }, [activeBooks]);
+
     const filteredBooks = useMemo(() => {
         const q = query.trim().toLowerCase();
         const list = activeBooks.filter((book) => {
+            if (formatFilter === "manga" && !isMangaTabData(book.epub)) return false;
+            if (formatFilter === "book" && isMangaTabData(book.epub)) return false;
             if (prefs.statusFilter !== "all" && resolveBookStatus(book) !== prefs.statusFilter) {
                 return false;
             }
@@ -278,7 +292,7 @@ export default function EpubLibrary({
         return [...list].sort((a, b) =>
             compareBooks(a, b, prefs.sortBy, prefs.sortDir, language, activeBooks, false),
         );
-    }, [activeBooks, query, prefs.statusFilter, prefs.langFilter, prefs.sortBy, prefs.sortDir, shelfFilter, authorFilter, tagFilter, language]);
+    }, [activeBooks, query, formatFilter, prefs.statusFilter, prefs.langFilter, prefs.sortBy, prefs.sortDir, shelfFilter, authorFilter, tagFilter, language]);
 
     const groups = useMemo(() => {
         if (prefs.groupBy === "none") return [];
@@ -508,6 +522,16 @@ export default function EpubLibrary({
                                 <span className={`epub-select-check${isSelected ? " is-checked" : ""}`} aria-hidden="true">
                                     {isSelected ? "✓" : ""}
                                 </span>
+                            ) : isMangaTabData(book.epub) ? (
+                                <span
+                                    className="epub-badge epub-badge-glass"
+                                    style={{
+                                        background: book.epub?.hasMokuro ? "rgba(56, 189, 128, 0.25)" : "rgba(245, 158, 11, 0.24)",
+                                        color: book.epub?.hasMokuro ? "#86efac" : "#fde68a",
+                                    }}
+                                >
+                                    {book.epub?.hasMokuro ? "MOKURO" : (isEn ? "MANGA" : "МАНГА")}
+                                </span>
                             ) : (
                                 <span className="epub-badge epub-badge-glass">{bookLang}</span>
                             )}
@@ -575,9 +599,19 @@ export default function EpubLibrary({
                         </div>
                     )}
                     <div className="epub-book-card-meta">
-                        <span>{prefs.showProgress ? `${progress}%` : (chaptersCount > 0 ? t("epub.chaptersCount", { count: chaptersCount }) : "")}</span>
+                        <span>
+                            {prefs.showProgress
+                                ? `${progress}%`
+                                : isMangaTabData(book.epub) && chaptersCount > 0
+                                    ? (isEn ? `${chaptersCount} pp.` : `${chaptersCount} стр.`)
+                                    : chaptersCount > 0
+                                        ? t("epub.chaptersCount", { count: chaptersCount })
+                                        : ""}
+                        </span>
                         {prefs.showChars && totalChars > 0 ? (
                             <span>{formatCompactChars(totalChars)} {t("epub.charsShort")}</span>
+                        ) : isMangaTabData(book.epub) && chaptersCount > 0 ? (
+                            <span>{isEn ? `${chaptersCount} pp.` : `${chaptersCount} стр.`}</span>
                         ) : chaptersCount > 0 ? (
                             <span>{t("epub.chaptersCount", { count: chaptersCount })}</span>
                         ) : null}
@@ -868,8 +902,31 @@ export default function EpubLibrary({
                 </div>
             )}
 
-            {/* Reading status shelves + custom shelves */}
+            {/* Reading status shelves + format filter + custom shelves */}
             <div className="epub-library-shelves">
+                {formatCounts.manga > 0 && (
+                    <div className="epub-segmented epub-shelf-tabs" role="tablist" aria-label={isEn ? "Media type" : "Тип"}>
+                        {([
+                            ["all", isEn ? "All" : "Все", formatCounts.all],
+                            ["book", isEn ? "Books" : "Книги", formatCounts.book],
+                            ["manga", isEn ? "Manga" : "Манга", formatCounts.manga],
+                        ] as Array<["all" | "book" | "manga", string, number]>).map(([key, label, count]) => (
+                            <button
+                                key={key}
+                                type="button"
+                                role="tab"
+                                aria-selected={formatFilter === key}
+                                className={`epub-seg-btn${formatFilter === key ? " is-active" : ""}`}
+                                onClick={() => {
+                                    setFormatFilter(key);
+                                    setFocusedGroupKey(null);
+                                }}
+                            >
+                                {label} <span className="epub-shelf-count">{count}</span>
+                            </button>
+                        ))}
+                    </div>
+                )}
                 <div className="epub-segmented epub-shelf-tabs" role="tablist">
                     {([
                         ["all", t("epub.statusAll"), statusCounts.all],

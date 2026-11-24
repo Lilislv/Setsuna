@@ -23,6 +23,9 @@ import {
 import { loadEpubGoals, type EpubReadingGoals } from "./epubTracker";
 import type { EpubPortableBackup } from "./epubBackup";
 import type { EpubSyncStatus } from "./useEpubSync";
+import MangaReader from "../manga/MangaReader";
+import { loadMangaCover, openMangaVolume } from "../manga/mangaApi";
+import { isMangaTabData, type MangaMeta } from "../manga/mangaModel";
 import "./epub.css";
 
 const PdfReader = lazy(() => import("./PdfReader"));
@@ -59,6 +62,8 @@ interface EpubWorkspaceProps {
     onRemoveBooks?: (tabIds: number[]) => void;
     onPatchBooks?: (tabIds: number[], patch: EpubBookMetaPatch) => void;
     onUpdateBookMeta: (tabId: number, meta: EpubBookMeta) => void;
+    onUpdateMangaMeta?: (tabId: number, meta: MangaMeta) => void;
+    onMangaScreenshot?: (dataUrl: string | null) => void;
     onProgressChange: (tabId: number, chapterIndex: number, chapterOffset: number, bookProgress: number) => void;
     onChangeBookOrientation: (tabId: number, orientation: EpubOrientationSetting) => void;
     onChangeBookBookmarks?: (tabId: number, bookmarks: EpubBookmark[]) => void;
@@ -98,6 +103,8 @@ export default function EpubWorkspace({
     onRemoveBooks,
     onPatchBooks,
     onUpdateBookMeta,
+    onUpdateMangaMeta,
+    onMangaScreenshot,
     onProgressChange,
     onChangeBookOrientation,
     onChangeBookBookmarks,
@@ -128,6 +135,7 @@ export default function EpubWorkspace({
         return activeBookTab ? "reader" : "library";
     });
     const [bookMeta, setBookMeta] = useState<EpubBookMeta | null>(null);
+    const [mangaMeta, setMangaMeta] = useState<MangaMeta | null>(null);
     const [chapter, setChapter] = useState<EpubChapterContent | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -150,10 +158,12 @@ export default function EpubWorkspace({
     const [coversByPath, setCoversByPath] = useState<Record<string, string | null>>(() => getInitialCoverSnapshot());
 
     const metaCacheRef = useRef<Map<string, EpubBookMeta>>(new Map());
+    const mangaMetaCacheRef = useRef<Map<string, MangaMeta>>(new Map());
     const chapterCacheRef = useRef<Map<string, EpubChapterContent>>(new Map());
     const loadGenerationRef = useRef(0);
 
     const bookPath = activeBookTab?.epub?.path || "";
+    const activeIsManga = isMangaTabData(activeBookTab?.epub);
     const activeTabId = activeBookTab?.id ?? null;
 
     useEffect(() => {
@@ -304,17 +314,17 @@ export default function EpubWorkspace({
     // Phase 1: Instant parallel cover loading (never blocked by full-book metadata scans)
     useEffect(() => {
         if (viewMode !== "library") return;
-        const missingCoverPaths: string[] = [];
+        const missingCovers: Array<{ path: string; isManga: boolean }> = [];
         const seen = new Set<string>();
         for (const tab of books) {
             if (tab.archived || !tab.epub?.path) continue;
             const path = tab.epub.path;
             if (seen.has(path) || hasCachedCover(path)) continue;
             seen.add(path);
-            missingCoverPaths.push(path);
+            missingCovers.push({ path, isManga: isMangaTabData(tab.epub) });
         }
 
-        if (missingCoverPaths.length === 0) return;
+        if (missingCovers.length === 0) return;
         let cancelled = false;
 
         void (async () => {
@@ -323,17 +333,19 @@ export default function EpubWorkspace({
             const worker = async () => {
                 while (!cancelled) {
                     const idx = cursor++;
-                    if (idx >= missingCoverPaths.length) return;
-                    const path = missingCoverPaths[idx];
-                    const cover = await loadEpubCover(path).catch(() => null);
-                    setMemoryCover(path, cover);
+                    if (idx >= missingCovers.length) return;
+                    const item = missingCovers[idx];
+                    const cover = item.isManga
+                        ? await loadMangaCover(item.path).catch(() => null)
+                        : await loadEpubCover(item.path).catch(() => null);
+                    setMemoryCover(item.path, cover);
                     if (!cancelled) {
-                        setCoversByPath((prev) => (prev[path] === cover ? prev : { ...prev, [path]: cover }));
+                        setCoversByPath((prev) => (prev[item.path] === cover ? prev : { ...prev, [item.path]: cover }));
                     }
                 }
             };
             await Promise.all(
-                Array.from({ length: Math.min(CONCURRENCY, missingCoverPaths.length) }, () => worker()),
+                Array.from({ length: Math.min(CONCURRENCY, missingCovers.length) }, () => worker()),
             );
         })();
 
@@ -346,7 +358,7 @@ export default function EpubWorkspace({
     useEffect(() => {
         if (viewMode !== "library") return;
         const targets = books
-            .filter((tab) => !tab.archived && tab.epub?.path)
+            .filter((tab) => !tab.archived && tab.epub?.path && !isMangaTabData(tab.epub))
             .filter((tab) => (tab.epub!.author === undefined || tab.epub!.totalChars === undefined) && !metaCacheRef.current.has(tab.epub!.path!));
 
         if (targets.length === 0) return;
@@ -415,10 +427,11 @@ export default function EpubWorkspace({
         }
     }, [rememberChapter]);
 
-    // Load book metadata + initial/saved chapter whenever active book changes
+    // Load book or manga metadata whenever active item changes
     useEffect(() => {
         if (viewMode !== "reader" || !activeBookTab || !bookPath || isPdfBookPath(bookPath)) {
             setBookMeta(null);
+            setMangaMeta(null);
             setChapter(null);
             setError(null);
             setLoading(false);
@@ -426,6 +439,40 @@ export default function EpubWorkspace({
         }
 
         const generation = ++loadGenerationRef.current;
+
+        if (activeIsManga) {
+            setBookMeta(null);
+            setChapter(null);
+            const loadManga = async () => {
+                setLoading(true);
+                setError(null);
+                try {
+                    let meta = mangaMetaCacheRef.current.get(bookPath);
+                    if (!meta) {
+                        meta = await openMangaVolume(bookPath);
+                        if (loadGenerationRef.current !== generation) return;
+                        mangaMetaCacheRef.current.set(bookPath, meta);
+                        if (meta.cover !== undefined) {
+                            setMemoryCover(bookPath, meta.cover ?? null);
+                            setCoversByPath((prev) => ({ ...prev, [bookPath]: meta!.cover ?? null }));
+                        }
+                        onUpdateMangaMeta?.(activeBookTab.id, meta);
+                    }
+                    setMangaMeta(meta);
+                } catch (err) {
+                    if (loadGenerationRef.current !== generation) return;
+                    setError(String(err));
+                } finally {
+                    if (loadGenerationRef.current === generation) {
+                        setLoading(false);
+                    }
+                }
+            };
+            void loadManga();
+            return;
+        }
+
+        setMangaMeta(null);
         const savedChapterIndex = Math.max(0, activeBookTab.epub?.chapterIndex ?? 0);
 
         const loadBook = async () => {
@@ -454,7 +501,7 @@ export default function EpubWorkspace({
         };
 
         void loadBook();
-    }, [viewMode, activeBookTab?.id, bookPath, fetchChapter, onUpdateBookMeta]);
+    }, [viewMode, activeBookTab?.id, activeIsManga, bookPath, fetchChapter, onUpdateBookMeta, onUpdateMangaMeta]);
 
     const handleSelectChapter = useCallback((nextIndex: number, fragment?: string, paragraphIndex?: number) => {
         if (!activeBookTab || !bookPath || !bookMeta) return;
@@ -610,7 +657,7 @@ export default function EpubWorkspace({
                                 <span className="app-menu-tile-icon"><IconImport /></span>
                                 <span className="app-menu-tile-text">
                                     <strong>{t("epub.openFile")}</strong>
-                                    <small>.epub · .fb2 · .pdf · .docx · .mobi · .txt · .md</small>
+                                    <small>.epub · .fb2 · .pdf · .docx · .mobi · .txt · .md · .cbz · .mokuro</small>
                                 </span>
                             </button>
 
@@ -696,6 +743,44 @@ export default function EpubWorkspace({
                     />
                 </Suspense>
             ) : viewMode === "reader" && activeBookTab ? (
+                activeIsManga ? (
+                    mangaMeta ? (
+                        <MangaReader
+                            tabId={activeBookTab.id}
+                            mangaPath={bookPath}
+                            meta={mangaMeta}
+                            initialPage={Math.max(0, activeBookTab.epub?.chapterIndex ?? 0)}
+                            settings={settings}
+                            language={language}
+                            isMobile={isMobile}
+                            lookupOpen={lookupOpen}
+                            onBackToLibrary={() => setViewMode("library")}
+                            onMetaUpdated={(updated) => {
+                                mangaMetaCacheRef.current.set(bookPath, updated);
+                                setMangaMeta(updated);
+                                onUpdateMangaMeta?.(activeBookTab.id, updated);
+                            }}
+                            onProgressChange={(pageIdx, progress) =>
+                                onProgressChange(activeBookTab.id, pageIdx, 0, progress)
+                            }
+                            onRecordReadingStats={(deltaChars, deltaSeconds) =>
+                                onRecordReadingStats?.(activeBookTab.id, deltaChars, deltaSeconds)
+                            }
+                            onLookupToken={onLookupToken}
+                            onAnkiScreenshot={onMangaScreenshot}
+                            onCloseLookup={onCloseLookup}
+                            onMobileImmersiveChange={setMobileImmersive}
+                        />
+                    ) : (
+                        <div className="mode-empty-state">
+                            <strong>{error ? (isEn ? "Failed to open manga" : "Не удалось открыть мангу") : (isEn ? "Loading manga…" : "Загрузка манги…")}</strong>
+                            {error && <span>{error}</span>}
+                            <button type="button" className="epub-glass-btn" onClick={() => setViewMode("library")} style={{ marginTop: 8 }}>
+                                {t("epub.library")}
+                            </button>
+                        </div>
+                    )
+                ) : (
                 <EpubReader
                     tab={activeBookTab}
                     bookMeta={bookMeta}
@@ -746,6 +831,7 @@ export default function EpubWorkspace({
                     immersive={isMobile && mobileImmersive}
                     onToggleImmersive={() => setMobileImmersive((prev) => !prev)}
                 />
+                )
             ) : (
                 <EpubLibrary
                     books={books}

@@ -172,116 +172,119 @@ export default function PlayerWorkspace(props: Props & { onDeckChange?: (deck: s
     const currentSource = sources[index] || "";
     const sidecars = droppedTracks.length ? droppedTracks : libraryQueue?.directory.subtitles || [];
     const [primaryFile, translationFile] = matchSubtitlePaths(currentSource, sidecars, !matchOnly);
+    const sourceActions = (
+        <div className={libraryOpen ? "sp-source is-library" : "sp-source"}>
+            {!libraryOpen && (
+                <button
+                    onClick={() => {
+                        setAutoNext(false);
+                        setLibraryOpen(true);
+                    }}
+                >
+                    {en ? "Library" : "Видеотека"}
+                </button>
+            )}
+            {libraryOpen && currentSource && (
+                <button onClick={() => setLibraryOpen(false)}>{en ? "Back to video" : "К видео"}</button>
+            )}
+            <button onClick={() => void choose()}>{en ? "Open media…" : "Открыть видео…"}</button>
+            <button aria-expanded={urlVisible} onClick={() => setUrlVisible(!urlVisible)}>
+                URL
+            </button>
+            {urlVisible && (
+                <form
+                    onSubmit={async (e) => {
+                        e.preventDefault();
+                        const id = ++request.current;
+                        setLoading(true);
+                        try {
+                            const address = new URL(url.trim());
+                            if (address.protocol !== "https:")
+                                throw new Error(
+                                    en ? "Use a direct HTTPS media URL" : "Нужна прямая HTTPS-ссылка на видео",
+                                );
+                            let source = address.href;
+                            let tracks: WebTrack[] = [];
+                            if (pageMode) {
+                                const page = await readWebText(source);
+                                if (request.current !== id) return;
+                                const media = webVideoPage(page.text, page.url);
+                                if (!media)
+                                    throw new Error(
+                                        en
+                                            ? "This page does not publish an HTML video source. Use a direct media link."
+                                            : "Страница не содержит открытой ссылки на HTML-видео. Вставь прямую ссылку на видео.",
+                                    );
+                                source = media.source;
+                                tracks = media.tracks;
+                            }
+                            setDroppedTracks([]);
+                            setWebTracks(tracks);
+                            setSources([source]);
+                            setLibraryQueue(null);
+                            setLibraryOpen(false);
+                            setAutoNext(false);
+                            setIndex(0);
+                            setUrlVisible(false);
+                            setError("");
+                        } catch (err) {
+                            if (id === request.current) setError(String(err));
+                        } finally {
+                            if (id === request.current) setLoading(false);
+                        }
+                    }}
+                >
+                    <input
+                        type="url"
+                        required
+                        autoFocus
+                        aria-label="HTTPS URL"
+                        placeholder="https://…/episode.mp4"
+                        value={url}
+                        onChange={(e) => setUrl(e.target.value)}
+                    />
+                    <label>
+                        <input
+                            type="checkbox"
+                            checked={pageMode}
+                            onChange={(e) => setPageMode(e.target.checked)}
+                        />
+                        {en ? "Video page" : "Страница с видео"}
+                    </label>
+                    <button disabled={loading}>{loading ? "…" : en ? "Open" : "Открыть"}</button>
+                </form>
+            )}
+            {libraryOpen ? null : sources.length > 1 ? (
+                <select
+                    aria-label={en ? "Episode" : "Серия"}
+                    value={index}
+                    disabled={loading}
+                    onChange={(e) => switchEpisode(Number(e.target.value), false)}
+                >
+                    {sources.map((s, i) => (
+                        <option key={s} value={i}>
+                            {fileName(s)}
+                        </option>
+                    ))}
+                </select>
+            ) : (
+                <span className="sp-name">{sources[0] && fileName(sources[0]).split("?")[0]}</span>
+            )}
+            {props.onDeckChange && (
+                <button
+                    className="sp-deck"
+                    onClick={() => setDeckPickerOpen(true)}
+                    title={en ? "Choose the Anki deck for this mode" : "Выбрать колоду Anki для плеера"}
+                >
+                    {props.settings.playerAnkiDeck || "Anki"}
+                </button>
+            )}
+            {error && <span role="alert">{error}</span>}
+        </div>
+    );
     return (
         <div className="sp-workspace">
-            <div className="sp-source">
-                {!libraryOpen && (
-                    <button
-                        onClick={() => {
-                            setAutoNext(false);
-                            setLibraryOpen(true);
-                        }}
-                    >
-                        {en ? "Library" : "Видеотека"}
-                    </button>
-                )}
-                {libraryOpen && currentSource && (
-                    <button onClick={() => setLibraryOpen(false)}>{en ? "Back to video" : "К видео"}</button>
-                )}
-                <button onClick={() => void choose()}>{en ? "Open media…" : "Открыть видео…"}</button>
-                <button aria-expanded={urlVisible} onClick={() => setUrlVisible(!urlVisible)}>
-                    URL
-                </button>
-                {urlVisible && (
-                    <form
-                        onSubmit={async (e) => {
-                            e.preventDefault();
-                            const id = ++request.current;
-                            setLoading(true);
-                            try {
-                                const address = new URL(url.trim());
-                                if (address.protocol !== "https:")
-                                    throw new Error(
-                                        en ? "Use a direct HTTPS media URL" : "Нужна прямая HTTPS-ссылка на видео",
-                                    );
-                                let source = address.href;
-                                let tracks: WebTrack[] = [];
-                                if (pageMode) {
-                                    const page = await readWebText(source);
-                                    if (request.current !== id) return;
-                                    const media = webVideoPage(page.text, page.url);
-                                    if (!media)
-                                        throw new Error(
-                                            en
-                                                ? "This page does not publish an HTML video source. Use a direct media link."
-                                                : "Страница не содержит открытой ссылки на HTML-видео. Вставь прямую ссылку на видео.",
-                                        );
-                                    source = media.source;
-                                    tracks = media.tracks;
-                                }
-                                setDroppedTracks([]);
-                                setWebTracks(tracks);
-                                setSources([source]);
-                                setLibraryQueue(null);
-                                setLibraryOpen(false);
-                                setAutoNext(false);
-                                setIndex(0);
-                                setUrlVisible(false);
-                                setError("");
-                            } catch (err) {
-                                if (id === request.current) setError(String(err));
-                            } finally {
-                                if (id === request.current) setLoading(false);
-                            }
-                        }}
-                    >
-                        <input
-                            type="url"
-                            required
-                            autoFocus
-                            aria-label="HTTPS URL"
-                            placeholder="https://…/episode.mp4"
-                            value={url}
-                            onChange={(e) => setUrl(e.target.value)}
-                        />
-                        <label>
-                            <input
-                                type="checkbox"
-                                checked={pageMode}
-                                onChange={(e) => setPageMode(e.target.checked)}
-                            />
-                            {en ? "Video page" : "Страница с видео"}
-                        </label>
-                        <button disabled={loading}>{loading ? "…" : en ? "Open" : "Открыть"}</button>
-                    </form>
-                )}
-                {libraryOpen ? null : sources.length > 1 ? (
-                    <select
-                        aria-label={en ? "Episode" : "Серия"}
-                        value={index}
-                        disabled={loading}
-                        onChange={(e) => switchEpisode(Number(e.target.value), false)}
-                    >
-                        {sources.map((s, i) => (
-                            <option key={s} value={i}>
-                                {fileName(s)}
-                            </option>
-                        ))}
-                    </select>
-                ) : (
-                    <span className="sp-name">{sources[0] && fileName(sources[0]).split("?")[0]}</span>
-                )}
-                {props.onDeckChange && (
-                    <button
-                        className="sp-deck"
-                        onClick={() => setDeckPickerOpen(true)}
-                        title={en ? "Choose the Anki deck for this mode" : "Выбрать колоду Anki для плеера"}
-                    >
-                        {props.settings.playerAnkiDeck || "Anki"}
-                    </button>
-                )}
-                {error && <span role="alert">{error}</span>}
-            </div>
+            {!libraryOpen && sourceActions}
             {deckPickerOpen &&
                 createPortal(
                     <DeckPicker
@@ -304,7 +307,13 @@ export default function PlayerWorkspace(props: Props & { onDeckChange?: (deck: s
                 </div>
             )}
             {libraryOpen ? (
-                <PlayerLibrary library={library} en={en} opening={loading} openEpisode={openLibraryEpisode} />
+                <PlayerLibrary
+                    library={library}
+                    en={en}
+                    opening={loading}
+                    openEpisode={openLibraryEpisode}
+                    actions={sourceActions}
+                />
             ) : (
                 <Session
                     key={currentSource}

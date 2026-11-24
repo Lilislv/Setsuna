@@ -31,8 +31,6 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::utils::config::Color;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_window_state::StateFlags;
 
 // Windows-only helpers for icons and foreground/window tracking.
@@ -81,6 +79,7 @@ mod core;
 mod dictionary_import;
 mod epub_audio;
 mod epub_import;
+mod manga_import;
 #[cfg(target_os = "windows")]
 mod global_lookup;
 #[cfg(target_os = "linux")]
@@ -95,6 +94,7 @@ mod japanese_deinflector;
 mod local_audio;
 mod player_library;
 mod player_media;
+mod player_posters;
 use dictionary_import::{import_dictionaries, import_dictionary};
 use epub_import::{epub_chapter, epub_cover, epub_drive_download, epub_drive_upload, epub_gallery, epub_open, epub_prune, epub_read_binary, epub_scan_folder, epub_search, epub_store, import_epub};
 use japanese_tokenizer::segment_text as segment_japanese_text;
@@ -3092,73 +3092,6 @@ fn prepare_lookup_agent_windows(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn lookup_shortcut_from_label(label: &str) -> Option<Shortcut> {
-    label.trim().parse::<Shortcut>().ok()
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn register_lookup_agent_shortcut(app: &AppHandle, label: &str) -> Result<(), String> {
-    let shortcut = lookup_shortcut_from_label(label)
-        .ok_or_else(|| format!("Unsupported lookup shortcut: {label}"))?;
-    let manager = app.global_shortcut();
-    manager
-        .unregister_all()
-        .map_err(|error| error.to_string())?;
-    manager
-        .on_shortcut(shortcut, |app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                #[cfg(target_os = "windows")]
-                unsafe {
-                    let foreground = GetForegroundWindow();
-                    let mut foreground_pid = 0_u32;
-                    if !foreground.is_null() {
-                        GetWindowThreadProcessId(foreground, &mut foreground_pid);
-                    }
-                    if foreground_pid == GetCurrentProcessId() {
-                        let lookup_hwnd = app
-                            .get_webview_window("lookup_external")
-                            .and_then(|w| w.hwnd().ok())
-                            .map(|h| h.0 as winapi::shared::windef::HWND)
-                            .unwrap_or(std::ptr::null_mut());
-                        // If the external lookup popup itself is focused:
-                        // - cursor inside popup => toggle hide cleanly
-                        // - cursor outside popup => re-capture new word under cursor!
-                        if !lookup_hwnd.is_null() && foreground == lookup_hwnd {
-                            if global_lookup::is_cursor_inside_hwnd(lookup_hwnd) {
-                                let _ = app.emit_to("lookup_external", "lookup_agent_toggle_hide", ());
-                                return;
-                            }
-                        } else {
-                            // Main Setsuna window is active; internal Shift lookup handles it.
-                            return;
-                        }
-                    }
-                }
-                let _ = app.emit_to("lookup_external", "lookup_agent_activate", ());
-            }
-        })
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-#[tauri::command]
-fn update_lookup_agent_shortcut(app: AppHandle, shortcut: String) -> Result<String, String> {
-    match register_lookup_agent_shortcut(&app, &shortcut) {
-        Ok(()) => Ok(shortcut),
-        Err(error) => {
-            let fallback = "Alt+Q";
-            let fallback_result = register_lookup_agent_shortcut(&app, fallback);
-            match fallback_result {
-                Ok(()) => Err(format!("{error}. Restored {fallback}.")),
-                Err(fallback_error) => Err(format!(
-                    "{error}. Could not restore {fallback}: {fallback_error}"
-                )),
-            }
-        }
-    }
-}
-
 #[tauri::command]
 fn update_global_live_scan_config(
     enabled: bool,
@@ -6085,9 +6018,6 @@ fn main() {
             .build(),
     );
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
-
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_http::init())
@@ -6152,6 +6082,17 @@ fn main() {
             epub_search,
             epub_chapter,
             epub_read_binary,
+            manga_import::manga_open,
+            manga_import::manga_cover,
+            manga_import::manga_page,
+            manga_import::manga_store,
+            manga_import::manga_attach_mokuro,
+            manga_import::manga_load_overrides,
+            manga_import::manga_save_override,
+            manga_import::manga_scan_folder,
+            manga_import::manga_extract_archive,
+            manga_import::manga_mokuro_status,
+            manga_import::manga_run_mokuro,
             get_diagnostics_log_path,
             log_frontend_diagnostics,
             dictionary_engine::lookup_word,
@@ -6199,6 +6140,7 @@ fn main() {
             player_library::player_allow_library_media,
             player_library::player_forget_library_folder,
             player_library::player_read_local_subtitle,
+            player_posters::player_search_posters,
             dictionary_engine::delete_dictionary,
             dictionary_engine::delete_dictionaries,
             dictionary_engine::clear_database,
@@ -6243,8 +6185,7 @@ fn main() {
             get_latest_live_lookup,
             begin_lookup_region_capture,
             cancel_lookup_region_capture,
-            finish_lookup_region_capture,
-            update_lookup_agent_shortcut
+            finish_lookup_region_capture
             ]);
             move |invoke: tauri::ipc::Invoke| {
                 // App commands do not require an ACL manifest by default in Tauri.
@@ -6270,18 +6211,6 @@ fn main() {
                 install_tray(app)?;
                 prepare_lookup_agent_windows(app.handle())?;
                 prepare_jl_windows(app.handle())?;
-                if let Err(error) = register_lookup_agent_shortcut(app.handle(), "Alt+Q") {
-                    append_diagnostics_line(
-                        app.handle(),
-                        serde_json::json!({
-                            "ts": unix_time_ms(),
-                            "kind": "lookup_agent",
-                            "event": "shortcut_register_failed",
-                            "shortcut": "Alt+Q",
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
             }
 
             #[cfg(target_os = "windows")]

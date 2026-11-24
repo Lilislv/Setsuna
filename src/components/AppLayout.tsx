@@ -356,6 +356,8 @@ export const MobileLayout = ({
     onRemoveEpubBooks,
     onPatchEpubBooks,
     onUpdateEpubMeta,
+    onUpdateMangaMeta,
+    onMangaScreenshot,
     onEpubProgress,
     onEpubOrientationChange,
     onEpubBookmarksChange,
@@ -1389,6 +1391,8 @@ export const MobileLayout = ({
                         onRemoveBooks={(tabIds) => onRemoveEpubBooks?.(tabIds)}
                         onPatchBooks={(tabIds, patch) => onPatchEpubBooks?.(tabIds, patch)}
                         onUpdateBookMeta={(tabId, meta) => onUpdateEpubMeta?.(tabId, meta)}
+                        onUpdateMangaMeta={(tabId, meta) => onUpdateMangaMeta?.(tabId, meta)}
+                        onMangaScreenshot={onMangaScreenshot}
                         onProgressChange={(tabId, chIdx, offset, prog) => onEpubProgress?.(tabId, chIdx, offset, prog)}
                         onChangeBookOrientation={(tabId, orient) => onEpubOrientationChange?.(tabId, orient)}
                         onChangeBookBookmarks={(tabId, bookmarks) => onEpubBookmarksChange?.(tabId, bookmarks)}

@@ -5,6 +5,40 @@
 
 ---
 
+## 2026-11-24 — Manga bubble overlay polish (local unpushed)
+
+- `mangaModel.ts`: new `computeFittedBubbleFontPx(block)` (unit-tested) — font fitted to OCR box + line count, so text never clips.
+- `MangaReader.tsx`: active bubble cleared on mouseleave / when the lookup popup closes / on stage click (overlay no longer sticks until page turn).
+- `manga.css`: removed `overflow: hidden` clipping, `text-orientation: mixed`, gothic JP font, ✎ button moved to bottom-left & smaller.
+
+## 2026-11-24 — Native Mokuro Manga Reader Inside Books Library (Desktop + Android, local unpushed)
+
+- **Rust manga backend (`src-tauri/src/manga_import.rs`, registered in both `main.rs` & `lib.rs`):**
+  - Supports image folders, `.cbz`/`.zip` archives, `.mokuro` / `.mokuro.gz` v0.2+ overlays (sibling, embedded inside `.cbz`, or attached sidecar under `app_data_dir/manga-mokuro/`), and legacy v0.1 `_ocr/*.json`.
+  - Commands: `manga_open`, `manga_cover`, `manga_page`, `manga_store`, `manga_attach_mokuro`, `manga_load_overrides`, `manga_save_override`, `manga_scan_folder`, `manga_mokuro_status`, `manga_run_mokuro`.
+  - Desktop `mokuro` CLI integration detects `mokuro` / `python -m mokuro`, runs OCR in background with `manga_mokuro_progress` events, and auto-reloads the generated `.mokuro` layer onto the open volume.
+- **Manga Reader UI (`src/features/manga/MangaReader.tsx`, `manga.css`, `mangaModel.ts`, `mangaApi.ts`):**
+  - Single page / 2-page RTL spread with cover offset (`C`) / vertical strip (`D`), fit-height/width/1:1, `Ctrl+Wheel` zoom, keyboard & touch swipe + Android hardware volume-key paging.
+  - Three OCR overlay modes (`O`): art-first `Hover` (invisible until hovered/tapped), `Outline`, and `Readable` text — rendered through Setsuna's `TokenizedLine` for native dictionary lookup (`Shift` hover on PC, tap on Android) plus inline OCR typo editor (`✎`) persisted per volume.
+  - Offscreen `<canvas>` Anki panel cropping (`bubble` smart panel crop vs `full` page) wired directly into `LookupSurface`'s `screenshotSource` for 1-click Anki picture cards.
+  - Monotonic high-water page tracking feeds `.mokuro` character counts into daily reading stats.
+- **Books library & Android integration (`EpubLibrary.tsx`, `EpubWorkspace.tsx`, `App.tsx`, `AppLayout.tsx`, `constants.ts`, `epubSyncModel.ts`, `useEpubSync.ts`, `MainActivity.kt`, `MobileFileBridge.kt`):**
+  - Added `Все / Книги / Манга` filter pill (shown when manga exists), `MOKURO` / `МАНГА` badges, `.cbz`/`.zip`/`.mokuro` picker + folder/drag-and-drop auto-detection, and Android picker MIME/extension support.
+- **Verification:** `npm run build`, `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (55/55 pass, including `tests/manga-model.test.mjs`), `cargo check --no-default-features`.
+
+---
+
+## 2026-11-24 — Switch Windows System-Wide Live Scan to `Shift+Z` & Remove Legacy `Alt+Q` Mode (local, unpushed)
+
+- **Unified live scan combo (`src-tauri/src/global_lookup.rs`):**
+  - Replaced single-modifier polling (`Shift`) with packed `AtomicU32` shortcut bitmask (`mods | (vk << 8)`), defaulting to **`Shift+Z`** (physical `VK_Z = 0x5A`, works identically across EN / RU / JP keyboard layouts) and supporting any modifier+key or `F1–F12` combination recorded via `ShortcutRecorder`.
+  - Excluded the active scan key from `is_any_other_typing_key_down` so holding `Shift+Z` never self-suppresses; automatically migrates legacy saved bare `"Shift"` / `"Alt"` settings to `Shift+KeyZ`.
+- **Removed legacy `Alt+Q` mode across all builds (`src-tauri/src/main.rs`, `src/components/Settings/SettingsLookup.tsx`, `src/lookup-window.tsx`, `src/utils/constants.ts`):**
+  - Removed `register_lookup_agent_shortcut`, `update_lookup_agent_shortcut`, `tauri_plugin_global_shortcut` plugin registration, and old `activateLookup`/`handleLiveHoverScan` handlers across all builds, leaving the unified **"Скан по всему Windows (удерживая)"** shortcut recorder defaulting to `Shift+Z`.
+- **Verification:** `cargo check --no-default-features`, `npm run build`, `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (47/47 pass).
+
+---
+
 ## 2026-11-24 — System-Wide Windows Lookup Upgrade (Selection + UIA + Yomitan Popup) & Mobile Drive/Vertical Reader Fixes
 
 - **System-wide Windows lookup engine (`src-tauri/src/global_lookup.rs`, `src-tauri/src/main.rs`, `src-tauri/Cargo.toml`):**

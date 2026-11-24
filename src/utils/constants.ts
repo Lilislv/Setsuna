@@ -54,7 +54,9 @@ export interface EpubBookData {
     notes?: EpubBookNote[];
     readingPoint?: EpubReadingPoint | null;
     driveFileId?: string;
-    fileExt?: BookFileExt;
+    format?: 'book' | 'manga';
+    fileExt?: BookFileExt | 'cbz' | 'zip' | 'mokuro' | 'manga-dir';
+    hasMokuro?: boolean;
     cloudOnly?: boolean;
     syncUpdatedAt?: number;
     lastOpenedAt?: number;
@@ -123,7 +125,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     globalLookupUseSelection: true,
     globalLookupAutoClose: true,
     globalLiveScanEnabled: true,
-    globalLiveScanModifier: 'Shift',
+    globalLiveScanModifier: 'Shift+KeyZ',
     globalLookupShortcut: 'Alt+Q',
     hookProcesses: [], 
     ankiDeck: '', ankiModel: '',

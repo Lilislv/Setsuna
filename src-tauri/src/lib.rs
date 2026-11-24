@@ -9,6 +9,7 @@ mod http_client;
 mod tab_lines;
 mod epub_audio;
 mod epub_import;
+mod manga_import;
 mod lookup_normalization;
 mod japanese_deinflector;
 mod local_audio;
@@ -1265,6 +1266,17 @@ pub fn run() {
             epub_import::epub_search,
             epub_import::epub_chapter,
             epub_import::epub_read_binary,
+            manga_import::manga_open,
+            manga_import::manga_cover,
+            manga_import::manga_page,
+            manga_import::manga_store,
+            manga_import::manga_attach_mokuro,
+            manga_import::manga_load_overrides,
+            manga_import::manga_save_override,
+            manga_import::manga_scan_folder,
+            manga_import::manga_extract_archive,
+            manga_import::manga_mokuro_status,
+            manga_import::manga_run_mokuro,
             save_workspace_state,
             load_workspace_state,
             stop_capture_agent_server,

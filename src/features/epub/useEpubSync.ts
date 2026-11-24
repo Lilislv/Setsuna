@@ -134,7 +134,15 @@ export function useEpubSync({
                 let uploadedCount = 0;
                 for (let i = 0; i < workingTabs.length && uploadedCount < 2; i++) {
                     const tab = workingTabs[i];
-                    if (tab.mode !== "epub" || tab.archived || !tab.epub?.path || tab.epub.cloudOnly || tab.epub.driveFileId) {
+                    if (
+                        tab.mode !== "epub"
+                        || tab.archived
+                        || !tab.epub?.path
+                        || tab.epub.cloudOnly
+                        || tab.epub.driveFileId
+                        || tab.epub.format === "manga"
+                        || tab.epub.fileExt === "manga-dir"
+                    ) {
                         continue;
                     }
                     const entry = tabToSyncEntry(tab);

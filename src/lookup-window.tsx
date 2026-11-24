@@ -9,7 +9,7 @@ import type { CaptureSourceBinding } from "./utils/constants";
 import { DEFAULT_SETTINGS, themes } from "./utils/constants";
 import { loadCustomFont } from "./utils/customFonts";
 import { getDecks } from "./utils/anki";
-import { getTranslator, translateBackendError, type AppLanguage } from "./utils/i18n";
+import { getTranslator, type AppLanguage } from "./utils/i18n";
 import "./styles/design.css";
 import { installAutoHideScrollbars } from "./utils/autoScrollbars";
 installAutoHideScrollbars();
@@ -20,18 +20,6 @@ import "./lookup-window.css";
 import { disableNativeContextMenu } from "./utils/nativeContextMenu";
 
 disableNativeContextMenu();
-
-type HoveredText = {
-  x: number;
-  y: number;
-  text?: string | null;
-  context?: string | null;
-  cursor?: number | null;
-  source?: string | null;
-  foreground_pid?: number | null;
-  foreground_title?: string | null;
-  foreground_process?: string | null;
-};
 
 type CursorLookup = {
   entries: DictEntry[];
@@ -118,7 +106,6 @@ const makeLookupData = (
 });
 
 const isEnglishToken = (value: string) => /^[A-Za-z]+(?:['’-][A-Za-z]+)*$/.test(value);
-const HAS_LOOKUPABLE_CHARS_RE = /[\u3040-\u30ff\u3400-\u9fffA-Za-z]/;
 const HAS_JAPANESE_RE = /[\u3040-\u30ff\u3400-\u9fff]/;
 
 const currentTranslator = () => getTranslator(readSettings().appLanguage as AppLanguage);
@@ -142,15 +129,12 @@ function ExternalLookupAgent() {
   const [ankiDecks, setAnkiDecks] = useState<string[]>([]);
   const [selectedDeck, setSelectedDeck] = useState("");
 
-  const busyRef = useRef(false);
   const pinnedRef = useRef(false);
   pinnedRef.current = pinned;
   const capturingRegionRef = useRef(false);
   const lastShownAtRef = useRef(0);
   const popupVisibleRef = useRef(false);
-  const lastAnchorRef = useRef<{ x: number; y: number } | null>(null);
   const lastLiveKeyRef = useRef<string>("");
-  const liveScanSeqRef = useRef(0);
   const lastPointRef = useRef<{ x: number; y: number }>({ x: 120, y: 120 });
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -171,7 +155,6 @@ function ExternalLookupAgent() {
 
   const hidePopup = useCallback((restoreFocus = false) => {
     popupVisibleRef.current = false;
-    lastAnchorRef.current = null;
     lastLiveKeyRef.current = "";
     void invoke("hide_external_lookup_window", { restoreFocus }).catch(() => {});
   }, []);
@@ -186,35 +169,6 @@ function ExternalLookupAgent() {
     } finally {
       setLoadingSources(false);
     }
-  }, []);
-
-  const showAt = useCallback(async (
-    point: { x: number; y: number },
-    nextSettings?: ReturnType<typeof readSettings>,
-    opts?: { focus?: boolean; smoothAnchor?: boolean },
-  ) => {
-    const cfg = nextSettings || readSettings();
-    const width = Math.max(380, Math.min(720, Math.round((cfg.lookupWidth || 400) + 40)));
-    const focus = opts?.focus ?? true;
-    let targetPoint = point;
-    // During continuous live hover-scan, avoid jittering the window position for small moves on the same line
-    if (opts?.smoothAnchor && popupVisibleRef.current && lastAnchorRef.current) {
-      const dx = Math.abs(point.x - lastAnchorRef.current.x);
-      const dy = Math.abs(point.y - lastAnchorRef.current.y);
-      if (dx < 110 && dy < 34) {
-        targetPoint = lastAnchorRef.current;
-      }
-    }
-    lastAnchorRef.current = targetPoint;
-    popupVisibleRef.current = true;
-    lastShownAtRef.current = Date.now();
-    await invoke("show_lookup_agent_window", {
-      x: targetPoint.x,
-      y: targetPoint.y,
-      width,
-      height: 520,
-      focus,
-    }).catch(() => {});
   }, []);
 
   const runDirectQuery = useCallback(async (
@@ -308,246 +262,6 @@ function ExternalLookupAgent() {
     await runDirectQuery(clipped, { sentence: clipped, cursor: 0, sourceKind: "clipboard" });
   }, [isEn, runDirectQuery]);
 
-  const activateLookup = useCallback(async () => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    const nextSettings = readSettings();
-    applyTheme(nextSettings);
-    setSettings(nextSettings);
-    let point = lastPointRef.current;
-
-    try {
-      const hovered = await invoke<HoveredText>("copy_hovered_text_to_clipboard", {
-        allowSelection: nextSettings.globalLookupUseSelection !== false,
-        restoreClipboard: nextSettings.globalLookupRestoreClipboard !== false,
-      });
-      point = { x: hovered.x, y: hovered.y };
-      lastPointRef.current = point;
-
-      // Auto-bind foreground process for seamless Anki screenshots
-      if (hovered.foreground_pid && (hovered.foreground_process || hovered.foreground_title)) {
-        setAutoCaptureSource({
-          name: hovered.foreground_process || hovered.foreground_title || "Window",
-          active: true,
-          pid: hovered.foreground_pid,
-          sourceType: "local",
-        });
-      }
-
-      const source = hovered.source || "none";
-      const context = (hovered.context || "").trim();
-      const hoveredText = (hovered.text || "").trim();
-      const cursor = typeof hovered.cursor === "number" ? hovered.cursor : 0;
-
-      // If nothing found under cursor or selected, check clipboard as a smart fallback
-      if (!context && !hoveredText) {
-        const clipRaw = await invoke<string | null>("read_system_clipboard_text").catch(() => null);
-        const clip = (clipRaw || "").replace(/\s+/g, " ").trim();
-        if (clip && clip.length <= 200 && HAS_LOOKUPABLE_CHARS_RE.test(clip)) {
-          setContextSentence(clip);
-          setCaptureSourceKind("clipboard");
-          await runDirectQuery(clip, { sentence: clip, cursor: 0, sourceKind: "clipboard" });
-          await showAt(point, nextSettings);
-          return;
-        }
-        setStack([]);
-        setContextSentence("");
-        setActiveMatch(null);
-        setQueryInput("");
-        setCaptureSourceKind("");
-        setStatus(
-          (nextSettings.appLanguage || "ru") === "en"
-            ? "No text under cursor — select text or type a word above."
-            : "Текст под курсором не найден — выдели слово или введи в поиск сверху.",
-        );
-        await showAt(point, nextSettings);
-        window.setTimeout(() => searchInputRef.current?.focus(), 40);
-        return;
-      }
-
-      setCaptureSourceKind(source);
-      setContextSentence(context || hoveredText);
-
-      let result: CursorLookup | null = null;
-      let resultCameFromContext = false;
-
-      // 1. For selection: scan the selected text first (supports inflected Japanese & exact phrases)
-      if (source === "selection" && hoveredText) {
-        result = await invoke<CursorLookup>("scan_cursor", {
-          sentence: hoveredText,
-          cursor: 0,
-        }).catch(() => null);
-        if (!result?.entries?.length) {
-          const query = isEnglishToken(hoveredText) ? hoveredText.toLowerCase() : hoveredText;
-          const entries = await invoke<DictEntry[]>("lookup_word", { word: query }).catch(() => []);
-          if (entries.length > 0) {
-            result = {
-              entries,
-              match_start: 0,
-              match_len: Array.from(hoveredText).length,
-              word: query,
-            };
-          }
-        }
-      }
-
-      // 2. For UIA / hover context: scan directly at exact cursor offset FIRST
-      if (!result?.entries?.length && context) {
-        result = await invoke<CursorLookup>("scan_cursor", {
-          sentence: context,
-          cursor,
-        }).catch(() => null);
-        if (result?.entries?.length) {
-          resultCameFromContext = source === "uia";
-        }
-      }
-
-      // 3. Fallback: try direct hoveredText token lookup
-      if (!result?.entries?.length && hoveredText) {
-        const query = isEnglishToken(hoveredText) ? hoveredText.toLowerCase() : hoveredText;
-        const entries = await invoke<DictEntry[]>("lookup_word", { word: query }).catch(() => []);
-        if (entries.length > 0) {
-          result = {
-            entries,
-            match_start: 0,
-            match_len: Array.from(hoveredText).length,
-            word: query,
-          };
-        }
-      }
-
-      // 4. Last fallback for bounding-box estimates (Discord/Telegram): scan from start of captured phrase
-      if (!result?.entries?.length && context && cursor > 0) {
-        result = await invoke<CursorLookup>("scan_cursor", {
-          sentence: context,
-          cursor: 0,
-        }).catch(() => null);
-      }
-
-      if (!result?.entries?.length) {
-        setStack([]);
-        setActiveMatch(null);
-        setQueryInput(hoveredText || "");
-        setStatus(currentTranslator()("lookup.error.noWord"));
-        await showAt(point, nextSettings);
-        window.setTimeout(() => searchInputRef.current?.focus(), 40);
-        return;
-      }
-
-      if (resultCameFromContext) {
-        await invoke("select_hovered_lookup_range", {
-          x: point.x,
-          y: point.y,
-          matchStart: result.match_start,
-          matchLen: result.match_len,
-        }).catch(() => {});
-      }
-
-      const match = { start: result.match_start, length: Math.max(1, result.match_len) };
-      setQueryInput(result.word);
-      setActiveMatch(match);
-      setStatus("");
-      setStack([makeLookupData(result.entries, result.word, context || hoveredText || result.word, point, match)]);
-      await showAt(point, nextSettings);
-    } catch (error) {
-      const translate = currentTranslator();
-      setStack([]);
-      setActiveMatch(null);
-      setStatus(translate("lookup.error.failed", {
-        error: translateBackendError(error, translate),
-      }));
-      await showAt(point, nextSettings);
-    } finally {
-      window.setTimeout(() => {
-        busyRef.current = false;
-      }, 140);
-    }
-  }, [runDirectQuery, showAt]);
-
-  const handleLiveHoverScan = useCallback(async (hovered: HoveredText) => {
-    const context = (hovered.context || "").trim();
-    const hoveredText = (hovered.text || "").trim();
-    const source = hovered.source || "uia";
-    let cursor = typeof hovered.cursor === "number" ? hovered.cursor : 0;
-    if (!context && !hoveredText) return;
-
-    const liveKey = `${context}|${cursor}|${hoveredText}`;
-    if (popupVisibleRef.current && lastLiveKeyRef.current === liveKey) {
-      return;
-    }
-
-    const seq = ++liveScanSeqRef.current;
-    const point = { x: hovered.x, y: hovered.y };
-    lastPointRef.current = point;
-
-    if (hovered.foreground_pid && (hovered.foreground_process || hovered.foreground_title)) {
-      setAutoCaptureSource({
-        name: hovered.foreground_process || hovered.foreground_title || "Window",
-        active: true,
-        pid: hovered.foreground_pid,
-        sourceType: "local",
-      });
-    }
-
-    // For bounding-box estimated cursors (Discord/Telegram), snap cursor to the start of the enclosing Japanese token
-    if (source === "uia_name" && context && HAS_JAPANESE_RE.test(context)) {
-      try {
-        const tokens = await invoke<Array<{ start?: number; end?: number }>>("get_furigana", {
-          text: context,
-          contextBefore: "",
-          contextAfter: "",
-        });
-        if (seq !== liveScanSeqRef.current) return;
-        if (Array.isArray(tokens)) {
-          const hit = tokens.find(
-            (tk) => typeof tk.start === "number" && typeof tk.end === "number" && cursor >= tk.start && cursor < tk.end,
-          );
-          if (hit && typeof hit.start === "number") {
-            cursor = hit.start;
-          }
-        }
-      } catch {}
-    }
-
-    let result: CursorLookup | null = null;
-    if (context) {
-      result = await invoke<CursorLookup>("scan_cursor", {
-        sentence: context,
-        cursor,
-      }).catch(() => null);
-      if (seq !== liveScanSeqRef.current) return;
-    }
-    if (!result?.entries?.length && hoveredText) {
-      const query = isEnglishToken(hoveredText) ? hoveredText.toLowerCase() : hoveredText;
-      const entries = await invoke<DictEntry[]>("lookup_word", { word: query }).catch(() => []);
-      if (seq !== liveScanSeqRef.current) return;
-      if (entries.length > 0) {
-        result = {
-          entries,
-          match_start: 0,
-          match_len: Array.from(hoveredText).length,
-          word: query,
-        };
-      }
-    }
-
-    if (!result?.entries?.length) return;
-
-    const nextSettings = readSettings();
-    applyTheme(nextSettings);
-    setSettings(nextSettings);
-
-    lastLiveKeyRef.current = liveKey;
-    const match = { start: result.match_start, length: Math.max(1, result.match_len) };
-    setCaptureSourceKind(source);
-    setContextSentence(context || hoveredText);
-    setQueryInput(result.word);
-    setActiveMatch(match);
-    setStatus("");
-    setStack([makeLookupData(result.entries, result.word, context || hoveredText || result.word, point, match)]);
-    await showAt(point, nextSettings, { focus: false, smoothAnchor: true });
-  }, [showAt]);
-
   const applyReadyPayload = useCallback((ready: LiveLookupReady) => {
     const readyKey = `${ready.sentence}|${ready.match_start}|${ready.match_len}|${ready.word}`;
     if (popupVisibleRef.current && lastLiveKeyRef.current === readyKey) {
@@ -584,12 +298,11 @@ function ExternalLookupAgent() {
 
   useEffect(() => {
     applyTheme(settings);
-    invoke("update_lookup_agent_shortcut", {
-      shortcut: settings.globalLookupShortcut || "Alt+Q",
-    }).catch(() => {});
+    const rawCombo = settings.globalLiveScanModifier || "Shift+KeyZ";
+    const normalizedCombo = (rawCombo === "Shift" || rawCombo === "Alt") ? "Shift+KeyZ" : rawCombo;
     invoke("update_global_live_scan_config", {
       enabled: settings.globalLiveScanEnabled !== false,
-      modifier: settings.globalLiveScanModifier || "Shift",
+      modifier: normalizedCombo,
       lookupWidth: settings.lookupWidth || 400,
     }).catch(() => {});
     void refreshCaptureWindows();
@@ -628,17 +341,10 @@ function ExternalLookupAgent() {
     let disposed = false;
     const unlisteners: UnlistenFn[] = [];
     const register = async () => {
-      unlisteners.push(await listen("lookup_agent_activate", () => void activateLookup()));
       unlisteners.push(await listen<LiveLookupReady>("lookup_agent_ready", (event) => {
         if (event.payload?.entries?.length) {
           applyReadyPayload(event.payload);
         }
-      }));
-      unlisteners.push(await listen<HoveredText>("lookup_agent_live_scan", (event) => {
-        void handleLiveHoverScan(event.payload);
-      }));
-      unlisteners.push(await listen("lookup_agent_toggle_hide", () => {
-        hidePopup(true);
       }));
       unlisteners.push(await listen("lookup_agent_outside_click", () => {
         const cfg = readSettings();
@@ -680,7 +386,7 @@ function ExternalLookupAgent() {
       disposed = true;
       unlisteners.splice(0).forEach((unlisten) => unlisten());
     };
-  }, [activateLookup, handleLiveHoverScan, hidePopup]);
+  }, [applyReadyPayload, hidePopup]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -896,7 +602,7 @@ function ExternalLookupAgent() {
           />
         ) : (
           <div className="lookup-agent-empty">
-            <p>{status || (isEn ? "Select text or hover over a word and press your hotkey." : "Выдели текст или наведи курсор на слово и нажми горячую клавишу.")}</p>
+            <p>{status || (isEn ? "Hold Shift+Z and hover over any word on screen." : "Зажми Shift+Z и наведи курсор на любое слово на экране.")}</p>
             <div className="lookup-agent-empty-actions">
               <button type="button" className="lookup-agent-pill-btn" onClick={() => void lookupFromClipboard()}>
                 📋 {isEn ? "Look up clipboard" : "Из буфера обмена"}

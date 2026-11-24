@@ -47,11 +47,11 @@ export function usePlayerLibrary() {
         };
     }, [roots, revision]);
 
-    const changeRoots = async (action: () => Promise<void>) => {
+    const changeRoots = async <T>(action: () => Promise<T>) => {
         setPending(true);
         setError("");
         try {
-            await action();
+            return await action();
         } catch (failure) {
             setError(String(failure));
         } finally {
@@ -71,6 +71,7 @@ export function usePlayerLibrary() {
                 if (typeof path !== "string") return;
                 setRoots((roots) => (roots.includes(path) ? roots : [...roots, path]));
                 setRevision((value) => value + 1);
+                return path;
             }),
         removeFolder: (path: string) =>
             changeRoots(async () => {

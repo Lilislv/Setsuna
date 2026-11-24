@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getMobileFlowTimer } from './utils/mobileOverlay';
 import { cleanupMobileDictionaries, cleanupMobileEpub, openMobileEpubPicker } from './utils/mobileFiles';
 import { emit, emitTo, listen, UnlistenFn } from '@tauri-apps/api/event';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import TextContainer from "./components/TextContainer";
@@ -25,6 +26,8 @@ import { mergePortableEpubBackup, type EpubPortableBackup } from "./features/epu
 import { saveEpubGoals } from "./features/epub/epubTracker";
 import { useEpubSync } from "./features/epub/useEpubSync";
 import { openEpubBook, pruneEpubFiles, scanEpubFolder, storeEpubFile } from "./features/epub/epubApi";
+import { extractMangaArchive, openMangaVolume, scanMangaFolder, storeMangaVolume } from "./features/manga/mangaApi";
+import { isMangaFileExtension, type MangaMeta } from "./features/manga/mangaModel";
 import {
     isSupportedBookPath,
     resolveEpubOrientation,
@@ -725,6 +728,7 @@ export default function App() {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
     const [lookupStack, setLookupStack] = useState<LookupData[]>([]);
+    const [mangaAnkiScreenshot, setMangaAnkiScreenshot] = useState<string | null>(null);
     const closeLookupStack = useCallback(() => setLookupStack([]), []);
     const sentenceLookupRequestRef = useRef(0);
     const [mobileLookupNotice, setMobileLookupNotice] = useState('');
@@ -1709,6 +1713,93 @@ export default function App() {
         }
     }, [switchTab, t]);
 
+    const importMangaPath = useCallback(async (
+        filePath: string,
+        targetTabId?: number,
+        options?: { activate?: boolean; defaultSeries?: string; skipIfTitleExists?: boolean },
+    ): Promise<boolean> => {
+        try {
+            const meta = await openMangaVolume(filePath);
+            if (options?.skipIfTitleExists && !targetTabId) {
+                const normNew = (meta.title || "").normalize("NFKC").trim().toLowerCase();
+                const alreadyExists = normNew.length > 0 && tabsRef.current.some((tab) =>
+                    tab.mode === "epub"
+                    && !tab.archived
+                    && (tab.epub?.title || tab.name || "").normalize("NFKC").trim().toLowerCase() === normNew,
+                );
+                if (alreadyExists) return false;
+            }
+            const tabId = targetTabId ?? nextTabId.current++;
+            const storedPath = await storeMangaVolume(filePath, tabId);
+            if (meta.cover) {
+                setMemoryCover(storedPath, meta.cover);
+            }
+            const retained = restoreRetainedBookData(meta.title);
+            const fileExt: "cbz" | "manga-dir" = meta.sourceKind === "folder" ? "manga-dir" : "cbz";
+
+            setTabs((prev) => {
+                const exists = prev.some((tab) => tab.id === tabId);
+                const nextEpub = {
+                    title: meta.title,
+                    format: "manga" as const,
+                    fileExt,
+                    hasMokuro: meta.hasMokuro,
+                    series: retained?.epub?.series || meta.series || options?.defaultSeries || undefined,
+                    seriesPosition: retained?.epub?.seriesPosition ?? meta.seriesPosition ?? null,
+                    tags: retained?.epub?.tags,
+                    shelves: retained?.epub?.shelves,
+                    manualStatus: retained?.epub?.manualStatus,
+                    coverBlurred: retained?.epub?.coverBlurred,
+                    totalChars: meta.totalChars,
+                    addedAt: Date.now(),
+                    path: storedPath,
+                    language: "ja" as const,
+                    defaultVertical: true,
+                    chapterIndex: retained?.epub?.chapterIndex ?? 0,
+                    chapterOffset: 0,
+                    chapterCount: meta.pageCount,
+                    lastOpenedAt: options?.activate ? Date.now() : 0,
+                    lines: [],
+                    progress: retained?.epub?.progress ?? 0,
+                };
+                if (exists) {
+                    return prev.map((tab) => (
+                        tab.id === tabId
+                            ? { ...tab, name: meta.title || tab.name, mode: "epub", archived: false, epub: { ...tab.epub, ...nextEpub } }
+                            : tab
+                    ));
+                }
+                return [
+                    ...prev,
+                    {
+                        id: tabId,
+                        name: meta.title,
+                        lines: [],
+                        stats: retained?.stats ? { ...defaultStats, ...retained.stats } : { ...defaultStats },
+                        status: "reading",
+                        speedSamples: [],
+                        mode: "epub",
+                        readerProgress: 0,
+                        epub: nextEpub,
+                    },
+                ];
+            });
+
+            if (options?.activate) {
+                switchTab(tabId);
+            }
+            setLookupStack([]);
+            setActiveWorkspace("epub");
+            return true;
+        } catch (error) {
+            setNotice({
+                title: t("epub.title"),
+                message: t("epub.loadError", { error: String(error) }),
+            });
+            return false;
+        }
+    }, [switchTab, t]);
+
     const openEpubFolderPicker = useCallback(async () => {
         try {
             const selected = await open({
@@ -1717,8 +1808,12 @@ export default function App() {
             });
             const dirPath = typeof selected === "string" ? selected.trim() : "";
             if (!dirPath) return;
-            const entries = await scanEpubFolder(dirPath);
-            if (entries.length === 0) {
+            const [epubEntries, mangaEntries] = await Promise.all([
+                scanEpubFolder(dirPath).catch(() => []),
+                scanMangaFolder(dirPath).catch(() => []),
+            ]);
+            const totalFound = epubEntries.length + mangaEntries.length;
+            if (totalFound === 0) {
                 setNotice({
                     title: t("epub.title"),
                     message: t("epub.folderNoBooks"),
@@ -1726,16 +1821,24 @@ export default function App() {
                 return;
             }
             let importedCount = 0;
-            for (const entry of entries) {
+            for (const entry of epubEntries) {
                 const ok = await importEpubPath(entry.path, undefined, {
                     defaultSeries: entry.subfolderSeries || undefined,
                     skipIfTitleExists: true,
                 });
                 if (ok) importedCount += 1;
             }
+            for (const entry of mangaEntries) {
+                const ok = await importMangaPath(entry.path, undefined, {
+                    defaultSeries: entry.subfolderSeries || undefined,
+                    skipIfTitleExists: true,
+                    activate: totalFound === 1,
+                });
+                if (ok) importedCount += 1;
+            }
             setNotice({
                 title: t("epub.title"),
-                message: t("epub.folderImported", { imported: importedCount, total: entries.length }),
+                message: t("epub.folderImported", { imported: importedCount, total: totalFound }),
             });
         } catch (error) {
             setNotice({
@@ -1743,7 +1846,43 @@ export default function App() {
                 message: t("epub.loadError", { error: String(error) }),
             });
         }
-    }, [importEpubPath, t]);
+    }, [importEpubPath, importMangaPath, t]);
+
+    const importMangaArchivePack = useCallback(async (archivePath: string): Promise<number> => {
+        try {
+            const fname = archivePath.split(/[/\\]/).pop() || archivePath;
+            setNotice({
+                title: t("epub.title"),
+                message: settings.appLanguage === "en"
+                    ? `Extracting archive "${fname}"…`
+                    : `Распаковка архива «${fname}»…`,
+            });
+            const entries = await extractMangaArchive(archivePath);
+            let importedCount = 0;
+            for (const entry of entries) {
+                const ok = await importMangaPath(entry.path, undefined, {
+                    defaultSeries: entry.subfolderSeries || undefined,
+                    skipIfTitleExists: true,
+                    activate: entries.length === 1,
+                });
+                if (ok) importedCount += 1;
+            }
+            if (importedCount > 0) {
+                setActiveWorkspace("epub");
+            }
+            setNotice({
+                title: t("epub.title"),
+                message: t("epub.folderImported", { imported: importedCount, total: entries.length }),
+            });
+            return importedCount;
+        } catch (error) {
+            setNotice({
+                title: t("epub.title"),
+                message: t("epub.loadError", { error: String(error) }),
+            });
+            return 0;
+        }
+    }, [importMangaPath, settings.appLanguage, t]);
 
     const openEpubFilePicker = useCallback(async () => {
         try {
@@ -1754,15 +1893,23 @@ export default function App() {
                 multiple: true,
                 directory: false,
                 filters: [{
-                    name: "Books (EPUB, FB2, PDF, DOCX, MOBI, AZW3, TXT, MD, HTML, HTMLZ)",
-                    extensions: ["epub", "fb2", "zip", "pdf", "docx", "mobi", "azw3", "prc", "txt", "md", "markdown", "html", "htm", "xhtml", "htmlz"],
+                    name: "Books & Manga (EPUB, FB2, PDF, DOCX, MOBI, AZW3, TXT, MD, HTML, CBZ, ZIP, RAR, 7Z, Mokuro)",
+                    extensions: ["epub", "fb2", "zip", "pdf", "docx", "mobi", "azw3", "prc", "txt", "md", "markdown", "html", "htm", "xhtml", "htmlz", "cbz", "rar", "cbr", "7z", "cb7", "mokuro"],
                 }],
             });
             const selectedPaths = Array.isArray(selected)
                 ? selected.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
                 : [];
             for (const bookPath of selectedPaths) {
-                await importEpubPath(bookPath);
+                const lower = bookPath.toLowerCase();
+                const ext = lower.endsWith(".mokuro.gz") ? "mokuro" : lower.split(".").pop() || "";
+                if (ext === "rar" || ext === "cbr" || ext === "7z" || ext === "cb7") {
+                    await importMangaArchivePack(bookPath);
+                } else if (isMangaFileExtension(ext) && !isSupportedBookPath(bookPath)) {
+                    await importMangaPath(bookPath, undefined, { activate: selectedPaths.length === 1 });
+                } else {
+                    await importEpubPath(bookPath);
+                }
             }
         } catch (error) {
             setNotice({
@@ -1770,14 +1917,19 @@ export default function App() {
                 message: t("epub.loadError", { error: String(error) }),
             });
         }
-    }, [importEpubPath, t]);
+    }, [importEpubPath, importMangaArchivePack, importMangaPath, t]);
 
     useEffect(() => {
         if (!isMobilePlatform()) return;
         const onMobileEpubSelected = (event: Event) => {
             const path = String((event as CustomEvent<string>).detail || "").trim();
             if (!path) return;
-            void importEpubPath(path).finally(() => {
+            const lower = path.toLowerCase();
+            const ext = lower.endsWith(".mokuro.gz") ? "mokuro" : lower.split(".").pop() || "";
+            const loader = isMangaFileExtension(ext) && !isSupportedBookPath(path)
+                ? importMangaPath(path, undefined, { activate: true })
+                : importEpubPath(path);
+            void loader.finally(() => {
                 cleanupMobileEpub(path);
             });
         };
@@ -1794,7 +1946,28 @@ export default function App() {
             window.removeEventListener("setsuna-mobile-epub", onMobileEpubSelected);
             window.removeEventListener("setsuna-mobile-epub-failed", onMobileEpubFailed);
         };
-    }, [importEpubPath, t]);
+    }, [importEpubPath, importMangaPath, t]);
+
+    const handleMangaUpdateMeta = useCallback((tabId: number, meta: MangaMeta) => {
+        setTabs((prev) => prev.map((tab) => {
+            if (tab.id !== tabId || tab.mode !== "epub" || !tab.epub) return tab;
+            return {
+                ...tab,
+                name: meta.title || tab.name,
+                epub: {
+                    ...tab.epub,
+                    format: "manga",
+                    title: meta.title,
+                    hasMokuro: meta.hasMokuro,
+                    series: tab.epub.series || meta.series || undefined,
+                    seriesPosition: tab.epub.seriesPosition ?? meta.seriesPosition ?? null,
+                    totalChars: meta.totalChars,
+                    chapterCount: meta.pageCount,
+                    lines: [],
+                },
+            };
+        }));
+    }, []);
 
     const handleEpubUpdateMeta = useCallback((tabId: number, meta: EpubBookMeta) => {
         setTabs((prev) => prev.map((tab) => {
@@ -2237,8 +2410,9 @@ export default function App() {
             else unlistenProgress = f;
         });
 
-        listen('tauri://drag-drop', async (event: any) => {
-            const paths = event.payload?.paths as string[];
+        getCurrentWebview().onDragDropEvent(async (event) => {
+            if (event.payload.type !== "drop") return;
+            const paths = event.payload.paths;
             if (!paths || paths.length === 0) return;
 
             const textPaths = paths.filter((path) => path.toLowerCase().endsWith('.txt'));
@@ -2253,14 +2427,49 @@ export default function App() {
                 return;
             }
 
-            const dictionaryPaths = paths.filter((path) => {
-                if (isSupportedBookPath(path)) return false;
+            const mangaFilePaths: string[] = [];
+            const mangaPackPaths: string[] = [];
+            const dictionaryPaths: string[] = [];
+            for (const path of paths) {
+                // Books (incl. .fb2.zip) go to the book importer below, never to dictionaries/manga.
+                if (isSupportedBookPath(path)) continue;
                 const lower = path.toLowerCase();
-                return lower.endsWith('.zip') || lower.endsWith('.jsonl') || lower.endsWith('.jsonl.gz') || lower.endsWith('.tar.xz') || lower.endsWith('.txz') || lower.endsWith('.ifo') || lower.endsWith('.idx') || lower.endsWith('.idx.gz') || lower.endsWith('.dict') || lower.endsWith('.dict.dz') || lower.endsWith('.csv') || lower.endsWith('.tsv') || lower.endsWith('.dsl');
-            });
+                if (lower.endsWith(".rar") || lower.endsWith(".cbr") || lower.endsWith(".7z") || lower.endsWith(".cb7")) {
+                    mangaPackPaths.push(path);
+                } else if (lower.endsWith(".cbz") || lower.endsWith(".mokuro") || lower.endsWith(".mokuro.gz")) {
+                    mangaFilePaths.push(path);
+                } else if (lower.endsWith(".zip")) {
+                    // Distinguish manga .zip archives (contain >= 2 page images) from Yomitan dictionary .zip archives
+                    const probe = await openMangaVolume(path).catch(() => null);
+                    if (probe && probe.pageCount >= 2) {
+                        mangaFilePaths.push(path);
+                    } else {
+                        dictionaryPaths.push(path);
+                    }
+                } else if (
+                    lower.endsWith('.jsonl') || lower.endsWith('.jsonl.gz') || lower.endsWith('.tar.xz') || lower.endsWith('.txz')
+                    || lower.endsWith('.ifo') || lower.endsWith('.idx') || lower.endsWith('.idx.gz')
+                    || lower.endsWith('.dict') || lower.endsWith('.dict.dz')
+                    || lower.endsWith('.csv') || lower.endsWith('.tsv') || lower.endsWith('.dsl')
+                ) {
+                    dictionaryPaths.push(path);
+                }
+            }
             if (dictionaryPaths.length > 0) {
                 await runDictImport(dictionaryPaths);
-                return;
+                if (mangaFilePaths.length === 0 && mangaPackPaths.length === 0) return;
+            }
+            if (mangaPackPaths.length > 0) {
+                for (const pack of mangaPackPaths) {
+                    await importMangaArchivePack(pack);
+                }
+                if (mangaFilePaths.length === 0) return;
+            }
+            if (mangaFilePaths.length > 0) {
+                for (const mp of mangaFilePaths) {
+                    await importMangaPath(mp, undefined, { activate: mangaFilePaths.length === 1 });
+                }
+                if (!paths.some((path) => isSupportedBookPath(path))) return;
             }
 
             const bookPaths = paths.filter((path) => isSupportedBookPath(path));
@@ -2271,17 +2480,30 @@ export default function App() {
                 return;
             }
 
-            // Check if any dropped paths are folders containing EPUB/TXT/HTMLZ books
+            // Check if any dropped paths are folders containing EPUB/TXT/HTMLZ books or Manga volumes
             let importedFromFolders = 0;
             let scannedAnyFolder = false;
             for (const candidate of paths) {
                 try {
-                    const entries = await scanEpubFolder(candidate);
-                    scannedAnyFolder = true;
-                    for (const entry of entries) {
+                    const [epubEntries, mangaEntries] = await Promise.all([
+                        scanEpubFolder(candidate).catch(() => null),
+                        scanMangaFolder(candidate).catch(() => null),
+                    ]);
+                    if (epubEntries !== null || mangaEntries !== null) {
+                        scannedAnyFolder = true;
+                    }
+                    for (const entry of epubEntries || []) {
                         const ok = await importEpubPath(entry.path, undefined, {
                             defaultSeries: entry.subfolderSeries || undefined,
                             skipIfTitleExists: true,
+                        });
+                        if (ok) importedFromFolders += 1;
+                    }
+                    for (const entry of mangaEntries || []) {
+                        const ok = await importMangaPath(entry.path, undefined, {
+                            defaultSeries: entry.subfolderSeries || undefined,
+                            skipIfTitleExists: true,
+                            activate: (mangaEntries?.length || 0) === 1 && (epubEntries?.length || 0) === 0,
                         });
                         if (ok) importedFromFolders += 1;
                     }
@@ -2387,7 +2609,7 @@ export default function App() {
             if (unlistenProgress) unlistenProgress();
             if (unlistenDrag) unlistenDrag();
         };
-    }, [runDictImport, importDroppedTextFiles, importEpubPath, switchTab, setTabs, settings.appLanguage]);
+    }, [runDictImport, importDroppedTextFiles, importEpubPath, importMangaPath, importMangaArchivePack, switchTab, setTabs, settings.appLanguage]);
 
     useEffect(() => {
         const loadCloudSync = async () => {
@@ -4312,6 +4534,8 @@ export default function App() {
                         onRemoveBooks={handleRemoveEpubBooks}
                         onPatchBooks={handleEpubPatchBooks}
                         onUpdateBookMeta={handleEpubUpdateMeta}
+                        onUpdateMangaMeta={handleMangaUpdateMeta}
+                        onMangaScreenshot={setMangaAnkiScreenshot}
                         onProgressChange={handleEpubProgress}
                         onChangeBookOrientation={handleEpubOrientationChange}
                         onChangeBookBookmarks={handleEpubBookmarksChange}
@@ -4390,6 +4614,8 @@ export default function App() {
                         onRemoveEpubBooks={handleRemoveEpubBooks}
                         onPatchEpubBooks={handleEpubPatchBooks}
                         onUpdateEpubMeta={handleEpubUpdateMeta}
+                        onUpdateMangaMeta={handleMangaUpdateMeta}
+                        onMangaScreenshot={setMangaAnkiScreenshot}
                         onEpubProgress={handleEpubProgress}
                         onEpubOrientationChange={handleEpubOrientationChange}
                         onEpubBookmarksChange={handleEpubBookmarksChange}
@@ -4550,6 +4776,7 @@ export default function App() {
                         onSlice={sliceLookupStack}
                         settings={settings}
                         captureSource={resolvedWorkspace === "texthooker" ? (activeTab?.captureSource || null) : null}
+                        screenshotSource={resolvedWorkspace === "epub" && mangaAnkiScreenshot ? { kind: "region", dataUrl: mangaAnkiScreenshot } : undefined}
                         ankiDeck={resolvedWorkspace === "player" ? (settings.playerAnkiDeck || settings.ankiDeck)
                             : (resolvedWorkspace === "texthooker" || resolvedWorkspace === "epub") ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
                         onClose={() => setLookupStack([])}

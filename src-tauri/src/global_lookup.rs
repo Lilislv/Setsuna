@@ -14,7 +14,7 @@
 
 use std::collections::HashSet;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -59,10 +59,16 @@ use windows::Win32::UI::Accessibility::{
 
 use crate::dictionary_engine::{lookup_word_in_db, scan_cursor_in_db, DictEntry};
 
+const MOD_SHIFT: u32 = 1 << 0;
+const MOD_CTRL: u32 = 1 << 1;
+const MOD_ALT: u32 = 1 << 2;
+/// Default system-wide live scan shortcut: `Shift+Z` (physical VK_Z = 0x5A, layout-independent).
+const DEFAULT_LIVE_SCAN_COMBO: u32 = MOD_SHIFT | ((b'Z' as u32) << 8);
+
 static LAST_EXTERNAL_HWND: AtomicIsize = AtomicIsize::new(0);
 static LIVE_SCAN_ENABLED: AtomicBool = AtomicBool::new(true);
-/// 0 = Off, 1 = Shift, 2 = Alt, 3 = Ctrl+Shift, 4 = Ctrl+Alt
-static LIVE_SCAN_MODIFIER: AtomicU8 = AtomicU8::new(1);
+/// Packed combo: bits 0..3 = modifiers (Shift=1, Ctrl=2, Alt=4), bits 8..16 = optional Win32 VK code.
+static LIVE_SCAN_COMBO: AtomicU32 = AtomicU32::new(DEFAULT_LIVE_SCAN_COMBO);
 static LIVE_POPUP_WIDTH: AtomicU8 = AtomicU8::new(44); // in units of 10px -> 440px default
 static WATCHER_STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -109,17 +115,86 @@ pub fn clear_latest_live_lookup() {
     }
 }
 
+fn parse_live_scan_combo(raw: &str) -> u32 {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_LIVE_SCAN_COMBO;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if matches!(lower.as_str(), "off" | "none" | "disabled") {
+        return 0;
+    }
+    // Migrate legacy single-modifier defaults ("Shift" / "Alt") to conflict-free `Shift+Z`.
+    if matches!(lower.as_str(), "shift" | "alt") {
+        return DEFAULT_LIVE_SCAN_COMBO;
+    }
+
+    let mut mods: u32 = 0;
+    let mut vk: u32 = 0;
+    for part in trimmed.split('+') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let pl = p.to_ascii_lowercase();
+        match pl.as_str() {
+            "shift" | "shiftleft" | "shiftright" => mods |= MOD_SHIFT,
+            "ctrl" | "control" | "controlleft" | "controlright" => mods |= MOD_CTRL,
+            "alt" | "altleft" | "altright" => mods |= MOD_ALT,
+            "space" => vk = 0x20,
+            "tab" => vk = 0x09,
+            "backquote" | "`" => vk = 0xC0,
+            "minus" | "-" => vk = 0xBD,
+            "equal" | "=" => vk = 0xBB,
+            "bracketleft" | "[" => vk = 0xDB,
+            "bracketright" | "]" => vk = 0xDD,
+            "semicolon" | ";" => vk = 0xBA,
+            "quote" | "'" => vk = 0xDE,
+            "comma" | "," => vk = 0xBC,
+            "period" | "." => vk = 0xBE,
+            "slash" | "/" => vk = 0xBF,
+            "backslash" | "\\" => vk = 0xDC,
+            _ => {
+                if let Some(rest) = pl.strip_prefix("key") {
+                    if rest.len() == 1 {
+                        let b = rest.as_bytes()[0].to_ascii_uppercase();
+                        if b.is_ascii_uppercase() {
+                            vk = b as u32;
+                        }
+                    }
+                } else if let Some(rest) = pl.strip_prefix("digit") {
+                    if rest.len() == 1 {
+                        let b = rest.as_bytes()[0];
+                        if b.is_ascii_digit() {
+                            vk = b as u32;
+                        }
+                    }
+                } else if let Some(rest) = pl.strip_prefix('f') {
+                    if let Ok(n) = rest.parse::<u32>() {
+                        if (1..=12).contains(&n) {
+                            vk = 0x70 + (n - 1);
+                        }
+                    }
+                } else if pl.len() == 1 {
+                    let b = pl.as_bytes()[0].to_ascii_uppercase();
+                    if b.is_ascii_uppercase() || b.is_ascii_digit() {
+                        vk = b as u32;
+                    }
+                }
+            }
+        }
+    }
+
+    if mods == 0 && vk == 0 {
+        DEFAULT_LIVE_SCAN_COMBO
+    } else {
+        mods | (vk << 8)
+    }
+}
+
 pub fn set_live_scan_config(enabled: bool, modifier: &str, lookup_width: Option<u32>) {
     LIVE_SCAN_ENABLED.store(enabled, Ordering::SeqCst);
-    let code = match modifier.trim().to_ascii_lowercase().as_str() {
-        "off" | "none" | "disabled" | "" => 0,
-        "shift" => 1,
-        "alt" => 2,
-        "ctrl+shift" | "control+shift" => 3,
-        "ctrl+alt" | "control+alt" => 4,
-        _ => 1,
-    };
-    LIVE_SCAN_MODIFIER.store(code, Ordering::SeqCst);
+    LIVE_SCAN_COMBO.store(parse_live_scan_combo(modifier), Ordering::SeqCst);
     if let Some(w) = lookup_width {
         let clamped = (w.saturating_add(40)).clamp(360, 760);
         LIVE_POPUP_WIDTH.store((clamped / 10) as u8, Ordering::SeqCst);
@@ -1055,31 +1130,38 @@ unsafe fn key_down(vk: i32) -> bool {
     (GetAsyncKeyState(vk) as u16 & 0x8000) != 0
 }
 
-unsafe fn is_live_modifier_held(code: u8) -> bool {
+unsafe fn is_live_combo_held(combo: u32) -> bool {
+    if combo == 0 {
+        return false;
+    }
+    let need_shift = (combo & MOD_SHIFT) != 0;
+    let need_ctrl = (combo & MOD_CTRL) != 0;
+    let need_alt = (combo & MOD_ALT) != 0;
+    let vk = ((combo >> 8) & 0xFF) as i32;
+
     let shift = key_down(VK_SHIFT) || key_down(VK_LSHIFT) || key_down(VK_RSHIFT);
     let ctrl = key_down(VK_CONTROL) || key_down(VK_LCONTROL) || key_down(VK_RCONTROL);
     let alt = key_down(VK_MENU) || key_down(VK_LMENU) || key_down(VK_RMENU);
-    match code {
-        1 => shift && !ctrl && !alt,
-        2 => alt && !ctrl && !shift,
-        3 => ctrl && shift && !alt,
-        4 => ctrl && alt && !shift,
-        _ => false,
-    }
+
+    shift == need_shift && ctrl == need_ctrl && alt == need_alt && (vk == 0 || key_down(vk))
 }
 
-unsafe fn is_any_typing_key_down() -> bool {
+unsafe fn is_any_other_typing_key_down(excluded_vk: i32) -> bool {
     for vk in b'A'..=b'Z' {
-        if key_down(vk as i32) {
+        let code = vk as i32;
+        if code != excluded_vk && key_down(code) {
             return true;
         }
     }
     for vk in b'0'..=b'9' {
-        if key_down(vk as i32) {
+        let code = vk as i32;
+        if code != excluded_vk && key_down(code) {
             return true;
         }
     }
-    key_down(VK_SPACE) || key_down(VK_RETURN) || key_down(VK_BACK)
+    (excluded_vk != VK_SPACE && key_down(VK_SPACE))
+        || (excluded_vk != VK_RETURN && key_down(VK_RETURN))
+        || (excluded_vk != VK_BACK && key_down(VK_BACK))
 }
 
 /// Start the background live hover-scan watcher:
@@ -1170,14 +1252,14 @@ pub fn start_live_hover_watcher(app: AppHandle) {
                     stationary_miss_retries = 0;
                     continue;
                 }
-                let mod_code = LIVE_SCAN_MODIFIER.load(Ordering::Relaxed);
-                if mod_code == 0 {
+                let combo = LIVE_SCAN_COMBO.load(Ordering::Relaxed);
+                if combo == 0 {
                     was_modifier_held = false;
                     stationary_miss_retries = 0;
                     continue;
                 }
 
-                let held = is_live_modifier_held(mod_code);
+                let held = is_live_combo_held(combo);
                 if !held {
                     was_modifier_held = false;
                     typing_suppressed = false;
@@ -1185,7 +1267,8 @@ pub fn start_live_hover_watcher(app: AppHandle) {
                     continue;
                 }
 
-                if is_any_typing_key_down() {
+                let combo_vk = ((combo >> 8) & 0xFF) as i32;
+                if is_any_other_typing_key_down(combo_vk) {
                     typing_suppressed = true;
                     continue;
                 }

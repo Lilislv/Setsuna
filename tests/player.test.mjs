@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
+import {
+    catalogEntries,
+    cleanReleaseTitle,
+    inferMediaTitle,
+    rankPosters,
+} from "../src/features/player/posterModel.ts";
 import { suggestedEpisode } from "../src/features/player/libraryModel.ts";
 import { matchSubtitlePaths } from "../src/features/player/localMedia.ts";
 import { parseSubtitleFile, cueAt, nextCue, sceneForCue, clipInterval } from "../src/features/player/model.ts";
@@ -89,6 +95,54 @@ test("library resumes legacy positions and advances after a completed episode", 
             e2: { time: 0, lastPlayedAt: 100, completed: true },
         }),
         0,
+    );
+});
+
+test("poster queries remove release tags while retaining titles, numbering and useful years", () => {
+    assert.deepEqual(cleanReleaseTitle("The.Matrix.1999.1080p.WEB-DL.mkv", true), {
+        title: "The Matrix",
+        year: 1999,
+    });
+    assert.deepEqual(cleanReleaseTitle("Blade Runner 2049 (2017) [UHD].mkv", true), {
+        title: "Blade Runner 2049",
+        year: 2017,
+    });
+    assert.deepEqual(cleanReleaseTitle("[Group] Watashi wo Tabetai, Hitodenashi - 01 [AAC].mkv", true), {
+        title: "Watashi wo Tabetai, Hitodenashi",
+    });
+    assert.deepEqual(cleanReleaseTitle("Mr.Robot.2015.S01E01.1080p.mkv", true), { title: "Mr Robot", year: 2015 });
+    const root = "D:/Watashi wo Tabetai, Hitodenashi [WEB-DL 1080p]";
+    const directory = {
+        path: root + "/AAC",
+        episodes: [{ path: root + "/AAC/Watashi wo Tabetai, Hitodenashi - 01 [AAC].mkv" }],
+        subtitles: [],
+    };
+    assert.equal(inferMediaTitle(directory, root).title, "Watashi wo Tabetai, Hitodenashi");
+    assert.equal(cleanReleaseTitle("눈물의 여왕 S01E01.mkv", true).title, "눈물의 여왕");
+});
+
+test("movie folders can present separate films without splitting seasons", () => {
+    const films = {
+        path: "D:/Movies",
+        episodes: [{ path: "D:/Movies/Metropolis (1927).mkv" }, { path: "D:/Movies/Paris, Texas (1984).mp4" }],
+        subtitles: [],
+    };
+    assert.deepEqual(
+        catalogEntries(films).map((item) => inferMediaTitle(item.directory, "D:/Movies").title),
+        ["Metropolis", "Paris, Texas"],
+    );
+    assert.equal(
+        catalogEntries({ ...films, episodes: [{ path: "Show S01E01.mkv" }, { path: "Show S01E02.mkv" }] }).length,
+        1,
+    );
+});
+
+test("poster suggestions rank same-name remakes by year and deduplicate IDs", () => {
+    const a = { id: "old", title: "Shogun", year: 1980, imageUrl: "https://example.com/a.jpg" };
+    const b = { id: "new", title: "Shogun", year: 2024, imageUrl: "https://example.com/b.jpg" };
+    assert.deepEqual(
+        rankPosters([a, b, b], "Shogun", 2024).map((p) => p.id),
+        ["new", "old"],
     );
 });
 

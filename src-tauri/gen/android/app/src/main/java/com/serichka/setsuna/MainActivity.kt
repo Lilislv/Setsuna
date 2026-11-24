@@ -135,6 +135,7 @@ class MainActivity : TauriActivity() {
         ".epub", ".txt", ".htmlz", ".fb2", ".fb2.zip",
         ".html", ".htm", ".xhtml", ".md", ".markdown",
         ".docx", ".mobi", ".azw3", ".prc", ".pdf",
+        ".cbz", ".zip", ".mokuro",
       ).any { displayName.endsWith(it, true) }
     ) { "Unsupported format: $displayName" }
     val safeName = File(displayName).name

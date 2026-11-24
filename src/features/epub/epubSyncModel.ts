@@ -31,7 +31,7 @@ export interface EpubSyncBookEntry {
     notes?: EpubBookNote[];
     stats?: TabStats;
     driveFileId?: string;
-    fileExt?: BookFileExt;
+    fileExt?: BookFileExt | "cbz" | "zip" | "mokuro" | "manga-dir";
 }
 
 export interface EpubSyncManifest {
