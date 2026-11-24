@@ -3,6 +3,18 @@ export const subtitleExtensions = ["srt", "vtt", "ass", "ssa"];
 
 export const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
 
+export function episodeLabel(path: string, index: number, en: boolean) {
+    const basename = fileName(path).replace(/\.[^.]+$/, "").replace(/\[[^\]]*\]/g, " ").trim();
+    const season = basename.match(/(?:^|[\s._-])s(\d{1,3})[ ._-]*e(\d{1,4})(?=$|[^\p{L}\p{N}])/iu)
+        || basename.match(/(?:^|[\s._-])(\d{1,3})x(\d{1,4})(?=$|[^\p{L}\p{N}])/iu);
+    const number = season?.[2] || basename.match(/(?:^|[\s._-])(?:episode|ep|e|серия)[ ._-]*(\d{1,4})(?=$|[^\p{L}\p{N}])/iu)?.[1]
+        || basename.match(/\s[-–—]\s*(\d{1,4})(?:v\d+)?\s*$/i)?.[1];
+    const episode = (en ? "Episode " : "Серия ") + (number === undefined ? index + 1 : Number(number));
+    if (!season) return episode;
+    const pad = (value: string) => String(Number(value)).padStart(2, "0");
+    return `S${pad(season[1])}E${pad(season[2])}`;
+}
+
 export function isMediaPath(path: string) {
     return mediaExtensions.includes(path.split(".").pop()?.toLowerCase() || "");
 }

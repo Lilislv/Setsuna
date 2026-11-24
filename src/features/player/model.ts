@@ -157,10 +157,12 @@ export function sceneForCue(source: string, cue: Cue, offset: number, duration: 
     if (end > start) return { source, start, end, duration };
 }
 
-export function clipInterval(scene: PlayerScene, leadIn: number, leadOut: number) {
+export const scenePaddingSeconds = 0.5;
+
+export function clipInterval(scene: PlayerScene) {
     return {
-        start: Math.max(0, scene.start - Math.max(0, leadIn)),
-        end: Math.min(scene.duration, scene.end + Math.max(0, leadOut)),
+        start: Math.max(0, scene.start - scenePaddingSeconds),
+        end: Math.min(scene.duration, scene.end + scenePaddingSeconds),
     };
 }
 

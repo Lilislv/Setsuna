@@ -25,6 +25,7 @@ export function PlayerCardEditor({
     return (
         <dialog
             className="sp-editor"
+            aria-label={en ? "Anki card" : "Карточка Anki"}
             ref={dialog}
             onCancel={(e) => {
                 e.preventDefault();

@@ -48,6 +48,7 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(TextOverlayBridge(this), "SetsunaTextOverlay")
     webView.addJavascriptInterface(TextCaptureBridge(this), "SetsunaTextCapture")
     webView.addJavascriptInterface(MobileFileBridge(this), "SetsunaMobileFiles")
+    webView.addJavascriptInterface(MangaOcrBridge(this), "SetsunaMangaOcr")
     pendingSharedText?.let {
       dispatchIncomingText(it)
       pendingSharedText = null
@@ -231,7 +232,7 @@ class MainActivity : TauriActivity() {
     dispatchWebEvent("setsuna-mobile-text", text)
   }
 
-  private fun dispatchWebEvent(name: String, text: String) {
+  internal fun dispatchWebEvent(name: String, text: String) {
     val json = org.json.JSONObject.quote(text)
     setsunaWebView?.post {
       setsunaWebView?.evaluateJavascript(

@@ -8,7 +8,7 @@ import {
     rankPosters,
 } from "../src/features/player/posterModel.ts";
 import { suggestedEpisode } from "../src/features/player/libraryModel.ts";
-import { matchSubtitlePaths } from "../src/features/player/localMedia.ts";
+import { episodeLabel, matchSubtitlePaths } from "../src/features/player/localMedia.ts";
 import { parseSubtitleFile, cueAt, nextCue, sceneForCue, clipInterval } from "../src/features/player/model.ts";
 
 test("subtitle parsing sorts cues, ignores bad intervals and keeps ASS dialogue commas", () => {
@@ -25,13 +25,13 @@ test("subtitle parsing sorts cues, ignores bad intervals and keeps ASS dialogue 
     assert.equal(parseSubtitleFile(ass, "ep.ass")[0].text, "Hello, world\n日本語");
 });
 
-test("scene uses the media clock, includes five seconds before speech, clamps to both file boundaries", () => {
+test("scene uses the media clock, adds half a second on both sides, clamps to both file boundaries", () => {
     const cue = { id: 1, start: 8, end: 12, text: "声" };
     const scene = sceneForCue("episode", cue, 2, 10);
-    assert.deepEqual(clipInterval(scene, 5, 0.25), { start: 1, end: 10 });
-    assert.deepEqual(clipInterval(sceneForCue("ep", { ...cue, start: 1, end: 2 }, 0, 10), 5, 0.25), {
+    assert.deepEqual(clipInterval(scene), { start: 5.5, end: 10 });
+    assert.deepEqual(clipInterval(sceneForCue("ep", { ...cue, start: 0.2, end: 2 }, 0, 10)), {
         start: 0,
-        end: 2.25,
+        end: 2.5,
     });
     assert.equal(sceneForCue("ep", cue, -5, 10), undefined);
 });
@@ -83,6 +83,12 @@ test("library matches the episode across release groups and technical tags", () 
         ),
         [first, russian],
     );
+});
+
+test("episode labels hide release tags and preserve season and episode numbers", () => {
+    assert.equal(episodeLabel("Series - 07 [1080p].mkv", 0, false), "Серия 7");
+    assert.equal(episodeLabel("Series.S02E11.mkv", 0, true), "S02E11");
+    assert.equal(episodeLabel("clip.mp4", 4, true), "Episode 5");
 });
 
 test("library resumes legacy positions and advances after a completed episode", () => {
@@ -183,24 +189,25 @@ test("scene export stores original video on a Basic card and discards only its t
     globalThis.playerInvoke = async (cmd, args) => {
         calls.push([cmd, args]);
         if (cmd === "extract_player_clip")
-            return { filename: "scene.mp4", path: "clips/scene.mp4", media_type: "video" };
+            return { filename: "scene.webm", path: "clips/scene.webm", media_type: "video" };
         if (cmd === "player_scene_frame") return "frame-base64";
         if (cmd === "discard_player_clip") return;
         if (args.action === "modelFieldNames") return ["Front", "Back"];
-        if (args.action === "storeMediaFile") return "stored.mp4";
+        if (args.action === "storeMediaFile") return "stored.webm";
         if (args.action === "addNote") return 123;
         throw Error(cmd);
     };
     assert.equal((await addPlayerNote(settings, { word: "言葉", meaning: "слово" }, scene)).result, 123);
-    assert.deepEqual(calls[0][1], { sourcePath: "episode.mp4", start: 7, end: 14.25, preferVideo: true });
-    assert.equal(
-        calls.find(([, a]) => a.action === "addNote")[1].params.note.fields.Back,
-        "слово [sound:stored.mp4]",
-    );
+    assert.deepEqual(calls[0][1], { sourcePath: "episode.mp4", start: 11.5, end: 14.5, preferVideo: true });
     const note = calls.find(([, a]) => a.action === "addNote")[1].params.note;
+    assert.match(note.fields.Back, /^слово <video src="stored\.webm" controls playsinline /);
+    assert.doesNotMatch(note.fields.Back, /\[sound:/);
     assert.deepEqual(note.picture[0].fields, ["Back"]);
     assert.equal(note.picture[0].data, "frame-base64");
-    assert.deepEqual(calls.at(-1), ["discard_player_clip", { filename: "scene.mp4" }]);
+    assert.deepEqual(calls.at(-1), ["discard_player_clip", { filename: "scene.webm" }]);
+    calls.length = 0;
+    assert.equal((await addPlayerNote(settings, { word: "言葉" }, scene, false, true)).result, 123);
+    assert.deepEqual(calls[0][1], { sourcePath: "episode.mp4", start: 12, end: 14, preferVideo: true });
 });
 
 test("encoder failure never creates a silent substitute card", async () => {

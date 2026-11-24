@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-11-24 — Mobile Manga OCR Suite (ONNX INT8 + ML Kit, LAN PC GPU Server, .cbz Pack Export; local unpushed)
+
+- **Desktop `manga_import.rs`:** added `manga_export_mobile_cbz` packing volume images + embedded `.mokuro` (applying saved OCR typo overrides) into a single portable `.cbz` (+ Pack .cbz for Phone in `MangaReader.tsx`).
+- **PC GPU OCR & LAN Wi-Fi Server (`src-tauri/src/manga_ocr_server.rs`, registered in `main.rs` & `lib.rs`):** persistent Python `manga-ocr` worker (CUDA RTX / CPU) + LAN HTTP server (`GET /health`, `POST /ocr`, default port `47123`, optional Bearer token) + cross-platform `manga_ocr_remote_health` & `manga_ocr_remote_recognize` HTTP client commands.
+- **Android ONNX Runtime + ML Kit (`MangaOcrBridge.kt`, `MainActivity.kt`, `build.gradle.kts`, `manga-ocr.pro`):**
+  - Added `com.microsoft.onnxruntime:onnxruntime-android:1.20.0` and `com.google.mlkit:text-recognition-japanese:16.0.1`.
+  - `SetsunaMangaOcr` JS bridge: on-demand downloader (~117 MB INT8 `kimchireader/manga-ocr-onnx-q8` weights + `vocab.txt` -> `filesDir/models/manga-ocr` with progress events), local Vision-Encoder-Decoder ONNX inference, ML Kit single-crop OCR + full-page bubble block detector.
+- **Reader & Settings UI (`mangaOcr.ts`, `SettingsMangaOcr.tsx`, `SettingsModal.tsx`, `MangaReader.tsx`, `manga.css`):**
+  - Added `✂ OCR` interactive drag-to-crop selector (hotkey `S`), live result bar with `TokenizedLine` dictionary lookup + Anki panel crop + `+ Бабл` session pin, mobile ML Kit page scan with optional ONNX/PC refinement, and `Settings → EPUB → Манга и OCR` panel.
+
 ## 2026-11-24 — Manga bubble overlay polish (local unpushed)
 
 - `mangaModel.ts`: new `computeFittedBubbleFontPx(block)` (unit-tested) — font fitted to OCR box + line count, so text never clips.

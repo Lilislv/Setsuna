@@ -80,6 +80,7 @@ mod dictionary_import;
 mod epub_audio;
 mod epub_import;
 mod manga_import;
+mod manga_ocr_server;
 #[cfg(target_os = "windows")]
 mod global_lookup;
 #[cfg(target_os = "linux")]
@@ -6093,6 +6094,13 @@ fn main() {
             manga_import::manga_extract_archive,
             manga_import::manga_mokuro_status,
             manga_import::manga_run_mokuro,
+            manga_import::manga_export_mobile_cbz,
+            manga_ocr_server::manga_ocr_server_status,
+            manga_ocr_server::manga_ocr_server_start,
+            manga_ocr_server::manga_ocr_server_stop,
+            manga_ocr_server::manga_ocr_local_recognize,
+            manga_ocr_server::manga_ocr_remote_health,
+            manga_ocr_server::manga_ocr_remote_recognize,
             get_diagnostics_log_path,
             log_frontend_diagnostics,
             dictionary_engine::lookup_word,

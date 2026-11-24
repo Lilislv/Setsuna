@@ -1,0 +1,2 @@
+-keep class com.serichka.setsuna.MangaOcrBridge { *; }
+-keep class ai.onnxruntime.** { *; }

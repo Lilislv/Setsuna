@@ -27,6 +27,7 @@ import { saveEpubGoals } from "./features/epub/epubTracker";
 import { useEpubSync } from "./features/epub/useEpubSync";
 import { openEpubBook, pruneEpubFiles, scanEpubFolder, storeEpubFile } from "./features/epub/epubApi";
 import { extractMangaArchive, openMangaVolume, scanMangaFolder, storeMangaVolume } from "./features/manga/mangaApi";
+import { ensurePcOcrServerFromPrefs } from "./features/manga/mangaOcr";
 import { isMangaFileExtension, type MangaMeta } from "./features/manga/mangaModel";
 import {
     isSupportedBookPath,
@@ -251,6 +252,9 @@ export default function App() {
     });
 
     useEffect(() => {
+        if (!isMobilePlatform()) {
+            void ensurePcOcrServerFromPrefs();
+        }
         if (settings.accountDeviceName?.trim()) return;
         invoke<string>("get_windows_device_name")
             .then((name) => {

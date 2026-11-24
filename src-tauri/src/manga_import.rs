@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
-use zip::ZipArchive;
+use zip::write::FileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::Emitter;
@@ -87,6 +88,15 @@ pub struct MangaMokuroStatus {
     pub available: bool,
     pub command: Option<String>,
     pub version: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MangaExportResult {
+    pub output_path: String,
+    pub page_count: usize,
+    pub has_mokuro: bool,
+    pub bytes: u64,
 }
 
 #[derive(Deserialize, Default)]
@@ -969,6 +979,17 @@ pub fn manga_attach_mokuro(
     manga_open(app, target_key.to_string_lossy().to_string())
 }
 
+fn load_overrides_map(app: &AppHandle, key_path: &Path) -> Result<HashMap<usize, HashMap<usize, String>>, String> {
+    let Some(path) = overrides_json_path(app, key_path) else {
+        return Ok(HashMap::new());
+    };
+    if !path.is_file() {
+        return Ok(HashMap::new());
+    }
+    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(serde_json::from_str(&text).unwrap_or_default())
+}
+
 #[tauri::command]
 pub fn manga_load_overrides(
     app: AppHandle,
@@ -979,14 +1000,7 @@ pub fn manga_load_overrides(
         Ok((MangaSource::Folder(p) | MangaSource::Archive(p), _)) => p,
         Err(_) => raw,
     };
-    let Some(path) = overrides_json_path(&app, &key) else {
-        return Ok(HashMap::new());
-    };
-    if !path.is_file() {
-        return Ok(HashMap::new());
-    }
-    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    Ok(serde_json::from_str(&text).unwrap_or_default())
+    load_overrides_map(&app, &key)
 }
 
 #[tauri::command]
@@ -1642,4 +1656,213 @@ pub async fn manga_run_mokuro(app: AppHandle, path: String) -> Result<MangaMeta,
         .await
         .map_err(|e| format!("mokuro worker failed: {e}"))?
     }
+}
+
+fn serialize_mokuro_with_overrides(
+    source_title: &str,
+    volume: Option<&str>,
+    mokuro: &ParsedMokuro,
+    page_names: &[String],
+    overrides: &HashMap<usize, HashMap<usize, String>>,
+) -> Result<Vec<u8>, String> {
+    let total_images = page_names.len();
+    let mut pages_json = Vec::with_capacity(total_images);
+
+    for (idx, page_name) in page_names.iter().enumerate() {
+        let matched = match_mokuro_page(mokuro, page_name, idx, total_images);
+        let page_overrides = overrides.get(&idx);
+
+        let (img_width, img_height, blocks_json) = if let Some(mp) = matched {
+            let blocks: Vec<serde_json::Value> = mp
+                .blocks
+                .iter()
+                .enumerate()
+                .map(|(b_idx, block)| {
+                    let lines: Vec<String> = page_overrides
+                        .and_then(|ov| ov.get(&b_idx))
+                        .map(|edited| {
+                            let split: Vec<String> = edited
+                                .lines()
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                            if split.is_empty() {
+                                vec![edited.clone()]
+                            } else {
+                                split
+                            }
+                        })
+                        .unwrap_or_else(|| block.lines.clone());
+
+                    let mut obj = serde_json::json!({
+                        "box": block.box_coords,
+                        "vertical": block.vertical,
+                        "font_size": block.font_size,
+                        "lines": lines,
+                    });
+                    if let Some(coords) = &block.lines_coords {
+                        obj["lines_coords"] = serde_json::json!(coords);
+                    }
+                    obj
+                })
+                .collect();
+            (mp.width, mp.height, blocks)
+        } else {
+            (0, 0, Vec::new())
+        };
+
+        pages_json.push(serde_json::json!({
+            "version": "0.2.0",
+            "img_path": page_name,
+            "img_width": img_width,
+            "img_height": img_height,
+            "blocks": blocks_json,
+        }));
+    }
+
+    let root = serde_json::json!({
+        "version": "0.2.0",
+        "title": mokuro.title.as_deref().unwrap_or(source_title),
+        "volume": mokuro.volume.as_deref().or(volume).unwrap_or(source_title),
+        "pages": pages_json,
+    });
+    serde_json::to_vec(&root).map_err(|e| format!("Failed to serialize .mokuro JSON: {e}"))
+}
+
+/// Package a desktop manga volume (image folder or archive + `.mokuro` overlay with edits)
+/// into a single portable `.cbz` archive ready to open on Android Setsuna with zero OCR load.
+#[tauri::command]
+pub async fn manga_export_mobile_cbz(
+    app: AppHandle,
+    path: String,
+    output_path: String,
+) -> Result<MangaExportResult, String> {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let raw = PathBuf::from(path.trim());
+        let (source, explicit_mokuro) = resolve_manga_source(&raw)?;
+        let mokuro = find_mokuro_for_source(&app_clone, &source, explicit_mokuro.as_deref());
+        let key_path = match &source {
+            MangaSource::Folder(p) | MangaSource::Archive(p) => p.clone(),
+        };
+        let overrides = load_overrides_map(&app_clone, &key_path).unwrap_or_default();
+        let (title, volume, _, _) = infer_title_and_series(&source, mokuro.as_ref());
+
+        let out_path = PathBuf::from(output_path.trim());
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|e| format!("Failed to create output folder: {e}"))?;
+            }
+        }
+
+        let out_file = File::create(&out_path)
+            .map_err(|e| format!("Failed to create CBZ file: {e}"))?;
+        let mut zip_writer = ZipWriter::new(out_file);
+        let stored_opts = FileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated_opts = FileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        let mut written_page_names: Vec<String> = Vec::new();
+        let mut used_names: HashSet<String> = HashSet::new();
+
+        let make_unique_flat_name = |raw_name: &str, idx: usize, used: &mut HashSet<String>| -> String {
+            let base = Path::new(raw_name)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("page.jpg")
+                .to_string();
+            if used.insert(base.to_ascii_lowercase()) {
+                return base;
+            }
+            let stem = Path::new(&base).file_stem().and_then(|s| s.to_str()).unwrap_or("page");
+            let ext = Path::new(&base).extension().and_then(|s| s.to_str()).unwrap_or("jpg");
+            let fallback = format!("{stem}_{idx}.{ext}");
+            used.insert(fallback.to_ascii_lowercase());
+            fallback
+        };
+
+        match &source {
+            MangaSource::Folder(dir) => {
+                let images = list_folder_images(dir)?;
+                if images.is_empty() {
+                    return Err("No manga page images found in this folder.".to_string());
+                }
+                for (idx, img_path) in images.iter().enumerate() {
+                    let meta = fs::metadata(img_path).map_err(|e| e.to_string())?;
+                    if meta.len() > MAX_MANGA_IMAGE_BYTES {
+                        return Err("Manga page image exceeds 24 MB limit.".to_string());
+                    }
+                    let raw_name = img_path.to_string_lossy().to_string();
+                    let flat_name = make_unique_flat_name(&raw_name, idx, &mut used_names);
+                    zip_writer
+                        .start_file(&flat_name, stored_opts)
+                        .map_err(|e| format!("Failed to write CBZ entry: {e}"))?;
+                    let mut src_file = File::open(img_path).map_err(|e| e.to_string())?;
+                    std::io::copy(&mut src_file, &mut zip_writer)
+                        .map_err(|e| format!("Failed to copy image into CBZ: {e}"))?;
+                    written_page_names.push(flat_name);
+                }
+            }
+            MangaSource::Archive(archive_path) => {
+                let (images, _) = list_archive_entries(archive_path)?;
+                if images.is_empty() {
+                    return Err("No manga page images found in this archive.".to_string());
+                }
+                let src_file = File::open(archive_path).map_err(|e| e.to_string())?;
+                let mut src_zip = ZipArchive::new(src_file)
+                    .map_err(|e| format!("Failed to open source archive: {e}"))?;
+                for (idx, entry_name) in images.iter().enumerate() {
+                    let mut entry = src_zip.by_name(entry_name).map_err(|e| e.to_string())?;
+                    if entry.size() > MAX_MANGA_IMAGE_BYTES {
+                        return Err("Manga page image exceeds 24 MB limit.".to_string());
+                    }
+                    let flat_name = make_unique_flat_name(entry_name, idx, &mut used_names);
+                    zip_writer
+                        .start_file(&flat_name, stored_opts)
+                        .map_err(|e| format!("Failed to write CBZ entry: {e}"))?;
+                    std::io::copy(&mut entry, &mut zip_writer)
+                        .map_err(|e| format!("Failed to copy image into CBZ: {e}"))?;
+                    written_page_names.push(flat_name);
+                }
+            }
+        }
+
+        let has_mokuro = mokuro.is_some();
+        if let Some(parsed) = mokuro.as_ref() {
+            let mokuro_bytes = serialize_mokuro_with_overrides(
+                &title,
+                volume.as_deref(),
+                parsed,
+                &written_page_names,
+                &overrides,
+            )?;
+            let stem = out_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("volume");
+            let mokuro_entry_name = format!("{stem}.mokuro");
+            zip_writer
+                .start_file(&mokuro_entry_name, deflated_opts)
+                .map_err(|e| format!("Failed to write .mokuro into CBZ: {e}"))?;
+            zip_writer
+                .write_all(&mokuro_bytes)
+                .map_err(|e| format!("Failed to write .mokuro bytes: {e}"))?;
+        }
+
+        let mut finished = zip_writer
+            .finish()
+            .map_err(|e| format!("Failed to finalize CBZ archive: {e}"))?;
+        let _ = finished.flush();
+        let bytes = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+
+        Ok(MangaExportResult {
+            output_path: out_path.to_string_lossy().to_string(),
+            page_count: written_page_names.len(),
+            has_mokuro,
+            bytes,
+        })
+    })
+    .await
+    .map_err(|e| format!("CBZ export worker failed: {e}"))?
 }

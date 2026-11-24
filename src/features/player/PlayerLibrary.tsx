@@ -9,9 +9,10 @@ import {
     type SavedProgress,
 } from "./libraryModel";
 import type { PlayerLibraryData } from "./usePlayerLibrary";
-import { fileName } from "./localMedia";
+import { episodeLabel, fileName } from "./localMedia";
 import { formatClock } from "./model";
 import { catalogEntries, inferMediaTitle, type Poster, type TitleHint } from "./posterModel";
+import { deleteLocalPoster } from "./localPoster";
 import { LibraryDialog, PosterArt, PosterPicker, PosterSource } from "./PosterPicker";
 import "./library.css";
 
@@ -36,7 +37,9 @@ function readPosters(): Record<string, Poster> {
 
 function showTitle(show: Show) {
     return (
-        (show.poster?.kind !== "image" && show.poster?.title) || show.hint.title || fileName(show.directory.path)
+        ((show.poster?.kind !== "image" || show.poster?.source === "Local") && show.poster?.title) ||
+        show.hint.title ||
+        fileName(show.directory.path)
     );
 }
 
@@ -107,6 +110,8 @@ export function PlayerLibrary({
         setPosters(next);
         try {
             localStorage.setItem(posterKey, JSON.stringify(next));
+            if (show.poster?.imageUrl !== poster?.imageUrl)
+                void deleteLocalPoster(show.poster).catch(console.warn);
         } catch {
             /* Current-session state still works. */
         }
@@ -405,50 +410,38 @@ function ShowDetails({
     const info = status(show, progress);
     return (
         <LibraryDialog title={showTitle(show)} en={en} onClose={onClose}>
-            <div className="sp-library-details">
-                <PosterArt poster={show.poster} label={showTitle(show)} />
-                <div className="sp-library-details-actions">
-                    <p className="sp-library-muted">
-                        {[show.poster?.year || show.hint.year, episodeCount(info.count, en)]
-                            .filter(Boolean)
-                            .join(" · ")}
-                    </p>
-                    <button className="sp-library-primary" disabled={opening} onClick={() => onPlay(info.index)}>
-                        {info.item.time
-                            ? (en ? "Continue" : "Продолжить") + " · " + formatClock(info.item.time)
-                            : en
-                              ? "Watch"
-                              : "Смотреть"}
-                    </button>
-                    <button onClick={onPoster}>
-                        {show.poster
-                            ? en
-                                ? "Change poster"
-                                : "Сменить обложку"
-                            : en
-                              ? "Find poster"
-                              : "Найти обложку"}
-                    </button>
-                    {show.poster && <PosterSource poster={show.poster} />}
+            <div className="sp-show-layout">
+                <div className="sp-library-details">
+                    <PosterArt poster={show.poster} label={showTitle(show)} />
+                    <div className="sp-library-details-actions">
+                        <p className="sp-library-muted">
+                            {[show.poster?.year || show.hint.year, episodeCount(info.count, en)].filter(Boolean).join(" · ")}
+                        </p>
+                        <button className="sp-library-primary" disabled={opening} onClick={() => onPlay(info.index)}>
+                            {info.item.time ? (en ? "Continue" : "Продолжить") + " · " + formatClock(info.item.time) : en ? "Watch" : "Смотреть"}
+                        </button>
+                        <button onClick={onPoster}>
+                            {show.poster ? (en ? "Change poster" : "Сменить обложку") : (en ? "Find poster" : "Найти обложку")}
+                        </button>
+                        {show.poster && <PosterSource poster={show.poster}/>}
+                    </div>
                 </div>
+                {info.count > 1 && <section className="sp-episode-list">
+                    <h3>{en ? "Episodes" : "Серии"}</h3>
+                    <ul className="sp-library-episodes">
+                        {show.directory.episodes.map((episode,index) => {
+                            const state = episodeProgress(progress[episode.path]);
+                            return <li key={episode.path}>
+                                <button title={fileName(episode.path)} disabled={opening} data-current={info.index === index} onClick={() => onPlay(index)}>
+                                    <span>{episodeLabel(episode.path,index,en)}</span>
+                                    {state.completed ? <span aria-label={en ? "Watched" : "Просмотрено"}>✓</span>
+                                        : state.time > 0 && <time>{formatClock(state.time)}</time>}
+                                </button>
+                            </li>;
+                        })}
+                    </ul>
+                </section>}
             </div>
-            <ol className="sp-library-episodes">
-                {show.directory.episodes.map((episode, index) => {
-                    const state = episodeProgress(progress[episode.path]);
-                    return (
-                        <li key={episode.path}>
-                            <button title={episode.path} disabled={opening} onClick={() => onPlay(index)}>
-                                <span>{fileName(episode.path)}</span>
-                                {state.completed ? (
-                                    <span aria-label={en ? "Watched" : "Просмотрено"}>✓</span>
-                                ) : (
-                                    state.time > 0 && <time>{formatClock(state.time)}</time>
-                                )}
-                            </button>
-                        </li>
-                    );
-                })}
-            </ol>
         </LibraryDialog>
     );
 }

@@ -61,3 +61,77 @@ export const checkMokuroStatus = async (): Promise<MangaMokuroStatus> => {
 export const runMokuroOnVolume = async (path: string): Promise<MangaMeta> => {
     return invoke<MangaMeta>("manga_run_mokuro", { path });
 };
+
+export interface MangaExportResult {
+    outputPath: string;
+    pageCount: number;
+    hasMokuro: boolean;
+    bytes: number;
+}
+
+export interface MangaOcrServerStatus {
+    running: boolean;
+    available: boolean;
+    url: string | null;
+    port: number;
+    device: string | null;
+    token: string;
+    error: string | null;
+}
+
+export interface MangaOcrResult {
+    text: string;
+    engine: string;
+    device?: string | null;
+    elapsedMs: number;
+}
+
+export interface MangaOcrHealth {
+    ok: boolean;
+    service: string;
+    device: string | null;
+    version: string | null;
+}
+
+export const exportMangaMobileCbz = async (
+    path: string,
+    outputPath: string,
+): Promise<MangaExportResult> => {
+    return invoke<MangaExportResult>("manga_export_mobile_cbz", { path, outputPath });
+};
+
+export const getMangaOcrServerStatus = async (): Promise<MangaOcrServerStatus> => {
+    return invoke<MangaOcrServerStatus>("manga_ocr_server_status");
+};
+
+export const startMangaOcrServer = async (
+    port?: number,
+    token?: string,
+): Promise<MangaOcrServerStatus> => {
+    return invoke<MangaOcrServerStatus>("manga_ocr_server_start", { port, token });
+};
+
+export const stopMangaOcrServer = async (): Promise<MangaOcrServerStatus> => {
+    return invoke<MangaOcrServerStatus>("manga_ocr_server_stop");
+};
+
+export const recognizeMangaCropLocalPc = async (
+    imageBase64: string,
+): Promise<MangaOcrResult> => {
+    return invoke<MangaOcrResult>("manga_ocr_local_recognize", { imageBase64 });
+};
+
+export const checkMangaOcrRemoteHealth = async (
+    url: string,
+    token?: string,
+): Promise<MangaOcrHealth> => {
+    return invoke<MangaOcrHealth>("manga_ocr_remote_health", { url, token });
+};
+
+export const recognizeMangaCropRemote = async (
+    url: string,
+    token: string | undefined,
+    imageBase64: string,
+): Promise<MangaOcrResult> => {
+    return invoke<MangaOcrResult>("manga_ocr_remote_recognize", { url, token, imageBase64 });
+};

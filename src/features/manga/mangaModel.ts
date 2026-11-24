@@ -268,3 +268,79 @@ export function applyBlockTextOverrides(
         };
     });
 }
+
+export type MangaMobileOcrEngine = "auto" | "remote" | "onnx" | "mlkit";
+
+export interface MangaOcrPrefs {
+    mobileEngine: MangaMobileOcrEngine;
+    remoteUrl: string;
+    remoteToken: string;
+    pcServerEnabled: boolean;
+    pcServerPort: number;
+    pcServerToken: string;
+    autoRefineMlKitWithOnnx: boolean;
+}
+
+export const DEFAULT_MANGA_OCR_PREFS: MangaOcrPrefs = {
+    mobileEngine: "auto",
+    remoteUrl: "",
+    remoteToken: "",
+    pcServerEnabled: false,
+    pcServerPort: 47123,
+    pcServerToken: "",
+    autoRefineMlKitWithOnnx: true,
+};
+
+const MANGA_OCR_PREFS_KEY = "setsuna-manga-ocr-prefs-v1";
+
+export function loadMangaOcrPrefs(): MangaOcrPrefs {
+    try {
+        if (typeof localStorage === "undefined") return { ...DEFAULT_MANGA_OCR_PREFS };
+        const raw = localStorage.getItem(MANGA_OCR_PREFS_KEY);
+        if (!raw) return { ...DEFAULT_MANGA_OCR_PREFS };
+        const parsed = JSON.parse(raw) as Partial<MangaOcrPrefs>;
+        return {
+            ...DEFAULT_MANGA_OCR_PREFS,
+            ...parsed,
+            pcServerPort: typeof parsed.pcServerPort === "number" && parsed.pcServerPort > 0 && parsed.pcServerPort <= 65535
+                ? Math.round(parsed.pcServerPort)
+                : DEFAULT_MANGA_OCR_PREFS.pcServerPort,
+        };
+    } catch {
+        return { ...DEFAULT_MANGA_OCR_PREFS };
+    }
+}
+
+export function saveMangaOcrPrefs(prefs: MangaOcrPrefs): void {
+    try {
+        if (typeof localStorage === "undefined") return;
+        localStorage.setItem(MANGA_OCR_PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+        // Ignore quota errors
+    }
+}
+
+/** Normalize user-entered LAN OCR URL (e.g. "192.168.1.42:47123/" -> "http://192.168.1.42:47123"). */
+export function normalizeOcrServerUrl(raw: string): string {
+    const trimmed = raw.trim().replace(/\/+$/, "");
+    if (!trimmed) return "";
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    return `http://${trimmed}`;
+}
+
+/** Ordered list of mobile OCR engines to try given current user preference and ONNX readiness. */
+export function resolveMobileOcrChain(
+    prefs: Pick<MangaOcrPrefs, "mobileEngine" | "remoteUrl">,
+    onnxReady: boolean,
+): Array<"remote" | "onnx" | "mlkit"> {
+    const hasRemote = normalizeOcrServerUrl(prefs.remoteUrl).length > 0;
+    if (prefs.mobileEngine === "remote") return ["remote"];
+    if (prefs.mobileEngine === "onnx") return ["onnx"];
+    if (prefs.mobileEngine === "mlkit") return ["mlkit"];
+
+    const chain: Array<"remote" | "onnx" | "mlkit"> = [];
+    if (hasRemote) chain.push("remote");
+    if (onnxReady) chain.push("onnx");
+    chain.push("mlkit");
+    return chain;
+}

@@ -9,7 +9,7 @@ import {
     type WheelEvent as ReactWheelEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { TokenizedLine } from "../../components/TextContainer";
 import type { AppSettings } from "../../components/SettingsModal";
 import { IconSettings } from "../../components/Icons";
@@ -18,6 +18,7 @@ import { setMobileVolumePagingEnabled } from "../../utils/mobileFiles";
 import {
     attachMokuroOverlay,
     checkMokuroStatus,
+    exportMangaMobileCbz,
     loadMangaOverrides,
     loadMangaPage,
     runMokuroOnVolume,
@@ -41,6 +42,14 @@ import {
     type MangaSpreadMode,
     type MokuroBlock,
 } from "./mangaModel";
+import {
+    detectAndroidPageBlocksMlKit,
+    getAndroidMangaOcrStatus,
+    hasAndroidMangaOcrBridge,
+    loadMangaOcrPrefs,
+    normalizeOcrServerUrl,
+    recognizeMangaCrop,
+} from "./mangaOcr";
 import "./manga.css";
 
 const MAX_CACHED_PAGES = 18;
@@ -111,6 +120,98 @@ async function renderMangaCropDataUrl(
     });
 }
 
+async function cropExactRegionBase64(
+    imageSrc: string,
+    box: [number, number, number, number],
+    maxSide = 768,
+): Promise<string | null> {
+    if (!imageSrc) return null;
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const natW = img.naturalWidth || 1;
+                const natH = img.naturalHeight || 1;
+                const x1 = Math.max(0, Math.min(natW - 1, Math.floor(box[0])));
+                const y1 = Math.max(0, Math.min(natH - 1, Math.floor(box[1])));
+                const x2 = Math.max(x1 + 1, Math.min(natW, Math.ceil(box[2])));
+                const y2 = Math.max(y1 + 1, Math.min(natH, Math.ceil(box[3])));
+                const rw = Math.max(1, x2 - x1);
+                const rh = Math.max(1, y2 - y1);
+                const scale = Math.min(1, maxSide / Math.max(rw, rh));
+                const outW = Math.max(1, Math.round(rw * scale));
+                const outH = Math.max(1, Math.round(rh * scale));
+                const canvas = document.createElement("canvas");
+                canvas.width = outW;
+                canvas.height = outH;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) {
+                    resolve(null);
+                    return;
+                }
+                ctx.fillStyle = "#ffffff";
+                ctx.fillRect(0, 0, outW, outH);
+                ctx.drawImage(img, x1, y1, rw, rh, 0, 0, outW, outH);
+                const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+                const comma = dataUrl.indexOf(",");
+                resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+            } catch {
+                resolve(null);
+            }
+        };
+        img.onerror = () => resolve(null);
+        img.src = imageSrc;
+    });
+}
+
+async function imageToScaledBase64(
+    imageSrc: string,
+    maxSide = 1600,
+): Promise<{ base64: string; scaleX: number; scaleY: number } | null> {
+    if (!imageSrc) return null;
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const natW = img.naturalWidth || 1;
+                const natH = img.naturalHeight || 1;
+                const scale = Math.min(1, maxSide / Math.max(natW, natH));
+                const outW = Math.max(1, Math.round(natW * scale));
+                const outH = Math.max(1, Math.round(natH * scale));
+                const canvas = document.createElement("canvas");
+                canvas.width = outW;
+                canvas.height = outH;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) {
+                    resolve(null);
+                    return;
+                }
+                ctx.drawImage(img, 0, 0, outW, outH);
+                const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+                const comma = dataUrl.indexOf(",");
+                resolve({
+                    base64: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl,
+                    scaleX: natW / outW,
+                    scaleY: natH / outH,
+                });
+            } catch {
+                resolve(null);
+            }
+        };
+        img.onerror = () => resolve(null);
+        img.src = imageSrc;
+    });
+}
+
+function formatOcrEngineLabel(engine: string, device: string | null | undefined, isEn: boolean): string {
+    if (engine === "pc-local" || engine === "remote-pc") {
+        return device === "cuda" ? (isEn ? "PC ⚡ GPU" : "ПК ⚡ GPU") : (isEn ? "PC OCR" : "ПК OCR");
+    }
+    if (engine === "onnx") return "ONNX INT8";
+    if (engine === "mlkit") return "ML Kit";
+    return engine;
+}
+
 export default function MangaReader({
     tabId,
     mangaPath,
@@ -165,6 +266,34 @@ export default function MangaReader({
         line: string;
     } | null>(null);
     const [mokuroError, setMokuroError] = useState<string | null>(null);
+    const [exportingCbz, setExportingCbz] = useState(false);
+    const [exportStatus, setExportStatus] = useState<{ ok: boolean; message: string } | null>(null);
+
+    // Interactive on-demand OCR crop tool & ML Kit mobile auto-scan
+    const [cropToolActive, setCropToolActive] = useState(false);
+    const [cropDrag, setCropDrag] = useState<{
+        pageIndex: number;
+        startX: number;
+        startY: number;
+        curX: number;
+        curY: number;
+    } | null>(null);
+    const [ocrBusy, setOcrBusy] = useState<string | null>(null);
+    const [ocrError, setOcrError] = useState<string | null>(null);
+    const [ocrResult, setOcrResult] = useState<{
+        pageIndex: number;
+        box: [number, number, number, number];
+        text: string;
+        engine: string;
+        device?: string | null;
+        elapsedMs: number;
+    } | null>(null);
+    const [sessionBlocksByPage, setSessionBlocksByPage] = useState<Record<number, MokuroBlock[]>>({});
+    const [mobileOcrReady, setMobileOcrReady] = useState<{
+        onnxReady: boolean;
+        onnxDownloading: boolean;
+        hasRemote: boolean;
+    } | null>(null);
 
     const pageCacheRef = useRef<Map<number, MangaPagePayload>>(new Map());
     const loadingSetRef = useRef<Set<number>>(new Set());
@@ -200,6 +329,11 @@ export default function MangaReader({
         pageEnteredAtRef.current = Date.now();
         setActiveBubble(null);
         setEditingBubble(null);
+        setSessionBlocksByPage({});
+        setOcrResult(null);
+        setOcrError(null);
+        setExportStatus(null);
+        setCropToolActive(false);
         setZoom(1);
         void loadMangaOverrides(mangaPath).then(setOverrides).catch(() => setOverrides({}));
     }, [tabId, mangaPath]);
@@ -373,6 +507,14 @@ export default function MangaReader({
                 updatePrefs({ spreadMode: prefs.spreadMode === "spread" ? "single" : "spread" });
             } else if (event.key.toLowerCase() === "c" && !event.ctrlKey && !event.altKey) {
                 updatePrefs({ coverOffset: !prefs.coverOffset });
+            } else if (event.key.toLowerCase() === "s" && !event.ctrlKey && !event.altKey) {
+                setCropToolActive((v) => !v);
+            } else if (event.key === "Escape") {
+                if (cropToolActive) setCropToolActive(false);
+                else if (ocrResult || ocrError) {
+                    setOcrResult(null);
+                    setOcrError(null);
+                }
             } else if (event.key === "=" || event.key === "+") {
                 setZoom((z) => Math.min(3, Number((z + 0.15).toFixed(2))));
             } else if (event.key === "-") {
@@ -383,12 +525,27 @@ export default function MangaReader({
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [editingBubble, prefs.rtl, prefs.overlayMode, prefs.spreadMode, prefs.coverOffset, isMobile, meta.pageCount, goNext, goPrev, updatePrefs]);
+    }, [editingBubble, cropToolActive, ocrResult, ocrError, prefs.rtl, prefs.overlayMode, prefs.spreadMode, prefs.coverOffset, isMobile, meta.pageCount, goNext, goPrev, updatePrefs]);
 
-    // Check mokuro CLI availability when opening the OCR modal on desktop
+    // Check mokuro CLI availability when opening the OCR modal on desktop, or ONNX/ML Kit status on mobile
     useEffect(() => {
-        if (!mokuroModalOpen || isMobile) return;
-        void checkMokuroStatus().then(setMokuroStatus).catch(() => {});
+        if (!mokuroModalOpen) return;
+        setExportStatus(null);
+        if (!isMobile) {
+            void checkMokuroStatus().then(setMokuroStatus).catch(() => {});
+        } else {
+            const p = loadMangaOcrPrefs();
+            const hasRemote = normalizeOcrServerUrl(p.remoteUrl).length > 0;
+            void getAndroidMangaOcrStatus()
+                .then((st) =>
+                    setMobileOcrReady({
+                        onnxReady: st.onnxReady,
+                        onnxDownloading: st.onnxDownloading,
+                        hasRemote,
+                    }),
+                )
+                .catch(() => setMobileOcrReady({ onnxReady: false, onnxDownloading: false, hasRemote }));
+        }
     }, [mokuroModalOpen, isMobile]);
 
     // Listen to mokuro CLI progress events (real-time CR/LF tqdm updates + GPU/CPU detection)
@@ -485,9 +642,179 @@ export default function MangaReader({
         }
     }, [mokuroRunning, mangaPath, meta.pageCount, onMetaUpdated]);
 
+    const handleExportMobileCbz = useCallback(async () => {
+        if (exportingCbz) return;
+        try {
+            const safeTitle = (meta.title || "manga").replace(/[\\/:*?"<>|]/g, "_").trim() || "manga";
+            const outputPath = await save({
+                defaultPath: `${safeTitle}.cbz`,
+                filters: [{ name: "Comic Book Archive (.cbz)", extensions: ["cbz"] }],
+            });
+            const target = typeof outputPath === "string" ? outputPath.trim() : "";
+            if (!target) return;
+            setExportingCbz(true);
+            setExportStatus(null);
+            const res = await exportMangaMobileCbz(mangaPath, target);
+            const mb = (res.bytes / (1024 * 1024)).toFixed(1);
+            setExportStatus({
+                ok: true,
+                message: isEn
+                    ? `Packed ${res.pageCount} pages (${mb} MB)${res.hasMokuro ? " with .mokuro OCR embedded" : " (images only)"}.`
+                    : `Упаковано ${res.pageCount} стр. (${mb} МБ)${res.hasMokuro ? " · слой .mokuro встроен" : " · только картинки"}.`,
+            });
+        } catch (error) {
+            setExportStatus({
+                ok: false,
+                message: String(error),
+            });
+        } finally {
+            setExportingCbz(false);
+        }
+    }, [exportingCbz, meta.title, mangaPath, isEn]);
+
+    const handleRunBubbleCropOcr = useCallback(
+        async (page: MangaPagePayload, box: [number, number, number, number]) => {
+            setCropToolActive(false);
+            setOcrError(null);
+            setOcrResult(null);
+            setOcrBusy(isEn ? "Recognizing bubble…" : "Распознавание бабла…");
+            prepareAnkiPanelCrop(page, {
+                box,
+                vertical: (box[3] - box[1]) > (box[2] - box[0]) * 1.1,
+                fontSize: 32,
+                lines: [],
+            });
+            try {
+                const base64 = await cropExactRegionBase64(page.imageSrc, box, 768);
+                if (!base64) throw new Error(isEn ? "Failed to crop image region." : "Не удалось вырезать область.");
+                const res = await recognizeMangaCrop(base64, loadMangaOcrPrefs(), isMobile);
+                setOcrResult({
+                    pageIndex: page.index,
+                    box,
+                    text: res.text.trim(),
+                    engine: res.engine,
+                    device: res.device,
+                    elapsedMs: res.elapsedMs,
+                });
+            } catch (error) {
+                setOcrError(error instanceof Error ? error.message : String(error));
+            } finally {
+                setOcrBusy(null);
+            }
+        },
+        [isEn, isMobile, prepareAnkiPanelCrop],
+    );
+
+    const handleAutoScanPage = useCallback(async () => {
+        const page = pagesByIndex[currentPage];
+        if (!page || !hasAndroidMangaOcrBridge()) return;
+        setMokuroModalOpen(false);
+        setOcrError(null);
+        setOcrResult(null);
+        setOcrBusy(isEn ? "Scanning page with ML Kit…" : "Поиск баблов на странице (ML Kit)…");
+        try {
+            const scaled = await imageToScaledBase64(page.imageSrc, 1600);
+            if (!scaled) throw new Error("Failed to prepare page image.");
+            const detected = await detectAndroidPageBlocksMlKit(scaled.base64);
+            if (!detected.blocks || detected.blocks.length === 0) {
+                setOcrError(isEn ? "No Japanese text detected on this page." : "Текст на этой странице не найден.");
+                return;
+            }
+            const ocrPrefs = loadMangaOcrPrefs();
+            const status = await getAndroidMangaOcrStatus().catch(() => ({
+                onnxReady: false,
+                onnxDownloading: false,
+                onnxSizeBytes: 0,
+                mlkitReady: true,
+            }));
+            const canRefine = ocrPrefs.autoRefineMlKitWithOnnx &&
+                (status.onnxReady || normalizeOcrServerUrl(ocrPrefs.remoteUrl).length > 0 || ocrPrefs.mobileEngine === "remote" || ocrPrefs.mobileEngine === "onnx");
+
+            const capped = detected.blocks.slice(0, 24);
+            const built: MokuroBlock[] = [];
+            for (let i = 0; i < capped.length; i += 1) {
+                const blk = capped[i];
+                const natBox: [number, number, number, number] = [
+                    Math.round(blk.box[0] * scaled.scaleX),
+                    Math.round(blk.box[1] * scaled.scaleY),
+                    Math.round(blk.box[2] * scaled.scaleX),
+                    Math.round(blk.box[3] * scaled.scaleY),
+                ];
+                let text = blk.text;
+                if (canRefine) {
+                    setOcrBusy(
+                        isEn
+                            ? `Refining bubble ${i + 1} / ${capped.length}…`
+                            : `Уточнение бабла ${i + 1} / ${capped.length}…`,
+                    );
+                    const cropB64 = await cropExactRegionBase64(page.imageSrc, natBox, 512);
+                    if (cropB64) {
+                        const refined = await recognizeMangaCrop(cropB64, ocrPrefs, true).catch(() => null);
+                        if (refined?.text?.trim()) text = refined.text.trim();
+                    }
+                }
+                const bw = Math.max(12, natBox[2] - natBox[0]);
+                const bh = Math.max(12, natBox[3] - natBox[1]);
+                built.push({
+                    box: natBox,
+                    vertical: blk.vertical,
+                    fontSize: Math.max(20, Math.min(48, Math.round((blk.vertical ? bw : bh) * 0.48))),
+                    lines: [text],
+                });
+            }
+            setSessionBlocksByPage((prev) => ({
+                ...prev,
+                [currentPage]: built,
+            }));
+        } catch (error) {
+            setOcrError(error instanceof Error ? error.message : String(error));
+        } finally {
+            setOcrBusy(null);
+        }
+    }, [pagesByIndex, currentPage, isEn]);
+
+    const handlePinOcrResultAsBubble = useCallback(() => {
+        if (!ocrResult || !ocrResult.text.trim()) return;
+        const { pageIndex, box, text } = ocrResult;
+        const bw = Math.max(12, box[2] - box[0]);
+        const bh = Math.max(12, box[3] - box[1]);
+        const vertical = bh > bw * 1.1;
+        const newBlock: MokuroBlock = {
+            box,
+            vertical,
+            fontSize: Math.max(22, Math.min(48, Math.round((vertical ? bw : bh) * 0.48))),
+            lines: text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean),
+        };
+        setSessionBlocksByPage((prev) => ({
+            ...prev,
+            [pageIndex]: [...(prev[pageIndex] || []), newBlock],
+        }));
+        setOcrResult(null);
+    }, [ocrResult]);
+
     const handleSaveBubbleEdit = useCallback(async () => {
         if (!editingBubble) return;
         const { pageIndex, blockIndex, text } = editingBubble;
+        if (pageIndex < 0) {
+            setOcrResult((prev) => (prev ? { ...prev, text } : prev));
+            setEditingBubble(null);
+            return;
+        }
+        const payload = pagesByIndex[pageIndex];
+        const baseCount = payload?.blocks?.length ?? 0;
+        if (blockIndex >= baseCount) {
+            const localIdx = blockIndex - baseCount;
+            setSessionBlocksByPage((prev) => {
+                const arr = [...(prev[pageIndex] || [])];
+                if (arr[localIdx]) {
+                    const lines = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+                    arr[localIdx] = { ...arr[localIdx], lines: lines.length > 0 ? lines : [text] };
+                }
+                return { ...prev, [pageIndex]: arr };
+            });
+            setEditingBubble(null);
+            return;
+        }
         try {
             await saveMangaOverride(mangaPath, pageIndex, blockIndex, text);
             setOverrides((prev) => {
@@ -500,7 +827,7 @@ export default function MangaReader({
         } catch {
             // Keep open on error
         }
-    }, [editingBubble, mangaPath]);
+    }, [editingBubble, mangaPath, pagesByIndex]);
 
     const handleWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
         if (event.ctrlKey) {
@@ -587,8 +914,11 @@ export default function MangaReader({
         }
 
         const effectiveBlocks = applyBlockTextOverrides(payload.blocks, overrides[pageIdx]);
+        const extraBlocks = sessionBlocksByPage[pageIdx] || [];
+        const renderBlocks = extraBlocks.length > 0 ? [...effectiveBlocks, ...extraBlocks] : effectiveBlocks;
         const natW = payload.width || 1000;
         const natH = payload.height || 1400;
+        const activeCrop = cropDrag && cropDrag.pageIndex === pageIdx ? cropDrag : null;
 
         return (
             <div
@@ -605,12 +935,12 @@ export default function MangaReader({
                     className="manga-page-img"
                     draggable={false}
                 />
-                {effectiveBlocks.length > 0 && (
+                {renderBlocks.length > 0 && (
                     <div
                         className={`manga-overlay-layer mode-${prefs.overlayMode}`}
                         style={{ ["--manga-font-scale" as string]: String(prefs.fontScale) } as CSSProperties}
                     >
-                        {effectiveBlocks.map((block, bIdx) => {
+                        {renderBlocks.map((block, bIdx) => {
                             const [x1, y1, x2, y2] = block.box;
                             const leftPct = (x1 / natW) * 100;
                             const topPct = (y1 / natH) * 100;
@@ -684,6 +1014,65 @@ export default function MangaReader({
                         })}
                     </div>
                 )}
+                {cropToolActive && (
+                    <div
+                        className="manga-crop-overlay"
+                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => {
+                            e.stopPropagation();
+                            e.currentTarget.setPointerCapture(e.pointerId);
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const relX = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+                            const relY = Math.max(0, Math.min(1, (e.clientY - rect.top) / Math.max(1, rect.height)));
+                            setCropDrag({ pageIndex: pageIdx, startX: relX, startY: relY, curX: relX, curY: relY });
+                        }}
+                        onPointerMove={(e) => {
+                            if (!cropDrag || cropDrag.pageIndex !== pageIdx) return;
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const relX = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+                            const relY = Math.max(0, Math.min(1, (e.clientY - rect.top) / Math.max(1, rect.height)));
+                            setCropDrag((prev) => (prev ? { ...prev, curX: relX, curY: relY } : null));
+                        }}
+                        onPointerUp={(e) => {
+                            e.stopPropagation();
+                            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                                e.currentTarget.releasePointerCapture(e.pointerId);
+                            }
+                            const drag = cropDrag;
+                            setCropDrag(null);
+                            if (!drag || drag.pageIndex !== pageIdx) return;
+                            const minX = Math.min(drag.startX, drag.curX);
+                            const maxX = Math.max(drag.startX, drag.curX);
+                            const minY = Math.min(drag.startY, drag.curY);
+                            const maxY = Math.max(drag.startY, drag.curY);
+                            if (maxX - minX < 0.015 || maxY - minY < 0.015) return;
+                            const box: [number, number, number, number] = [
+                                Math.round(minX * natW),
+                                Math.round(minY * natH),
+                                Math.round(maxX * natW),
+                                Math.round(maxY * natH),
+                            ];
+                            void handleRunBubbleCropOcr(payload, box);
+                        }}
+                        onPointerCancel={() => setCropDrag(null)}
+                    >
+                        {activeCrop ? (
+                            <div
+                                className="manga-crop-rect"
+                                style={{
+                                    left: `${Math.min(activeCrop.startX, activeCrop.curX) * 100}%`,
+                                    top: `${Math.min(activeCrop.startY, activeCrop.curY) * 100}%`,
+                                    width: `${Math.abs(activeCrop.curX - activeCrop.startX) * 100}%`,
+                                    height: `${Math.abs(activeCrop.curY - activeCrop.startY) * 100}%`,
+                                }}
+                            />
+                        ) : (
+                            <div className="manga-crop-hint">
+                                {isEn ? "Drag over any speech bubble to OCR" : "Обведи любой бабл для распознавания"}
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         );
     };
@@ -734,6 +1123,15 @@ export default function MangaReader({
                 </div>
 
                 <div className="manga-topbar-right">
+                    <button
+                        type="button"
+                        className={`manga-btn${cropToolActive ? " is-active" : ""}`}
+                        onClick={() => setCropToolActive((v) => !v)}
+                        title={isEn ? "Select bubble area to OCR (S)" : "Обвести бабл для OCR (S)"}
+                    >
+                        ✂ OCR
+                    </button>
+
                     <button
                         type="button"
                         className="manga-btn"
@@ -875,6 +1273,21 @@ export default function MangaReader({
                                 : (isEn ? "Add / Generate .mokuro OCR" : "Создать / прикрепить .mokuro")}
                         </button>
                     </div>
+                    {!isMobile && (
+                        <button
+                            type="button"
+                            className="manga-btn"
+                            disabled={exportingCbz}
+                            onClick={() => {
+                                setControlsOpen(false);
+                                void handleExportMobileCbz();
+                            }}
+                        >
+                            {exportingCbz
+                                ? (isEn ? "Packing .cbz…" : "Упаковка .cbz…")
+                                : (isEn ? "Pack .cbz for Phone" : "Упаковать для телефона (.cbz)")}
+                        </button>
+                    )}
                 </div>
             )}
 
@@ -996,10 +1409,70 @@ export default function MangaReader({
                                 )}
 
                                 {mokuroError && <div className="manga-mokuro-error">{mokuroError}</div>}
+                                {exportStatus && (
+                                    <div className={exportStatus.ok ? "manga-export-ok" : "manga-mokuro-error"}>
+                                        {exportStatus.message}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {isMobile && (
+                            <div className="manga-mokuro-box">
+                                <div className="manga-mokuro-status">
+                                    <span>{isEn ? "On-device OCR:" : "OCR на телефоне:"}</span>
+                                    <span className={mobileOcrReady?.onnxReady ? "is-ok" : "is-muted"}>
+                                        {mobileOcrReady?.onnxReady
+                                            ? "ML Kit + ONNX INT8"
+                                            : mobileOcrReady?.onnxDownloading
+                                                ? (isEn ? "ML Kit · ONNX downloading…" : "ML Kit · ONNX скачивается…")
+                                                : "ML Kit"}
+                                        {mobileOcrReady?.hasRemote ? (isEn ? " + PC Wi-Fi" : " + ПК Wi-Fi") : ""}
+                                    </span>
+                                </div>
+                                <div className="manga-mokuro-hint">
+                                    {isEn
+                                        ? "Use ✂ OCR to draw over any bubble, or scan all bubbles on the current page. Configure ONNX INT8 (~117 MB) and PC Wi-Fi GPU in Settings → EPUB & Manga → Manga & OCR."
+                                        : "Нажми ✂ OCR, чтобы обвести бабл вручную, или найди все баблы на странице через ML Kit. Модель ONNX (~117 МБ) и адрес ПК Wi-Fi настраиваются в Настройках → EPUB → Манга и OCR."}
+                                </div>
                             </div>
                         )}
 
                         <div className="manga-modal-footer">
+                            {isMobile && hasAndroidMangaOcrBridge() && (
+                                <button
+                                    type="button"
+                                    className="manga-primary-btn"
+                                    disabled={Boolean(ocrBusy) || !pagesByIndex[currentPage]}
+                                    onClick={() => void handleAutoScanPage()}
+                                >
+                                    {isEn ? "Scan page bubbles (ML Kit)" : "Найти баблы на стр. (ML Kit)"}
+                                </button>
+                            )}
+                            {isMobile && (
+                                <button
+                                    type="button"
+                                    className="manga-btn"
+                                    onClick={() => {
+                                        setMokuroModalOpen(false);
+                                        setCropToolActive(true);
+                                    }}
+                                >
+                                    {isEn ? "✂ Crop bubble" : "✂ Обвести бабл"}
+                                </button>
+                            )}
+                            {!isMobile && (
+                                <button
+                                    type="button"
+                                    className="manga-btn"
+                                    disabled={mokuroRunning || exportingCbz}
+                                    onClick={() => void handleExportMobileCbz()}
+                                >
+                                    {exportingCbz
+                                        ? (isEn ? "Packing .cbz…" : "Упаковка .cbz…")
+                                        : (isEn ? "Pack .cbz for Phone" : "Упаковать для телефона (.cbz)")}
+                                </button>
+                            )}
                             {!isMobile && (
                                 <button
                                     type="button"
@@ -1032,6 +1505,91 @@ export default function MangaReader({
                             </button>
                         </div>
                     </div>
+                </div>
+            )}
+
+            {/* Floating OCR result bar for on-demand bubble crop / ML Kit scan */}
+            {(ocrBusy || ocrError || ocrResult) && (
+                <div className="manga-ocr-result-bar" onClick={(e) => e.stopPropagation()}>
+                    {ocrBusy ? (
+                        <div className="manga-ocr-result-busy">
+                            <span className="manga-ocr-spinner" aria-hidden="true" />
+                            <span>{ocrBusy}</span>
+                        </div>
+                    ) : ocrError ? (
+                        <div className="manga-ocr-result-row">
+                            <span className="manga-mokuro-error">{ocrError}</span>
+                            <button
+                                type="button"
+                                className="manga-btn"
+                                onClick={() => setOcrError(null)}
+                            >
+                                ×
+                            </button>
+                        </div>
+                    ) : ocrResult && (
+                        <div className="manga-ocr-result-row">
+                            <span className="manga-ocr-engine-pill">
+                                {formatOcrEngineLabel(ocrResult.engine, ocrResult.device, isEn)} · {ocrResult.elapsedMs}ms
+                            </span>
+                            <div className="manga-ocr-result-text text-line">
+                                {ocrResult.text ? (
+                                    <TokenizedLine
+                                        text={ocrResult.text}
+                                        searchQuery=""
+                                        furiganaMode="none"
+                                        onLookupToken={onLookupToken}
+                                    />
+                                ) : (
+                                    <span style={{ opacity: 0.6 }}>
+                                        {isEn ? "(no text detected)" : "(текст не найден)"}
+                                    </span>
+                                )}
+                            </div>
+                            <div className="manga-ocr-result-actions">
+                                <button
+                                    type="button"
+                                    className="manga-btn"
+                                    title={isEn ? "Crop another bubble (S)" : "Обвести другой бабл (S)"}
+                                    onClick={() => setCropToolActive(true)}
+                                >
+                                    ✂
+                                </button>
+                                {ocrResult.text && (
+                                    <button
+                                        type="button"
+                                        className="manga-btn"
+                                        title={isEn ? "Pin as bubble on page" : "Закрепить как бабл на странице"}
+                                        onClick={handlePinOcrResultAsBubble}
+                                    >
+                                        + {isEn ? "Bubble" : "Бабл"}
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    className="manga-btn"
+                                    title={isEn ? "Edit OCR text" : "Исправить текст"}
+                                    onClick={() =>
+                                        setEditingBubble({
+                                            pageIndex: -1,
+                                            blockIndex: 0,
+                                            text: ocrResult.text,
+                                        })
+                                    }
+                                >
+                                    ✎
+                                </button>
+                                <button
+                                    type="button"
+                                    className="manga-btn"
+                                    title={isEn ? "Dismiss" : "Закрыть"}
+                                    onClick={() => setOcrResult(null)}
+                                >
+                                    ×
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
 

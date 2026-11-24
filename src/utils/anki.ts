@@ -550,6 +550,11 @@ const escapeAnkiQuery = (value: string): string => {
     return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 };
 
+const inlineSceneVideo = (filename: string): string => {
+    const src = filename.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<video src="${src}" controls playsinline preload="metadata" style="display:block;width:640px;max-width:100%;height:auto;margin:0 auto"></video>`;
+};
+
 const makePairKey = (word: string, reading?: string | null): string => {
     return `${word || ""}__${reading || ""}`;
 };
@@ -682,7 +687,8 @@ export const addNote = async (settings: any, noteData: any) => {
             fields[settings.ankiFieldAudio] = `${fields[settings.ankiFieldAudio] || ''} [sound:${storedName}]`.trim();
         } catch (error: any) { return { error: error?.message || String(error) }; }
     } else if (noteData.audioPath && sceneField) {
-        const filename = noteData.audioFilename || `setsuna_player_${safeWord}_${Date.now()}${noteData.audioMediaType === 'video' ? '.mp4' : '.mp3'}`;
+        const isVideo = noteData.audioMediaType === 'video';
+        const filename = noteData.audioFilename || `setsuna_player_${safeWord}_${Date.now()}${isVideo ? '.webm' : '.mp3'}`;
         try {
             const storedName = await invokeAnki('storeMediaFile', {
                 filename,
@@ -690,7 +696,8 @@ export const addNote = async (settings: any, noteData: any) => {
                 deleteExisting: true,
             });
             if (typeof storedName !== 'string' || !storedName) throw new Error('Anki did not store the clip');
-            fields[sceneField] = `${fields[sceneField] || ""} [sound:${storedName}]`.trim();
+            const media = isVideo ? inlineSceneVideo(storedName) : `[sound:${storedName}]`;
+            fields[sceneField] = `${fields[sceneField] || ""} ${media}`.trim();
         } catch (error: any) {
             return { error: error.message };
         }

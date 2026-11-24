@@ -12,6 +12,7 @@ import SettingsFeedback from './Settings/SettingsFeedback';
 import SettingsCloud from "./Settings/SettingsCloud";
 import SettingsDiscord from "./Settings/SettingsDiscord";
 import SettingsAI from "./Settings/SettingsAI";
+import SettingsMangaOcr from "../features/manga/SettingsMangaOcr";
 import { isMobilePlatform } from "../utils/platform";
 import { IconPlayerTab, IconBookTab, IconClose, IconCloud, IconEye, IconImport, IconMessage, IconRefresh, IconSearch, IconSparkle, IconTextTab } from "./Icons";
 import { DEFAULT_SETTINGS } from "../utils/constants";
@@ -60,7 +61,7 @@ export interface AppSettings {
   mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
   mobileOverlayLocked?: boolean; mobileOverlayToolbarExpanded?: boolean;
   epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'auto' | 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubParagraphSpacingJa?: number; epubPagePadding?: number; epubShowImages?: boolean; epubBlurImages?: boolean; epubBlurImagesMode?: 'off' | 'after-toc' | 'all'; epubFuriganaMode?: 'show' | 'hover' | 'hide'; epubJustify?: boolean; epubPrettyWrap?: boolean; epubVerticalGrid?: boolean; epubTextIndent?: 'auto' | 'none' | 'indent'; epubAutoscrollSpeed?: number; epubAutoSync?: boolean; epubSyncUploadFiles?: boolean; epubVolumeKeyPaging?: boolean; epubEinkMode?: boolean; epubImageMaxWidth?: number;
-  playerRewindSeconds: number; playerSubtitleStep: number; playerMiningLeadIn: number; playerMiningLeadOut: number; playerMiningReplayOnMine: boolean; playerCardFormat?: "audio" | "video"; playerSceneLeadIn?: number; playerAnkiDeck?: string; playerMiningUseClipForAnki: boolean;
+  playerRewindSeconds: number; playerSubtitleStep: number; playerMiningReplayOnMine: boolean; playerCardFormat?: "audio" | "video"; playerAnkiDeck?: string; playerMiningUseClipForAnki: boolean;
   playerKeyPlayPause: string; playerKeyBack: string; playerKeyForward: string; playerKeyMine: string; playerKeyOffsetMinus: string; playerKeyOffsetPlus: string;
   discordEnabled: boolean; discordClientId: string; discordShowTab: boolean; discordShowStats: boolean; discordShowChars: boolean; discordShowWords: boolean; discordShowSentences: boolean; discordShowProgress: boolean; discordShowPaused: boolean; discordShowTimer: boolean; discordShowButtons: boolean; discordShowSpeed?: boolean; discordTitleInMemberList?: boolean;
   discordTextActivityType: 'playing' | 'watching' | 'listening' | 'competing'; discordTextStatus: 'playing' | 'reading' | 'watching' | 'mining' | 'custom'; discordCustomTextStatus: string;
@@ -939,6 +940,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                           {activeTab === 'epub' && <div className="settings-subnav">
                               <SettingsSubNavButton active={activeSubTab === 'epub-reader'} label={isEnglish ? 'Reading view' : 'Вид читалки'} onClick={() => handleNav('epub', 'epub-reader')} />
                               <SettingsSubNavButton active={activeSubTab === 'epub-layout'} label={isEnglish ? 'Layout & images' : 'Раскладка и картинки'} onClick={() => handleNav('epub', 'epub-layout')} />
+                              <SettingsSubNavButton active={activeSubTab === 'epub-manga'} label={isEnglish ? 'Manga & OCR' : 'Манга и OCR'} onClick={() => handleNav('epub', 'epub-manga')} />
                           </div>}
                       </>
                   )}
@@ -1672,6 +1674,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{settings.appLanguage === 'en' ? 'Image max width' : 'Макс. ширина картинки'}<input type="number" min="240" max="1400" className="modern-input" value={settings.epubImageMaxWidth ?? 720} onChange={(e) => updateSetting('epubImageMaxWidth', Number(e.target.value))} style={{ marginTop: 6 }} /></label>
                         </div>
                     </div>
+                    <SettingsMangaOcr language={settings.appLanguage || 'ru'} isMobile={isMobilePlatform()} />
                 </div>
               )}
 
@@ -1702,18 +1705,8 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                 <option value="audio">{settings.appLanguage === 'en' ? 'Original audio only' : 'Только оригинальный звук'}</option>
                             </select>
                         </label>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-                                {settings.appLanguage === 'en' ? 'Lead-in before subtitle' : 'Запас до реплики'}
-                                <input type="number" min="0" max="30" step="0.05" className="modern-input" value={settings.playerCardFormat === 'audio' ? settings.playerMiningLeadIn : settings.playerSceneLeadIn ?? 5} onChange={(e) => updateSetting(settings.playerCardFormat === 'audio' ? 'playerMiningLeadIn' : 'playerSceneLeadIn', Math.min(30, Math.max(0, Number(e.target.value))))} style={{ marginTop: 6 }} />
-                            </label>
-                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-                                {settings.appLanguage === 'en' ? 'Lead-out after subtitle' : 'Запас после реплики'}
-                                <input type="number" min="0" max="3" step="0.05" className="modern-input" value={settings.playerMiningLeadOut ?? 0.25} onChange={(e) => updateSetting('playerMiningLeadOut', Number(e.target.value))} style={{ marginTop: 6 }} />
-                            </label>
-                        </div>
                         <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: 12 }}>
-                            {settings.appLanguage === 'en' ? 'FFmpeg exports the clip. Set the lead-in in seconds to include the scene before the line.' : 'Для экспорта нужен FFmpeg. Запас до реплики задаётся в секундах и попадает в карточку вместе с репликой.'}
+                            {settings.appLanguage === 'en' ? 'The clip starts half a second before the subtitle and ends half a second after it. FFmpeg is required.' : 'Клип начинается за 0,5 секунды до реплики и заканчивается через 0,5 секунды после неё. Для экспорта нужен FFmpeg.'}
                         </div>
                     </div>
 

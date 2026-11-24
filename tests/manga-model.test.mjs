@@ -10,6 +10,8 @@ import {
     isMangaFileExtension,
     isMangaTabData,
     joinMokuroLines,
+    normalizeOcrServerUrl,
+    resolveMobileOcrChain,
 } from "../src/features/manga/mangaModel.ts";
 
 test("joinMokuroLines joins Japanese lines without spaces and English lines with spaces", () => {
@@ -72,4 +74,38 @@ test("computeFittedBubbleFontPx keeps every column and character inside the OCR 
 
     const tiny = { box: [0, 0, 2, 2], vertical: true, fontSize: 30, lines: ["あいうえお"] };
     assert.equal(computeFittedBubbleFontPx(tiny), 4);
+});
+
+test("normalizeOcrServerUrl normalizes scheme and trailing slashes", () => {
+    assert.equal(normalizeOcrServerUrl(""), "");
+    assert.equal(normalizeOcrServerUrl("   "), "");
+    assert.equal(normalizeOcrServerUrl("192.168.1.42:47123/"), "http://192.168.1.42:47123");
+    assert.equal(normalizeOcrServerUrl("https://my-pc.local:8443///"), "https://my-pc.local:8443");
+});
+
+test("resolveMobileOcrChain routes across PC Wi-Fi, offline ONNX, and ML Kit", () => {
+    assert.deepEqual(
+        resolveMobileOcrChain({ mobileEngine: "auto", remoteUrl: "" }, false),
+        ["mlkit"],
+    );
+    assert.deepEqual(
+        resolveMobileOcrChain({ mobileEngine: "auto", remoteUrl: "" }, true),
+        ["onnx", "mlkit"],
+    );
+    assert.deepEqual(
+        resolveMobileOcrChain({ mobileEngine: "auto", remoteUrl: "192.168.0.15:47123" }, true),
+        ["remote", "onnx", "mlkit"],
+    );
+    assert.deepEqual(
+        resolveMobileOcrChain({ mobileEngine: "remote", remoteUrl: "" }, true),
+        ["remote"],
+    );
+    assert.deepEqual(
+        resolveMobileOcrChain({ mobileEngine: "onnx", remoteUrl: "192.168.0.15:47123" }, false),
+        ["onnx"],
+    );
+    assert.deepEqual(
+        resolveMobileOcrChain({ mobileEngine: "mlkit", remoteUrl: "192.168.0.15:47123" }, true),
+        ["mlkit"],
+    );
 });

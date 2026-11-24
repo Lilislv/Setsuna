@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { IconClose, IconPlayerTab, IconSearch } from "../../components/Icons";
 import { rankPosters, type Poster, type PosterSearch, type TitleHint } from "./posterModel";
+import { createLocalPoster, deleteLocalPoster, isLocalPoster, readLocalPoster } from "./localPoster";
 
 let tmdbToken = "";
 
@@ -48,17 +49,37 @@ export function LibraryDialog({
 
 export function PosterArt({ poster, label }: { poster?: Poster; label: string }) {
     const [failedUrl, setFailedUrl] = useState("");
-    const show = poster && failedUrl !== poster.imageUrl;
+    const [localImage, setLocalImage] = useState<{ key: string; url: string }>();
+    const imageUrl = poster?.imageUrl || "";
+    const local = isLocalPoster(poster);
+    useEffect(() => {
+        if (!poster || !local) return;
+        let cancelled = false;
+        let objectUrl = "";
+        void readLocalPoster(poster)
+            .then((blob) => {
+                if (cancelled || !blob) return;
+                objectUrl = URL.createObjectURL(blob);
+                setLocalImage({ key: imageUrl, url: objectUrl });
+            })
+            .catch(console.warn);
+        return () => {
+            cancelled = true;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [imageUrl, local]);
+    const resolvedUrl = local ? (localImage?.key === imageUrl ? localImage.url : "") : imageUrl;
+    const show = !!resolvedUrl && failedUrl !== resolvedUrl;
     return (
         <div className="sp-poster-art" data-has-image={!!show}>
             {show ? (
                 <img
-                    src={poster.imageUrl}
+                    src={resolvedUrl}
                     alt=""
                     loading="lazy"
                     decoding="async"
                     referrerPolicy="no-referrer"
-                    onError={() => setFailedUrl(poster.imageUrl)}
+                    onError={() => setFailedUrl(resolvedUrl)}
                 />
             ) : (
                 <div className="sp-poster-placeholder" aria-hidden="true">
@@ -71,6 +92,7 @@ export function PosterArt({ poster, label }: { poster?: Poster; label: string })
 }
 
 export function PosterSource({ poster }: { poster: Poster }) {
+    if (isLocalPoster(poster)) return <span className="sp-poster-source">{poster.source}</span>;
     return (
         <button
             type="button"
@@ -106,7 +128,51 @@ export function PosterPicker({
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [hasSearched, setHasSearched] = useState(false);
+    const [importing, setImporting] = useState(false);
+    const [importError, setImportError] = useState("");
+    const fileInput = useRef<HTMLInputElement>(null);
+    const localRequest = useRef(0);
     const request = useRef(0);
+    const chooseFile = async (file: File) => {
+        const id = ++localRequest.current;
+        setImporting(true);
+        setImportError("");
+        let poster: Poster | undefined;
+        try {
+            poster = await createLocalPoster(file, initial);
+            if (id !== localRequest.current) {
+                await deleteLocalPoster(poster);
+                return;
+            }
+            onChoose(poster);
+        } catch (failure) {
+            if (poster) void deleteLocalPoster(poster).catch(console.warn);
+            if (id === localRequest.current) {
+                const reason = failure instanceof Error ? failure.message : "";
+                setImportError(
+                    reason === "format"
+                        ? en
+                            ? "Choose a JPG, PNG or WebP image."
+                            : "Выбери изображение JPG, PNG или WebP."
+                        : reason === "size"
+                          ? en
+                              ? "Image is too large. Choose a file under 20 MB and 40 megapixels."
+                              : "Изображение слишком большое. Выбери файл до 20 МБ и 40 мегапикселей."
+                          : en
+                            ? "Could not read or save the cover. Try another image or check available storage."
+                            : "Не удалось прочитать или сохранить обложку. Попробуй другое изображение или проверь свободное место.",
+                );
+            }
+        } finally {
+            if (id === localRequest.current) setImporting(false);
+        }
+    };
+    useEffect(
+        () => () => {
+            localRequest.current++;
+        },
+        [],
+    );
     const runSearch = async () => {
         const name = query.trim();
         if (!name) return;
@@ -149,6 +215,24 @@ export function PosterPicker({
 
     return (
         <LibraryDialog title={en ? "Choose a poster" : "Выбрать обложку"} en={en} onClose={onClose} wide>
+            <div className="sp-dialog-actions">
+                <input
+                    ref={fileInput}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    hidden
+                    onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        event.target.value = "";
+                        if (file) void chooseFile(file);
+                    }}
+                />
+                <button type="button" disabled={importing} onClick={() => fileInput.current?.click()}>
+                    {en ? "From file…" : "Из файла…"}
+                </button>
+                {importing && <span role="status">{en ? "Saving cover…" : "Сохранение обложки…"}</span>}
+                {importError && <span role="alert">{importError}</span>}
+            </div>
             <form
                 className="sp-poster-search"
                 onSubmit={(event) => {

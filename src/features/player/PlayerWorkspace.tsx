@@ -14,6 +14,7 @@ import { PlayerCardEditor, type SceneDraft } from "./PlayerCardEditor";
 import {
     escapeCardText,
     clipInterval,
+    scenePaddingSeconds,
     previousCue,
     nextCue,
     cueAt,
@@ -24,7 +25,11 @@ import {
 } from "./model";
 import { addPlayerNote, subtitleScenes } from "./mining";
 import { SubtitleTracks } from "./SubtitleTracks";
-import { fileName, mediaExtensions, isMediaPath, isSubtitlePath, matchSubtitlePaths } from "./localMedia";
+import { episodeLabel, fileName, mediaExtensions, isMediaPath, isSubtitlePath, matchSubtitlePaths } from "./localMedia";
+import { PlayerTransport, readPlaybackAudio, writePlaybackAudio, type PlaybackAudio } from "./PlayerTransport";
+import { IconArchive, IconChevronDown, IconChevronUp, IconPlayerTab, IconSettings } from "../../components/Icons";
+import { LibraryDialog } from "./PosterPicker";
+import { cleanReleaseTitle, inferMediaTitle } from "./posterModel";
 import { PlayerLibrary } from "./PlayerLibrary";
 import { usePlayerLibrary } from "./usePlayerLibrary";
 import { episodeProgress, naturalOrder, positionKey, readProgress, type LibraryDirectory } from "./libraryModel";
@@ -172,6 +177,10 @@ export default function PlayerWorkspace(props: Props & { onDeckChange?: (deck: s
     const currentSource = sources[index] || "";
     const sidecars = droppedTracks.length ? droppedTracks : libraryQueue?.directory.subtitles || [];
     const [primaryFile, translationFile] = matchSubtitlePaths(currentSource, sidecars, !matchOnly);
+    const sourceFile = fileName(currentSource).split("?")[0];
+    const title = libraryQueue
+        ? inferMediaTitle(libraryQueue.directory, libraryQueue.root).title
+        : cleanReleaseTitle(sourceFile, true).title || sourceFile;
     const sourceActions = (
         <div className={libraryOpen ? "sp-source is-library" : "sp-source"}>
             {!libraryOpen && (
@@ -181,16 +190,44 @@ export default function PlayerWorkspace(props: Props & { onDeckChange?: (deck: s
                         setLibraryOpen(true);
                     }}
                 >
-                    {en ? "Library" : "Видеотека"}
+                    <IconArchive /> {en ? "Library" : "Видеотека"}
                 </button>
             )}
             {libraryOpen && currentSource && (
                 <button onClick={() => setLibraryOpen(false)}>{en ? "Back to video" : "К видео"}</button>
             )}
-            <button onClick={() => void choose()}>{en ? "Open media…" : "Открыть видео…"}</button>
-            <button aria-expanded={urlVisible} onClick={() => setUrlVisible(!urlVisible)}>
-                URL
-            </button>
+            {!libraryOpen && (
+                <div className="sp-watch-title" title={sourceFile}>
+                    <IconPlayerTab />
+                    <strong>{title}</strong>
+                </div>
+            )}
+            {!libraryOpen && sources.length > 1 && (
+                <select
+                    className="sp-episode-select"
+                    aria-label={en ? "Episode" : "Серия"}
+                    value={index}
+                    disabled={loading}
+                    onChange={(e) => switchEpisode(Number(e.target.value), false)}
+                >
+                    {sources.map((source, i) => (
+                        <option key={source} value={i}>{episodeLabel(source, i, en)}</option>
+                    ))}
+                </select>
+            )}
+            <div className="sp-source-actions">
+                <button onClick={() => void choose()}>{en ? "Open media…" : "Открыть видео…"}</button>
+                <button aria-expanded={urlVisible} onClick={() => setUrlVisible(!urlVisible)}>URL</button>
+                {props.onDeckChange && (
+                    <button
+                        className="sp-deck"
+                        onClick={() => setDeckPickerOpen(true)}
+                        title={en ? "Choose the Anki deck for this mode" : "Выбрать колоду Anki для плеера"}
+                    >
+                        {props.settings.playerAnkiDeck || "Anki"}
+                    </button>
+                )}
+            </div>
             {urlVisible && (
                 <form
                     onSubmit={async (e) => {
@@ -253,31 +290,6 @@ export default function PlayerWorkspace(props: Props & { onDeckChange?: (deck: s
                     </label>
                     <button disabled={loading}>{loading ? "…" : en ? "Open" : "Открыть"}</button>
                 </form>
-            )}
-            {libraryOpen ? null : sources.length > 1 ? (
-                <select
-                    aria-label={en ? "Episode" : "Серия"}
-                    value={index}
-                    disabled={loading}
-                    onChange={(e) => switchEpisode(Number(e.target.value), false)}
-                >
-                    {sources.map((s, i) => (
-                        <option key={s} value={i}>
-                            {fileName(s)}
-                        </option>
-                    ))}
-                </select>
-            ) : (
-                <span className="sp-name">{sources[0] && fileName(sources[0]).split("?")[0]}</span>
-            )}
-            {props.onDeckChange && (
-                <button
-                    className="sp-deck"
-                    onClick={() => setDeckPickerOpen(true)}
-                    title={en ? "Choose the Anki deck for this mode" : "Выбрать колоду Anki для плеера"}
-                >
-                    {props.settings.playerAnkiDeck || "Anki"}
-                </button>
             )}
             {error && <span role="alert">{error}</span>}
         </div>
@@ -368,10 +380,16 @@ function Session({
     const [translationOffset, setTranslationOffset] = useState(resume.translationOffset);
     const [current, setCurrent] = useState(0);
     const [draft, setDraft] = useState<SceneDraft | null>(null);
+    const [studyOpen, setStudyOpen] = useState(false);
     const [tracks, setTracks] = useState<string[]>([]);
     const [audioTrack, setAudioTrack] = useState<number>();
     const [audioOnly, setAudioOnly] = useState(false);
     const [duration, setDuration] = useState(0);
+    const [ready, setReady] = useState(false);
+    const [isPlaying, setPlaying] = useState(false);
+    const [audio, setAudio] = useState(readPlaybackAudio);
+    const [transcriptOpen, setTranscriptOpen] = useState(true);
+    const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
     const [query, setQuery] = useState("");
     const [pausedLine, setPausedLine] = useState<Cue>();
     const [mode, setMode] = useState<Mode>("normal");
@@ -422,6 +440,47 @@ function Session({
     const play = () => {
         void video.current?.play().catch((e) => report(String(e)));
     };
+    const togglePlayback = () => {
+        if (!video.current) return;
+        if (video.current.paused) play();
+        else video.current.pause();
+    };
+    const markLoopEnd = () => {
+        if (range.a !== undefined && current > range.a) setRange({ a: range.a, b: current });
+    };
+    const toggleFullscreen = () => {
+        const action = document.fullscreenElement
+            ? document.exitFullscreen()
+            : document.documentElement.requestFullscreen();
+        void action.catch((error) => report(String(error)));
+    };
+    const seekByUser = (position: number) => {
+        replayEnd.current = null;
+        repeats.current = { id: -1, count: 0 };
+        seek(position);
+    };
+    const applyAudio = (next: PlaybackAudio) => {
+        const element = video.current;
+        if (element) {
+            element.volume = next.volume;
+            element.muted = next.muted;
+        }
+        setAudio(next);
+        writePlaybackAudio(next);
+    };
+    useLayoutEffect(() => {
+        const element = video.current;
+        if (element) {
+            element.volume = audio.volume;
+            element.muted = audio.muted;
+        }
+    }, []);
+    useEffect(() => {
+        const sync = () => setFullscreen(Boolean(document.fullscreenElement));
+        document.addEventListener("fullscreenchange", sync);
+        return () => document.removeEventListener("fullscreenchange", sync);
+    }, []);
+
     const moveCue = (forward: boolean) => {
         const target = nextCue(cues, clock, forward ? 1 : -1, offset, duration);
         if (!target) return;
@@ -549,8 +608,9 @@ function Session({
             );
             report(result.error || result.warning || tr("Card added to Anki", "Карточка добавлена в Anki"));
             if (!result.error && settings.playerMiningReplayOnMine) {
-                seek(scene.start);
-                replayEnd.current = scene.end;
+                const replay = exact ? scene : clipInterval(scene);
+                seek(replay.start);
+                replayEnd.current = replay.end;
                 play();
             }
             return result.error || undefined;
@@ -565,8 +625,8 @@ function Session({
         if (!source || !duration) return;
         const scene = selectedScene || {
             source,
-            start: Math.max(0, current - 5),
-            end: Math.min(duration, Math.max(0.1, current)),
+            start: Math.max(0, current - scenePaddingSeconds),
+            end: Math.min(duration, current + scenePaddingSeconds),
             duration,
             audioOnly,
             audioTrack,
@@ -584,15 +644,7 @@ function Session({
             const interval =
                 range.a !== undefined && range.b !== undefined
                     ? { start: range.a, end: range.b }
-                    : selectedScene
-                      ? clipInterval(
-                            scene,
-                            audioOnly || settings.playerCardFormat === "audio"
-                                ? settings.playerMiningLeadIn
-                                : (settings.playerSceneLeadIn ?? 5),
-                            settings.playerMiningLeadOut,
-                        )
-                      : scene;
+                    : selectedScene ? clipInterval(scene) : scene;
             setDraft({ ...data, scene: { ...scene, ...interval } });
         } else await saveCard(data);
     };
@@ -603,6 +655,7 @@ function Session({
         const onKey = (e: KeyboardEvent) => {
             if (
                 draft ||
+                studyOpen ||
                 shortcutsBlocked ||
                 e.defaultPrevented ||
                 e.ctrlKey ||
@@ -615,11 +668,11 @@ function Session({
             const match = (key: string) => [e.code, e.key].some((s) => s.toLowerCase() === key.toLowerCase());
             if (match(settings.playerKeyPlayPause || "Space")) {
                 if ((e.target as HTMLElement)?.closest("button")) return;
-                if (video.current?.paused) play();
-                else video.current?.pause();
-            } else if (match(settings.playerKeyBack || "ArrowLeft")) seek(current - settings.playerRewindSeconds);
+                togglePlayback();
+            } else if (match(settings.playerKeyBack || "ArrowLeft"))
+                seekByUser(current - settings.playerRewindSeconds);
             else if (match(settings.playerKeyForward || "ArrowRight"))
-                seek(current + settings.playerRewindSeconds);
+                seekByUser(current + settings.playerRewindSeconds);
             else if (match(settings.playerKeyMine || "m")) {
                 if (!e.repeat) void mine();
             } else if (match(settings.playerKeyOffsetMinus || "["))
@@ -627,6 +680,10 @@ function Session({
             else if (match(settings.playerKeyOffsetPlus || "]")) setOffset((n) => n + settings.playerSubtitleStep);
             else if (match("ArrowUp")) moveCue(false);
             else if (match("ArrowDown")) moveCue(true);
+            else if (match("KeyF") && !e.repeat) toggleFullscreen();
+            else if (match("KeyT") && !e.repeat) setTranscriptOpen((open) => !open);
+            else if (match("KeyI") && ready && !e.repeat) setRange({ a: current });
+            else if (match("KeyO") && !e.repeat) markLoopEnd();
             else return;
             e.preventDefault();
         };
@@ -663,19 +720,29 @@ function Session({
 
     const activeScene = cue && sceneFor(cue);
     return (
-        <div className="sp-body">
+        <div className="sp-body" data-transcript-open={transcriptOpen} data-fullscreen={fullscreen}>
             <main className="sp-main">
                 <div className="sp-screen">
                     {source ? (
                         <video
                             ref={video}
-                            controls
-                            controlsList="nofullscreen"
                             playsInline
+                            onClick={togglePlayback}
+                            onCanPlay={() => setReady(true)}
+                            onEmptied={() => {
+                                setReady(false);
+                                setPlaying(false);
+                                setDuration(0);
+                            }}
+                            onDurationChange={(event) => {
+                                const length = event.currentTarget.duration;
+                                setDuration(Number.isFinite(length) ? length : 0);
+                            }}
                             autoPlay={autoNext}
                             onTimeUpdate={(e) => tick(e.currentTarget)}
                             onLoadedMetadata={(e) => {
                                 const el = e.currentTarget;
+                                setReady(true);
                                 setAudioOnly(el.videoWidth === 0);
                                 setDuration(Number.isFinite(el.duration) ? el.duration : 0);
                                 el.playbackRate = rate;
@@ -683,6 +750,7 @@ function Session({
                                 if (saved > 0 && saved < el.duration - 2) seek(saved);
                             }}
                             onPlay={() => {
+                                setPlaying(true);
                                 playing.current = true;
                                 ended.current = false;
                                 setPausedLine(undefined);
@@ -695,14 +763,18 @@ function Session({
                                 }
                             }}
                             onPause={(e) => {
+                                setPlaying(false);
                                 if (!e.currentTarget.ended) persist(e.currentTarget.currentTime, playing.current);
                             }}
                             onEnded={() => {
+                                setPlaying(false);
                                 ended.current = true;
                                 persist(0, true, true);
                                 nextEpisode?.();
                             }}
                             onError={() => {
+                                setReady(false);
+                                setPlaying(false);
                                 compatible.setFailed(true);
                                 report(
                                     tr(
@@ -724,117 +796,142 @@ function Session({
                         </div>
                     )}
                 </div>
-                <div className="sp-controls">
-                    <button
-                        disabled={!cues.length}
-                        onClick={() => moveCue(false)}
-                        title={tr("Previous line (↑)", "Предыдущая реплика (↑)")}
-                    >
-                        ↑
-                    </button>
-                    <button
-                        disabled={!cues.length}
-                        onClick={() => moveCue(true)}
-                        title={tr("Next line (↓)", "Следующая реплика (↓)")}
-                    >
-                        ↓
-                    </button>
-                    <select
-                        aria-label={tr("Study mode", "Режим просмотра")}
-                        value={mode}
-                        onChange={(e) => setMode(e.target.value as Mode)}
-                    >
-                        <option value="normal">{tr("Normal playback", "Обычный просмотр")}</option>
-                        <option value="pause">{tr("Pause after each line", "Пауза после реплики")}</option>
-                        <option value="pauseStart">{tr("Pause at line start", "Пауза в начале реплики")}</option>
-                        <option value="fast">{tr("Fast-forward gaps", "Ускорять паузы")}</option>
-                        <option value="repeat">{tr("Repeat line", "Повтор реплики")}</option>
-                        <option value="skip">{tr("Skip gaps", "Пропуск пауз")}</option>
-                    </select>
-                    {mode === "repeat" && (
-                        <select
-                            aria-label={tr("Repeat count", "Число повторов")}
-                            value={repeatLimit}
-                            onChange={(e) => {
-                                setRepeatLimit(Number(e.target.value));
-                                repeats.current = { id: -1, count: 0 };
-                            }}
+                <PlayerTransport
+                    en={language === "en"}
+                    ready={ready}
+                    playing={isPlaying}
+                    current={current}
+                    duration={duration}
+                    audio={audio}
+                    transcriptOpen={transcriptOpen}
+                    fullscreen={fullscreen}
+                    onPlayPause={togglePlayback}
+                    onSeek={seekByUser}
+                    onAudio={applyAudio}
+                    onToggleTranscript={() => setTranscriptOpen((open) => !open)}
+                    onFullscreen={toggleFullscreen}
+                    onSettings={() => setStudyOpen(true)}
+                    settingsLabel={rate !== 1 ? rate + "×" : undefined}
+                    studyActive={mode !== "normal" || range.b !== undefined}
+                >
+                    <div className="sp-card-actions">
+                        <button
+                            className="sp-mine"
+                            disabled={busy || !duration}
+                            onClick={() => void mine()}
+                            aria-label={tr("Add sentence to Anki", "Добавить реплику в Anki")}
                         >
-                            {[0, 1, 2, 3, 5].map((n) => (
-                                <option key={n} value={n}>
-                                    {n ? n + "×" : "∞"}
-                                </option>
-                            ))}
-                        </select>
-                    )}
-                    <select
-                        aria-label={tr("Playback speed", "Скорость")}
-                        value={rate}
-                        onChange={(e) => {
-                            const n = Number(e.target.value);
-                            setRate(n);
-                            if (video.current) video.current.playbackRate = n;
-                        }}
-                    >
-                        {[0.5, 0.75, 1, 1.25, 1.5, 2, 3].map((n) => (
-                            <option key={n} value={n}>
-                                {n}×
-                            </option>
-                        ))}
-                    </select>
-                    {tracks.length > 1 && (
-                        <select
-                            aria-label={tr("Audio track", "Озвучка")}
-                            value={audioTrack ?? 0}
-                            onChange={(e) => {
-                                const list = video.current && availableAudio(video.current);
-                                if (list)
-                                    Array.from(list).forEach((track, i) => {
-                                        track.enabled = i === Number(e.target.value);
-                                    });
-                            }}
+                            {busy ? (
+                                "…"
+                            ) : (
+                                <>
+                                    <span className="sp-wide-label">
+                                        {tr("+ Sentence to Anki", "+ Реплику в Anki")}
+                                    </span>
+                                    <span className="sp-compact-label" aria-hidden="true">
+                                        + Anki
+                                    </span>
+                                </>
+                            )}
+                        </button>
+                        <button
+                            disabled={busy || !duration}
+                            onClick={() => void mine(true)}
+                            aria-label={tr("Edit card", "Изменить карточку")}
                         >
-                            {tracks.map((name, i) => (
-                                <option key={i} value={i}>
-                                    {name}
-                                </option>
-                            ))}
-                        </select>
-                    )}
-                    <button
-                        title={tr("Mark loop start", "Начало повтора")}
-                        onClick={() => setRange({ a: current })}
+                            <span className="sp-wide-label">{tr("Edit card…", "Изменить карточку…")}</span>
+                            <span className="sp-compact-label" aria-hidden="true">
+                                ✎
+                            </span>
+                        </button>
+                    </div>
+                </PlayerTransport>
+                {studyOpen && (
+                    <LibraryDialog
+                        title={tr("Playback settings", "Настройки просмотра")}
+                        en={language === "en"}
+                        onClose={() => setStudyOpen(false)}
                     >
-                        A {range.a !== undefined && formatClock(range.a)}
-                    </button>
-                    <button
-                        disabled={range.a === undefined || current <= range.a}
-                        title={tr("Mark loop end", "Конец повтора")}
-                        onClick={() => setRange({ ...range, b: current })}
-                    >
-                        B {range.b !== undefined && formatClock(range.b)}
-                    </button>
-                    {range.a !== undefined && (
-                        <button onClick={() => setRange({})}>{tr("Clear A–B", "Сброс A–B")}</button>
-                    )}
-                    <button
-                        onClick={() =>
-                            void (
-                                document.fullscreenElement
-                                    ? document.exitFullscreen()
-                                    : document.documentElement.requestFullscreen()
-                            )?.catch((e) => report(String(e)))
-                        }
-                    >
-                        {tr("Full screen", "Во весь экран")}
-                    </button>
-                    <button className="sp-mine" disabled={busy || !duration} onClick={() => void mine()}>
-                        {busy ? "…" : tr("+ Sentence to Anki", "+ Реплику в Anki")}
-                    </button>
-                    <button disabled={busy || !duration} onClick={() => void mine(true)}>
-                        {tr("Edit card…", "Изменить карточку…")}
-                    </button>
-                </div>
+                        <div className="sp-study">
+                            <label>
+                                {tr("Study mode", "Режим просмотра")}
+                                <select value={mode} onChange={(e) => setMode(e.target.value as Mode)}>
+                                    <option value="normal">{tr("Normal playback", "Обычный просмотр")}</option>
+                                    <option value="pause">{tr("Pause after each line", "Пауза после реплики")}</option>
+                                    <option value="pauseStart">{tr("Pause at line start", "Пауза в начале реплики")}</option>
+                                    <option value="fast">{tr("Fast-forward gaps", "Ускорять паузы")}</option>
+                                    <option value="repeat">{tr("Repeat line", "Повтор реплики")}</option>
+                                    <option value="skip">{tr("Skip gaps", "Пропуск пауз")}</option>
+                                </select>
+                            </label>
+                            {mode === "repeat" && (
+                                <label>
+                                    {tr("Repeat count", "Число повторов")}
+                                    <select
+                                        value={repeatLimit}
+                                        onChange={(e) => {
+                                            setRepeatLimit(Number(e.target.value));
+                                            repeats.current = { id: -1, count: 0 };
+                                        }}
+                                    >
+                                        {[0, 1, 2, 3, 5].map((n) => (
+                                            <option key={n} value={n}>{n ? n + "×" : "∞"}</option>
+                                        ))}
+                                    </select>
+                                </label>
+                            )}
+                            <label>
+                                {tr("Playback speed", "Скорость")}
+                                <select value={rate} onChange={(e) => setRate(Number(e.target.value))}>
+                                    {[0.5, 0.75, 1, 1.25, 1.5, 2, 3].map((n) => (
+                                        <option key={n} value={n}>{n}×</option>
+                                    ))}
+                                </select>
+                            </label>
+                            {tracks.length > 1 && (
+                                <label>
+                                    {tr("Audio track", "Озвучка")}
+                                    <select
+                                        value={audioTrack ?? 0}
+                                        onChange={(e) => {
+                                            const list = video.current && availableAudio(video.current);
+                                            if (list)
+                                                Array.from(list).forEach((track, i) => {
+                                                    track.enabled = i === Number(e.target.value);
+                                                });
+                                        }}
+                                    >
+                                        {tracks.map((name, i) => (
+                                            <option key={i} value={i}>{name}</option>
+                                        ))}
+                                    </select>
+                                </label>
+                            )}
+                            <fieldset>
+                                <legend>{tr("A–B loop", "Повтор отрезка A–B")}</legend>
+                                <button
+                                    disabled={!ready}
+                                    data-set={range.a !== undefined}
+                                    title={tr("Mark loop start (I)", "Начало повтора (I)")}
+                                    onClick={() => setRange({ a: current })}
+                                >
+                                    A {range.a !== undefined && formatClock(range.a)}
+                                </button>
+                                <button
+                                    data-set={range.b !== undefined}
+                                    disabled={range.a === undefined || current <= range.a}
+                                    title={tr("Mark loop end (O)", "Конец повтора (O)")}
+                                    onClick={markLoopEnd}
+                                >
+                                    B {range.b !== undefined && formatClock(range.b)}
+                                </button>
+                                {range.a !== undefined && (
+                                    <button onClick={() => setRange({})}>{tr("Clear A–B", "Сбросить A–B")}</button>
+                                )}
+                            </fieldset>
+                        </div>
+                    </LibraryDialog>
+                )}
                 {draft && (
                     <PlayerCardEditor
                         draft={draft}
@@ -864,62 +961,89 @@ function Session({
                 )}
                 {message && <output className="sp-status">{message}</output>}
             </main>
-            <aside className="sp-side">
-                <SubtitleTracks
-                    webTracks={webTracks}
-                    primaryFile={primaryFile}
-                    translationFile={translationFile}
-                    en={language === "en"}
-                    source={source}
-                    onPrimary={setCues}
-                    onTranslation={setTranslations}
-                    report={report}
-                />
-                <div className="sp-tools">
-                    <label>
-                        {tr("Offset (s)", "Сдвиг (с)")}{" "}
-                        <input
-                            aria-label={tr("Subtitle offset", "Сдвиг субтитров")}
-                            type="number"
-                            step={settings.playerSubtitleStep || 0.1}
-                            key={Math.round(offset * 100)}
-                            defaultValue={Number(offset.toFixed(2))}
-                            onBlur={(e) => setOffset(Number(e.target.value))}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter") e.currentTarget.blur();
-                            }}
-                        />
-                    </label>
-                    {translations.length > 0 && (
+            <aside className="sp-side" aria-label={tr("Transcript", "Реплики")}>
+                <header className="sp-side-head">
+                    <h2>{tr("Transcript", "Реплики")}</h2>
+                    <div className="sp-line-navigation">
+                        <button
+                            disabled={!cues.length}
+                            onClick={() => moveCue(false)}
+                            aria-label={tr("Previous line", "Предыдущая реплика")}
+                            title={tr("Previous line (↑)", "Предыдущая реплика (↑)")}
+                        >
+                            <IconChevronUp />
+                        </button>
+                        <button
+                            disabled={!cues.length}
+                            onClick={() => moveCue(true)}
+                            aria-label={tr("Next line", "Следующая реплика")}
+                            title={tr("Next line (↓)", "Следующая реплика (↓)")}
+                        >
+                            <IconChevronDown />
+                        </button>
+                    </div>
+                </header>
+                <details className="sp-track-settings">
+                    <summary>
+                        <IconSettings /> {tr("Subtitle tracks", "Дорожки субтитров")}
+                    </summary>
+                    <SubtitleTracks
+                        webTracks={webTracks}
+                        primaryFile={primaryFile}
+                        translationFile={translationFile}
+                        en={language === "en"}
+                        source={source}
+                        onPrimary={setCues}
+                        onTranslation={setTranslations}
+                        report={report}
+                    />
+                    <div className="sp-tools">
                         <label>
-                            {tr("Translation (s)", "Перевод (с)")}{" "}
+                            {tr("Offset (s)", "Сдвиг (с)")}{" "}
                             <input
-                                aria-label={tr("Translation offset", "Сдвиг перевода")}
+                                aria-label={tr("Subtitle offset", "Сдвиг субтитров")}
                                 type="number"
                                 step={settings.playerSubtitleStep || 0.1}
-                                key={Math.round(translationOffset * 100)}
-                                defaultValue={Number(translationOffset.toFixed(2))}
-                                onBlur={(e) => setTranslationOffset(Number(e.target.value))}
+                                key={Math.round(offset * 100)}
+                                defaultValue={Number(offset.toFixed(2))}
+                                onBlur={(e) => setOffset(Number(e.target.value))}
                                 onKeyDown={(e) => {
                                     if (e.key === "Enter") e.currentTarget.blur();
                                 }}
                             />
                         </label>
-                    )}
-                    <label>
-                        <input
-                            type="checkbox"
-                            checked={showSubs}
-                            onChange={(e) => setShowSubs(e.target.checked)}
-                        />
-                        {tr("On video", "На видео")}
-                    </label>
-                    <label>
-                        <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-                        {tr("Follow", "Автопрокрутка")}
-                    </label>
-                </div>
+                        {translations.length > 0 && (
+                            <label>
+                                {tr("Translation (s)", "Перевод (с)")}{" "}
+                                <input
+                                    aria-label={tr("Translation offset", "Сдвиг перевода")}
+                                    type="number"
+                                    step={settings.playerSubtitleStep || 0.1}
+                                    key={Math.round(translationOffset * 100)}
+                                    defaultValue={Number(translationOffset.toFixed(2))}
+                                    onBlur={(e) => setTranslationOffset(Number(e.target.value))}
+                                    onKeyDown={(e) => {
+                                        if (e.key === "Enter") e.currentTarget.blur();
+                                    }}
+                                />
+                            </label>
+                        )}
+                        <label>
+                            <input
+                                type="checkbox"
+                                checked={showSubs}
+                                onChange={(e) => setShowSubs(e.target.checked)}
+                            />
+                            {tr("On video", "На видео")}
+                        </label>
+                        <label>
+                            <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
+                            {tr("Follow", "Автопрокрутка")}
+                        </label>
+                    </div>
+                </details>
                 <input
+                    aria-label={tr("Find a subtitle", "Поиск реплики")}
                     className="sp-search"
                     type="search"
                     value={query}
@@ -950,10 +1074,7 @@ function Session({
                                     style={{ transform: "translateY(" + row.start + "px)" }}
                                 >
                                     <button
-                                        onClick={() => {
-                                            replayEnd.current = null;
-                                            seek(item.start - offset);
-                                        }}
+                                        onClick={() => seekByUser(item.start - offset)}
                                         title={tr("Seek to line", "Перейти к реплике")}
                                     >
                                         {formatClock(item.start - offset)}

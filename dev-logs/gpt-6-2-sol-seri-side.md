@@ -1,5 +1,12 @@
 # Work Log — `gpt-6-2-sol` (`seri` side)
 
+## 2026-11-24 — Poster library and themed playback controls
+
+- Baseline `4576f61` includes the video poster grid and `player_search_posters`. Titles are inferred from folder and release filenames. Poster choices persist in `setsuna.player.posters`. AniList, Jikan, TVmaze and Commons use keyless search. TMDB uses an optional session token or `SETSUNA_TMDB_TOKEN`.
+- `PlayerTransport.tsx` and `player.css` replace the system overlay with Setsuna playback controls, including seek, mute, persistent volume, fullscreen and expandable transcript. F toggles fullscreen and T toggles the transcript panel. `setsuna.player.audio` stores the global player volume and mute state. Narrow layouts keep Anki actions visible.
+- `localPoster.ts` stores reduced JPEG copies of user-supplied JPG, PNG or WebP covers in IndexedDB `setsuna.player.local-posters`, store `images`. The library retains its established display title. Replacement or reset removes old local blobs after the metadata is saved.
+- Passed production build, public-bundle check, 57 frontend tests and Cargo check. Four Rust poster parser tests passed. Live AniList returned the exact Watashi title with a working poster. TVmaze and Commons returned live images. Jikan timed out from this machine and authenticated TMDB remained unverified. The Edge harness tested real H.264/AAC playback, seeking, volume, mute, fullscreen, narrow layout, and local-cover reload/reset with mocked Tauri catalog and folder calls.
+
 ## 2026-11-24 — Desktop video library and ASS karaoke cleanup
 
 - `PlayerLibrary.tsx`, `usePlayerLibrary.ts` and `libraryModel.ts` add folder selection, recursive indexing, groups by containing directory, numeric episode order, search, rescanning and removal from the list. Playback records completed episodes and restores the exact position when reopening from the library.

@@ -185,7 +185,7 @@ fn cut_clip(
         .and_then(|value| value.to_str())
         .map(sanitize_media_name)
         .unwrap_or_else(|| "clip".to_string());
-    let extension = if prefer_video { "mp4" } else { "mp3" };
+    let extension = if prefer_video { "webm" } else { "mp3" };
     let media_type = if prefer_video { "video" } else { "audio" };
     static NEXT_CLIP: AtomicU64 = AtomicU64::new(0);
     let filename = format!(
@@ -229,17 +229,27 @@ fn cut_clip(
         // was selected, FFmpeg can still automatically select the default audio.
         command.args([
             "-filter_complex",
-            "[0:V:0]scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+            "[0:V:0]scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p",
         ]);
-        command
-            .arg("-c:v")
-            .arg("libx264")
-            .arg("-preset")
-            .arg("veryfast")
-            .arg("-crf")
-            .arg("24");
-        command.arg("-c:a").arg("aac").arg("-b:a").arg("128k");
-        command.arg("-movflags").arg("+faststart");
+        // Qt WebEngine in Anki can decode WebM even on systems without licensed MP4 codecs.
+        command.args([
+            "-c:v",
+            "libvpx-vp9",
+            "-deadline",
+            "good",
+            "-cpu-used",
+            "4",
+            "-row-mt",
+            "1",
+            "-crf",
+            "33",
+            "-b:v",
+            "0",
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "96k",
+        ]);
     } else {
         command
             .arg("-vn")
@@ -277,7 +287,9 @@ pub fn discard_player_clip(app: AppHandle, filename: String) -> Result<(), Strin
         || !filename
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"_-.".contains(&c))
-        || !(filename.ends_with(".mp4") || filename.ends_with(".mp3"))
+        || !(filename.ends_with(".webm")
+            || filename.ends_with(".mp4")
+            || filename.ends_with(".mp3"))
     {
         return Err("Invalid clip name".into());
     }
@@ -747,8 +759,9 @@ mod tests {
         )
         .unwrap();
         let meta = probe(Path::new(&clip.path));
-        assert_eq!(meta["streams"][0]["codec_name"], "h264");
-        assert_eq!(meta["streams"][1]["codec_name"], "aac");
+        assert!(clip.filename.ends_with(".webm"));
+        assert_eq!(meta["streams"][0]["codec_name"], "vp9");
+        assert_eq!(meta["streams"][1]["codec_name"], "opus");
         assert_eq!(meta["streams"][1]["tags"]["language"], "jpn");
         let duration: f64 = meta["format"]["duration"]
             .as_str()

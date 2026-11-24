@@ -18,13 +18,7 @@ export async function addPlayerNote(
     try {
         if (settings.playerMiningUseClipForAnki !== false) {
             const video = !scene.audioOnly && (settings.playerCardFormat ?? "video") === "video";
-            const interval = exactRange
-                ? { start: scene.start, end: scene.end }
-                : clipInterval(
-                      scene,
-                      video ? (settings.playerSceneLeadIn ?? 5) : (settings.playerMiningLeadIn ?? 0.15),
-                      settings.playerMiningLeadOut ?? 0.25,
-                  );
+            const interval = exactRange ? { start: scene.start, end: scene.end } : clipInterval(scene);
             clip = await invoke<Clip>("extract_player_clip", {
                 sourcePath: scene.source,
                 ...interval,
