@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { AppSettings } from "../../components/SettingsModal";
 import type { EpubBookmark, Tab } from "../../utils/constants";
 import { getTranslator } from "../../utils/i18n";
@@ -12,6 +12,7 @@ import { loadEpubChapter, loadEpubCover, openEpubBook } from "./epubApi";
 import { getInitialCoverSnapshot, hasCachedCover, setMemoryCover } from "./epubCoverCache";
 import {
     computeWeightedBookProgress,
+    isPdfBookPath,
     type EpubBookMeta,
     type EpubBookNote,
     type EpubChapterContent,
@@ -23,6 +24,8 @@ import { loadEpubGoals, type EpubReadingGoals } from "./epubTracker";
 import type { EpubPortableBackup } from "./epubBackup";
 import type { EpubSyncStatus } from "./useEpubSync";
 import "./epub.css";
+
+const PdfReader = lazy(() => import("./PdfReader"));
 
 const MAX_CACHED_CHAPTERS = 12;
 const ESC_MENU_CLOSE_MS = 180;
@@ -414,10 +417,11 @@ export default function EpubWorkspace({
 
     // Load book metadata + initial/saved chapter whenever active book changes
     useEffect(() => {
-        if (viewMode !== "reader" || !activeBookTab || !bookPath) {
+        if (viewMode !== "reader" || !activeBookTab || !bookPath || isPdfBookPath(bookPath)) {
             setBookMeta(null);
             setChapter(null);
             setError(null);
+            setLoading(false);
             return;
         }
 
@@ -606,7 +610,7 @@ export default function EpubWorkspace({
                                 <span className="app-menu-tile-icon"><IconImport /></span>
                                 <span className="app-menu-tile-text">
                                     <strong>{t("epub.openFile")}</strong>
-                                    <small>.epub · .txt · .htmlz</small>
+                                    <small>.epub · .fb2 · .pdf · .docx · .mobi · .txt · .md</small>
                                 </span>
                             </button>
 
@@ -664,7 +668,34 @@ export default function EpubWorkspace({
 
     const content = (
         <div className={`epub-workspace${isMobile ? " is-mobile" : ""}`}>
-            {viewMode === "reader" && activeBookTab ? (
+            {viewMode === "reader" && activeBookTab && isPdfBookPath(activeBookTab.epub?.path) ? (
+                <Suspense
+                    fallback={
+                        <div className="pdf-reader-shell">
+                            <div className="pdf-status-card">{isEn ? "Loading PDF reader…" : "Загрузка PDF-ридера…"}</div>
+                        </div>
+                    }
+                >
+                    <PdfReader
+                        tab={activeBookTab}
+                        settings={settings}
+                        isMobile={isMobile}
+                        lookupOpen={lookupOpen}
+                        escMenuOpen={escMenuOpen}
+                        onBackToLibrary={() => setViewMode("library")}
+                        onUpdateBookMeta={onUpdateBookMeta}
+                        onProgressChange={(pageIdx, offset, progress) =>
+                            onProgressChange(activeBookTab.id, pageIdx, offset, progress)
+                        }
+                        onRecordReadingStats={(deltaChars, deltaSeconds) =>
+                            onRecordReadingStats?.(activeBookTab.id, deltaChars, deltaSeconds)
+                        }
+                        onLookupToken={onLookupToken}
+                        onOverlayStateChange={setReaderOverlayOpen}
+                        closeOverlaySignal={closeOverlaySignal}
+                    />
+                </Suspense>
+            ) : viewMode === "reader" && activeBookTab ? (
                 <EpubReader
                     tab={activeBookTab}
                     bookMeta={bookMeta}

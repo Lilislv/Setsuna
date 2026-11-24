@@ -84,11 +84,33 @@ export interface EpubSearchHit {
     snippet: string;
 }
 
-export const SUPPORTED_BOOK_EXTENSIONS = ["epub", "txt", "htmlz"] as const;
+export const SUPPORTED_BOOK_EXTENSIONS = [
+    "epub",
+    "txt",
+    "htmlz",
+    "fb2",
+    "fb2.zip",
+    "html",
+    "htm",
+    "xhtml",
+    "md",
+    "markdown",
+    "docx",
+    "mobi",
+    "azw3",
+    "prc",
+    "pdf",
+] as const;
+
+export type BookFileExt = typeof SUPPORTED_BOOK_EXTENSIONS[number];
 
 export function isSupportedBookPath(filePath: string): boolean {
     const clean = filePath.trim().toLowerCase();
     return SUPPORTED_BOOK_EXTENSIONS.some((ext) => clean.endsWith(`.${ext}`));
+}
+
+export function isPdfBookPath(filePath?: string | null): boolean {
+    return (filePath || "").trim().toLowerCase().endsWith(".pdf");
 }
 
 export type EpubParagraphKind =

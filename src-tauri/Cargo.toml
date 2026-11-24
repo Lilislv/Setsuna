@@ -43,6 +43,10 @@ base64 = "0.22.1"
 md5 = "0.8.1"
 image = "0.25.10"
 lindera = { version = "=5.3.0", default-features = false, features = ["embed-ipadic"] }
+encoding_rs = "0.8"
+chardetng = "0.1"
+roxmltree = "0.20"
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 

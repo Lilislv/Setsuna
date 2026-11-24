@@ -1753,7 +1753,10 @@ export default function App() {
             const selected = await open({
                 multiple: true,
                 directory: false,
-                filters: [{ name: "Books (EPUB, TXT, HTMLZ)", extensions: ["epub", "txt", "htmlz"] }],
+                filters: [{
+                    name: "Books (EPUB, FB2, PDF, DOCX, MOBI, AZW3, TXT, MD, HTML, HTMLZ)",
+                    extensions: ["epub", "fb2", "zip", "pdf", "docx", "mobi", "azw3", "prc", "txt", "md", "markdown", "html", "htm", "xhtml", "htmlz"],
+                }],
             });
             const selectedPaths = Array.isArray(selected)
                 ? selected.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
@@ -2251,6 +2254,7 @@ export default function App() {
             }
 
             const dictionaryPaths = paths.filter((path) => {
+                if (isSupportedBookPath(path)) return false;
                 const lower = path.toLowerCase();
                 return lower.endsWith('.zip') || lower.endsWith('.jsonl') || lower.endsWith('.jsonl.gz') || lower.endsWith('.tar.xz') || lower.endsWith('.txz') || lower.endsWith('.ifo') || lower.endsWith('.idx') || lower.endsWith('.idx.gz') || lower.endsWith('.dict') || lower.endsWith('.dict.dz') || lower.endsWith('.csv') || lower.endsWith('.tsv') || lower.endsWith('.dsl');
             });

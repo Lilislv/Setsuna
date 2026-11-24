@@ -1,5 +1,5 @@
 import type { EpubBookmark, Tab, TabStats } from "../../utils/constants";
-import type { EpubBookNote, EpubHighlight, EpubLanguage, EpubOrientationSetting, EpubReadingPoint } from "./epubModel";
+import type { BookFileExt, EpubBookNote, EpubHighlight, EpubLanguage, EpubOrientationSetting, EpubReadingPoint } from "./epubModel";
 
 export const EPUB_SYNC_FILENAME = "setsuna_epub_sync.json";
 export const EPUB_SYNC_SCHEMA_VERSION = 1;
@@ -31,7 +31,7 @@ export interface EpubSyncBookEntry {
     notes?: EpubBookNote[];
     stats?: TabStats;
     driveFileId?: string;
-    fileExt?: "epub" | "txt" | "htmlz";
+    fileExt?: BookFileExt;
 }
 
 export interface EpubSyncManifest {
@@ -52,10 +52,21 @@ export function getBookSyncKey(title: string): string {
     return title.normalize("NFKC").replace(/\s+/g, "").toLowerCase();
 }
 
-export function inferFileExtFromPath(path?: string): "epub" | "txt" | "htmlz" {
+export function inferFileExtFromPath(path?: string): BookFileExt {
     const lower = (path || "").trim().toLowerCase();
+    if (lower.endsWith(".fb2.zip")) return "fb2.zip";
+    if (lower.endsWith(".fb2")) return "fb2";
     if (lower.endsWith(".txt")) return "txt";
     if (lower.endsWith(".htmlz")) return "htmlz";
+    if (lower.endsWith(".html")) return "html";
+    if (lower.endsWith(".htm")) return "htm";
+    if (lower.endsWith(".xhtml")) return "xhtml";
+    if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "md";
+    if (lower.endsWith(".docx")) return "docx";
+    if (lower.endsWith(".mobi")) return "mobi";
+    if (lower.endsWith(".azw3")) return "azw3";
+    if (lower.endsWith(".prc")) return "prc";
+    if (lower.endsWith(".pdf")) return "pdf";
     return "epub";
 }
 

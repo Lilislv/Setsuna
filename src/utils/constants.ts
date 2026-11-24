@@ -1,6 +1,6 @@
 import { AppSettings } from "../components/SettingsModal";
 import type { TabShare } from "./sharedReading";
-import type { EpubBookNote, EpubHighlight, EpubReadingPoint } from "../features/epub/epubModel";
+import type { BookFileExt, EpubBookNote, EpubHighlight, EpubReadingPoint } from "../features/epub/epubModel";
 
 export interface TabStats { chars: number; words: number; sentences: number; time: number; }
 export interface ReadingSpeedSample {
@@ -54,7 +54,7 @@ export interface EpubBookData {
     notes?: EpubBookNote[];
     readingPoint?: EpubReadingPoint | null;
     driveFileId?: string;
-    fileExt?: 'epub' | 'txt' | 'htmlz';
+    fileExt?: BookFileExt;
     cloudOnly?: boolean;
     syncUpdatedAt?: number;
     lastOpenedAt?: number;

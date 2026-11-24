@@ -1,0 +1,274 @@
+.pdf-reader-shell {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--epub-bg, var(--bg-main));
+    color: var(--epub-fg, var(--text-primary));
+}
+
+.pdf-viewport-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 68px 20px 76px;
+    box-sizing: border-box;
+    -webkit-overflow-scrolling: touch;
+}
+
+.pdf-reader-shell.is-mobile .pdf-viewport-scroll {
+    padding: 60px 8px 72px;
+}
+
+.pdf-page-stage {
+    position: relative;
+    flex-shrink: 0;
+    background: #ffffff;
+    border-radius: 6px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+    overflow: hidden;
+}
+
+.pdf-page-stage.is-night-invert .pdf-page-canvas {
+    filter: invert(0.88) hue-rotate(180deg) contrast(0.95);
+}
+
+.pdf-page-canvas {
+    display: block;
+}
+
+.pdf-text-layer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    user-select: text;
+    -webkit-user-select: text;
+    line-height: 1;
+}
+
+.pdf-text-span {
+    position: absolute;
+    color: transparent;
+    white-space: pre;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: background-color 110ms ease;
+}
+
+.pdf-text-span:hover {
+    background-color: color-mix(in srgb, var(--accent-blue, #4c8bf5) 18%, transparent);
+}
+
+.pdf-text-span::selection {
+    background: color-mix(in srgb, var(--accent-blue, #4c8bf5) 36%, transparent);
+    color: transparent;
+}
+
+.pdf-reflow-surface {
+    width: 100%;
+    padding: 18px 22px 48px;
+    box-sizing: border-box;
+    color: var(--epub-fg, var(--text-primary));
+}
+
+.pdf-reflow-line {
+    margin-bottom: 0.7em;
+    word-break: break-word;
+}
+
+.pdf-status-card {
+    margin: auto;
+    padding: 20px 26px;
+    border-radius: 14px;
+    background: var(--bg-panel, rgba(24, 24, 30, 0.85));
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+    text-align: center;
+    max-width: 420px;
+}
+
+.pdf-status-card.is-error {
+    border-color: rgba(232, 107, 107, 0.45);
+}
+
+.pdf-status-card button {
+    margin-top: 12px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.14));
+    background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+    color: inherit;
+    cursor: pointer;
+}
+
+.pdf-page-jump {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 6px;
+}
+
+.pdf-page-input {
+    width: 44px;
+    text-align: center;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    padding: 3px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.14));
+    background: rgba(255, 255, 255, 0.06);
+    color: inherit;
+    outline: none;
+}
+
+.pdf-page-input:focus {
+    border-color: var(--accent-blue, #4c8bf5);
+}
+
+.pdf-page-total {
+    font-size: 12.5px;
+    opacity: 0.82;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.pdf-drawer-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 60;
+    background: rgba(0, 0, 0, 0.36);
+    backdrop-filter: blur(4px);
+    display: flex;
+    justify-content: flex-start;
+}
+
+.pdf-drawer {
+    width: min(360px, 88vw);
+    height: 100%;
+    background: var(--bg-panel, #191a22);
+    color: var(--text-primary, #f0f2f6);
+    border-right: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+    display: flex;
+    flex-direction: column;
+    box-shadow: 12px 0 36px rgba(0, 0, 0, 0.35);
+}
+
+.pdf-drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+}
+
+.pdf-drawer-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 10px 10px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.pdf-drawer-empty {
+    padding: 18px 12px;
+    opacity: 0.68;
+    font-size: 13.5px;
+    text-align: center;
+}
+
+.pdf-outline-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    font-size: 13.5px;
+}
+
+.pdf-outline-item:hover,
+.pdf-outline-item.is-active {
+    background: color-mix(in srgb, var(--accent-blue, #4c8bf5) 18%, transparent);
+}
+
+.pdf-outline-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pdf-outline-page {
+    font-size: 12px;
+    opacity: 0.65;
+    font-variant-numeric: tabular-nums;
+}
+
+.pdf-search-form {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+}
+
+.pdf-search-form input {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.14));
+    background: rgba(255, 255, 255, 0.05);
+    color: inherit;
+    font-size: 13.5px;
+}
+
+.pdf-search-form button {
+    padding: 7px 12px;
+    border-radius: 8px;
+    border: none;
+    background: var(--accent-blue, #4c8bf5);
+    color: #fff;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.pdf-search-hit {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.pdf-search-hit:hover {
+    background: color-mix(in srgb, var(--accent-blue, #4c8bf5) 16%, transparent);
+}
+
+.pdf-search-hit-page {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--accent-blue, #4c8bf5);
+}
+
+.pdf-search-hit-snippet {
+    font-size: 12.5px;
+    line-height: 1.4;
+    opacity: 0.88;
+}

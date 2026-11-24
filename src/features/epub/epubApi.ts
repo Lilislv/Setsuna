@@ -29,6 +29,11 @@ export const loadEpubGallery = async (path: string): Promise<EpubGalleryImage[]>
     return invoke<EpubGalleryImage[]>("epub_gallery", { path });
 };
 
+export const readBookBinary = async (path: string): Promise<Uint8Array> => {
+    const buf = await invoke<ArrayBuffer>("epub_read_binary", { path });
+    return new Uint8Array(buf);
+};
+
 export interface EpubFolderEntry {
     path: string;
     subfolderSeries: string | null;

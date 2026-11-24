@@ -7,6 +7,7 @@ import {
     detectEpubLanguageFromSample,
     formatCountedThrough,
     isParagraphAlreadyCounted,
+    isPdfBookPath,
     isSupportedBookPath,
     parseCountedThrough,
     parseEpubLanguageTag,
@@ -32,9 +33,15 @@ import {
     evaluateGoalProgress,
 } from "../src/features/epub/epubTracker.ts";
 import {
+    inferFileExtFromPath,
     mergeEpubBookEntries,
     mergeManifestWithLocalTabs,
 } from "../src/features/epub/epubSyncModel.ts";
+import {
+    buildPdfLookupTarget,
+    buildPdfSearchSnippet,
+    groupPdfTextItemsIntoLines,
+} from "../src/features/epub/pdfModel.ts";
 import {
     buildPortableEpubBackup,
     mergePortableEpubBackup,
@@ -130,12 +137,56 @@ test("resolves internal EPUB href links with fragments", () => {
     assert.equal(resolveEpubHrefTarget("OEBPS/Text/missing.xhtml", chapters), null);
 });
 
-test("recognizes supported book file formats (epub, txt, htmlz)", () => {
+test("recognizes supported book file formats (epub, fb2, fb2.zip, pdf, docx, mobi, azw3, html, md, txt, htmlz)", () => {
     assert.equal(isSupportedBookPath("C:/Books/novel.epub"), true);
     assert.equal(isSupportedBookPath("C:/Books/webnovel.TXT"), true);
     assert.equal(isSupportedBookPath("archive.htmlz"), true);
-    assert.equal(isSupportedBookPath("notes.pdf"), false);
+    assert.equal(isSupportedBookPath("classic.fb2"), true);
+    assert.equal(isSupportedBookPath("classic.FB2.ZIP"), true);
+    assert.equal(isSupportedBookPath("article.html"), true);
+    assert.equal(isSupportedBookPath("chapter.xhtml"), true);
+    assert.equal(isSupportedBookPath("notes.md"), true);
+    assert.equal(isSupportedBookPath("essay.docx"), true);
+    assert.equal(isSupportedBookPath("lightnovel.mobi"), true);
+    assert.equal(isSupportedBookPath("lightnovel.azw3"), true);
+    assert.equal(isSupportedBookPath("textbook.pdf"), true);
+    assert.equal(isSupportedBookPath("dictionary.zip"), false);
     assert.equal(isSupportedBookPath("backup.json"), false);
+
+    assert.equal(isPdfBookPath("textbook.PDF"), true);
+    assert.equal(isPdfBookPath("novel.epub"), false);
+
+    assert.equal(inferFileExtFromPath("book.fb2.zip"), "fb2.zip");
+    assert.equal(inferFileExtFromPath("book.azw3"), "azw3");
+    assert.equal(inferFileExtFromPath("book.pdf"), "pdf");
+    assert.equal(inferFileExtFromPath("book.docx"), "docx");
+    assert.equal(inferFileExtFromPath("book.md"), "md");
+});
+
+test("pdfModel groups text items into lines, preserves Japanese spacing, and computes lookup targets", () => {
+    // Simple identity-like viewport transform [1, 0, 0, -1, 0, 800] (flips PDF Y-up into viewport Y-down)
+    const vpTransform = [1, 0, 0, -1, 0, 800];
+    const items = [
+        { str: "Hello", transform: [14, 0, 0, 14, 50, 700], width: 32, height: 14 },
+        { str: "world", transform: [14, 0, 0, 14, 88, 700], width: 34, height: 14 },
+        { str: "吾輩は", transform: [16, 0, 0, 16, 50, 660], width: 48, height: 16 },
+        { str: "猫である。", transform: [16, 0, 0, 16, 99, 660], width: 80, height: 16 },
+    ];
+    const lines = groupPdfTextItemsIntoLines(items, vpTransform);
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].text, "Hello world");
+    assert.equal(lines[1].text, "吾輩は猫である。");
+
+    const enTarget = buildPdfLookupTarget(lines[0].text, lines[0].spans[1], 0.5);
+    assert.equal(enTarget?.token, "world");
+    assert.equal(enTarget?.sentence, "Hello world");
+
+    const jpTarget = buildPdfLookupTarget(lines[1].text, lines[1].spans[1], 0.05);
+    assert.ok(jpTarget?.token.startsWith("猫である"));
+    assert.equal(jpTarget?.cursor, 3);
+
+    const snip = buildPdfSearchSnippet("A long sentence about studying Japanese grammar daily.", "japanese");
+    assert.ok(snip?.includes("Japanese"));
 });
 
 

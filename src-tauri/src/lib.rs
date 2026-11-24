@@ -1264,6 +1264,7 @@ pub fn run() {
             epub_import::epub_gallery,
             epub_import::epub_search,
             epub_import::epub_chapter,
+            epub_import::epub_read_binary,
             save_workspace_state,
             load_workspace_state,
             stop_capture_agent_server,
