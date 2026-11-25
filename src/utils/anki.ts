@@ -677,8 +677,12 @@ export const addNote = async (settings: any, noteData: any) => {
     }
     const sceneField = [settings.ankiFieldAudio, settings.ankiFieldMeaning, settings.ankiFieldSentence]
         .find(field => field && field !== 'none');
-    if (noteData.playerScene && noteData.audioPath && !sceneField) {
-        return { error: settings.appLanguage === 'en' ? 'Select an audio, meaning or sentence field for the clip.' : 'Для клипа выбери поле озвучки, значения или предложения.' };
+    const isVideoClip = noteData.audioMediaType === 'video';
+    const clipTargetField = isVideoClip && settings.ankiFieldScreenshot && settings.ankiFieldScreenshot !== 'none'
+        ? settings.ankiFieldScreenshot
+        : sceneField;
+    if (noteData.playerScene && noteData.audioPath && !clipTargetField) {
+        return { error: settings.appLanguage === 'en' ? 'Select a screenshot, audio, meaning or sentence field for the clip.' : 'Для клипа выбери поле картинки, озвучки, значения или предложения.' };
     }
     if (localAudio && !bridge) {
         try {
@@ -686,7 +690,7 @@ export const addNote = async (settings: any, noteData: any) => {
             if (typeof storedName !== 'string' || !storedName) throw new Error('Anki did not store the recording');
             fields[settings.ankiFieldAudio] = `${fields[settings.ankiFieldAudio] || ''} [sound:${storedName}]`.trim();
         } catch (error: any) { return { error: error?.message || String(error) }; }
-    } else if (noteData.audioPath && sceneField) {
+    } else if (noteData.audioPath && clipTargetField) {
         const isVideo = noteData.audioMediaType === 'video';
         const filename = noteData.audioFilename || `setsuna_player_${safeWord}_${Date.now()}${isVideo ? '.webm' : '.mp3'}`;
         try {
@@ -697,7 +701,7 @@ export const addNote = async (settings: any, noteData: any) => {
             });
             if (typeof storedName !== 'string' || !storedName) throw new Error('Anki did not store the clip');
             const media = isVideo ? inlineSceneVideo(storedName) : `[sound:${storedName}]`;
-            fields[sceneField] = `${fields[sceneField] || ""} ${media}`.trim();
+            fields[clipTargetField] = `${fields[clipTargetField] || ""} ${media}`.trim();
         } catch (error: any) {
             return { error: error.message };
         }
@@ -797,6 +801,137 @@ export const addNote = async (settings: any, noteData: any) => {
             }
         }
         return { error: error.message };
+    }
+};
+
+/** Attaches a player clip/screenshot (and missing sentence) to the most recently added Anki note. */
+export const updateLastNoteWithScene = async (
+    settings: any,
+    noteData: {
+        sentence?: string;
+        sentenceFurigana?: string;
+        audioPath?: string;
+        audioFilename?: string;
+        audioMediaType?: string;
+        screenshot?: string;
+    },
+): Promise<{ result?: number; error?: string }> => {
+    if (getAnkiDroidBridge()) {
+        return {
+            error:
+                settings.appLanguage === 'en'
+                    ? 'Update last card requires desktop AnkiConnect.'
+                    : 'Обновление последней карточки доступно только через AnkiConnect на ПК.',
+        };
+    }
+
+    try {
+        const deckQuery = settings.ankiDeck ? `deck:"${escapeAnkiQuery(settings.ankiDeck)}" ` : '';
+        let ids: unknown = await invokeAnki('findNotes', { query: `${deckQuery}added:1` });
+        if (!Array.isArray(ids) || !ids.length) {
+            ids = await invokeAnki('findNotes', { query: `${deckQuery}added:7` });
+        }
+        if (!Array.isArray(ids) || !ids.length) {
+            return {
+                error:
+                    settings.appLanguage === 'en'
+                        ? 'No recently added Anki card found.'
+                        : 'Не найдена недавно добавленная карточка в Anki.',
+            };
+        }
+
+        const noteId = Math.max(...ids.map((id) => Number(id)));
+        const infos = await invokeAnki('notesInfo', { notes: [noteId] });
+        const info = Array.isArray(infos) ? infos[0] : undefined;
+        const noteFields: Record<string, { value?: string }> = info?.fields || {};
+        const fieldNames = Object.keys(noteFields);
+        if (!fieldNames.length) {
+            return {
+                error:
+                    settings.appLanguage === 'en'
+                        ? 'Could not inspect fields of the last Anki note.'
+                        : 'Не удалось прочитать поля последней карточки Anki.',
+            };
+        }
+
+        const recommended = recommendAnkiFieldSettings(fieldNames);
+        const resolved = { ...settings };
+        for (const [key, value] of Object.entries(recommended)) {
+            if (!resolved[key] || resolved[key] === 'none') resolved[key] = value;
+        }
+
+        const hasField = (name?: string) => Boolean(name && name !== 'none' && Object.prototype.hasOwnProperty.call(noteFields, name));
+        const sceneField = [resolved.ankiFieldAudio, resolved.ankiFieldMeaning, resolved.ankiFieldSentence].find((f) =>
+            hasField(f),
+        );
+        const pictureField = hasField(resolved.ankiFieldScreenshot) ? resolved.ankiFieldScreenshot : sceneField;
+
+        const updatedFields: Record<string, string> = {};
+        const currentVal = (field: string) =>
+            Object.prototype.hasOwnProperty.call(updatedFields, field)
+                ? updatedFields[field]
+                : (noteFields[field]?.value ?? '');
+
+        if (
+            noteData.sentence &&
+            hasField(resolved.ankiFieldSentence) &&
+            !normalizeFieldValue(currentVal(resolved.ankiFieldSentence))
+        ) {
+            updatedFields[resolved.ankiFieldSentence] = shouldUseSentenceFuriganaField(resolved.ankiFieldSentence)
+                ? (noteData.sentenceFurigana || noteData.sentence)
+                : noteData.sentence;
+        }
+        if (
+            noteData.sentenceFurigana &&
+            hasField(resolved.ankiFieldSentenceFurigana) &&
+            !normalizeFieldValue(currentVal(resolved.ankiFieldSentenceFurigana))
+        ) {
+            updatedFields[resolved.ankiFieldSentenceFurigana] = noteData.sentenceFurigana;
+        }
+
+        if (noteData.audioPath) {
+            const isVideo = noteData.audioMediaType === 'video';
+            const targetField = isVideo ? pictureField : sceneField;
+            if (targetField) {
+                const filename = noteData.audioFilename || `setsuna_player_${Date.now()}${isVideo ? '.webm' : '.mp3'}`;
+                const storedName = await invokeAnki('storeMediaFile', {
+                    filename,
+                    path: noteData.audioPath,
+                    deleteExisting: true,
+                });
+                if (typeof storedName !== 'string' || !storedName) {
+                    throw new Error('Anki did not store the clip');
+                }
+                const media = isVideo ? inlineSceneVideo(storedName) : `[sound:${storedName}]`;
+                updatedFields[targetField] = `${currentVal(targetField)} ${media}`.trim();
+            }
+        }
+
+        if (noteData.screenshot && pictureField) {
+            const storedPic = await invokeAnki('storeMediaFile', {
+                filename: `setsuna_screen_${Date.now()}.jpg`,
+                data: noteData.screenshot,
+                deleteExisting: true,
+            });
+            if (typeof storedPic === 'string' && storedPic) {
+                updatedFields[pictureField] = `${currentVal(pictureField)} <img src="${storedPic}">`.trim();
+            }
+        }
+
+        if (!Object.keys(updatedFields).length) {
+            return {
+                error:
+                    settings.appLanguage === 'en'
+                        ? 'No matching fields on the last Anki note.'
+                        : 'У последней карточки Anki нет подходящих полей.',
+            };
+        }
+
+        await invokeAnki('updateNoteFields', { note: { id: noteId, fields: updatedFields } });
+        wordStatusCache.clear();
+        return { result: noteId };
+    } catch (error: any) {
+        return { error: error?.message || String(error) };
     }
 };
 

@@ -7,6 +7,7 @@ import type { Tab } from "../../utils/constants";
 import { getTranslator } from "../../utils/i18n";
 import { TokenizedLine } from "../../components/TextContainer";
 import { IconClose, IconSearch } from "../../components/Icons";
+import { MOBILE_BACK_PRIORITY, useMobileBackHandler } from "../../utils/mobileBack";
 import { readBookBinary } from "./epubApi";
 import { setMemoryCover } from "./epubCoverCache";
 import type { EpubBookMeta } from "./epubModel";
@@ -125,6 +126,22 @@ export default function PdfReader({
             setSearchOpen(false);
         }
     }, [closeOverlaySignal]);
+
+    useMobileBackHandler(
+        isMobile && (searchOpen || tocOpen),
+        MOBILE_BACK_PRIORITY.READER_OVERLAY,
+        () => {
+            if (searchOpen) {
+                setSearchOpen(false);
+                return;
+            }
+            if (tocOpen) {
+                setTocOpen(false);
+                return;
+            }
+            return false;
+        },
+    );
 
     // Load PDF document binary from Tauri backend
     useEffect(() => {

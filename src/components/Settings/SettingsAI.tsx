@@ -133,14 +133,19 @@ export default function SettingsAI({ settings, updateSetting, highlighted }: Set
             <div id="ai-main" className={`modern-card ${highlighted ? "card-highlighted" : ""}`} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>
                 <div className="card-label" style={{ color: "var(--text-main)", display: "flex", alignItems: "center", gap: 8 }}>
                     {en ? "AI explanations" : "ИИ-объяснения"}
-                    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, padding: "2px 6px", borderRadius: 999, background: "rgba(79,166,255,0.14)", color: "var(--accent-blue)" }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, padding: "2px 6px", borderRadius: 999, background: "rgba(245, 158, 11, 0.16)", color: "#f59e0b" }}>
                         {en ? "TEST" : "ТЕСТ"}
                     </span>
                 </div>
-                <div style={{ color: "var(--text-muted)", fontSize: 12, lineHeight: 1.55, marginBottom: 16 }}>
+                <div style={{ color: "var(--text-muted)", fontSize: 12, lineHeight: 1.55, marginBottom: 10 }}>
                     {en
                         ? "A local neural network explains Japanese and English lines in your language: translation, meaning and key grammar. It runs on your computer without the internet and is downloaded separately."
                         : "Локальная нейросеть объясняет японские и английские строки на твоём языке: перевод, смысл и ключевую грамматику. Работает на твоём компьютере без интернета и скачивается отдельно."}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", marginBottom: 16, borderRadius: 8, background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.28)", fontSize: 12, color: "#fbbf24", lineHeight: 1.45 }}>
+                    {en
+                        ? "Experimental test feature — may not make it into the final release or may change significantly."
+                        : "Экспериментальная тестовая функция — может не добраться до финального релиза или сильно измениться."}
                 </div>
 
                 {status && !status.supported ? (
@@ -226,7 +231,7 @@ export default function SettingsAI({ settings, updateSetting, highlighted }: Set
                                 <select className="modern-select" value={prompt.sourceLanguage} onChange={(e) => updateSetting("aiSourceLanguage", e.target.value as AppSettings["aiSourceLanguage"])} style={{ marginTop: 6 }}>
                                     <option value="auto">{en ? "Detect" : "Определять"}</option>
                                     <option value="ja">{en ? "Japanese" : "Японский"}</option>
-                                    <option value="en">{en ? "English" : "Английский"}</option>
+                                    <option value="en">{en ? "English (early alpha)" : "Английский (ранняя альфа)"}</option>
                                 </select>
                             </label>
                             <label style={{ color: "var(--text-muted)", fontSize: 12 }}>

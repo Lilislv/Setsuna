@@ -61,8 +61,13 @@ export interface AppSettings {
   mobileOverlayWidth?: number; mobileOverlayHeight?: number; mobileOverlayPadding?: number; mobileOverlayLookupHeight?: number;
   mobileOverlayLocked?: boolean; mobileOverlayToolbarExpanded?: boolean;
   epubFontSize?: number; epubFontFamily?: string; epubTheme?: 'app' | 'dark' | 'paper' | 'sepia' | 'ttu-light' | 'ttu-ecru' | 'ttu-water' | 'ttu-gray' | 'ttu-dark' | 'ttu-black'; epubReadingMode?: 'paged' | 'scroll'; epubTextOrientation?: 'auto' | 'horizontal' | 'vertical'; epubMaxWidth?: number; epubLineHeight?: number; epubParagraphSpacing?: number; epubParagraphSpacingJa?: number; epubPagePadding?: number; epubShowImages?: boolean; epubBlurImages?: boolean; epubBlurImagesMode?: 'off' | 'after-toc' | 'all'; epubFuriganaMode?: 'show' | 'hover' | 'hide'; epubJustify?: boolean; epubPrettyWrap?: boolean; epubVerticalGrid?: boolean; epubTextIndent?: 'auto' | 'none' | 'indent'; epubAutoscrollSpeed?: number; epubAutoSync?: boolean; epubSyncUploadFiles?: boolean; epubVolumeKeyPaging?: boolean; epubEinkMode?: boolean; epubImageMaxWidth?: number;
-  playerRewindSeconds: number; playerSubtitleStep: number; playerMiningReplayOnMine: boolean; playerCardFormat?: "audio" | "video"; playerAnkiDeck?: string; playerMiningUseClipForAnki: boolean;
+  playerRewindSeconds: number; playerArrowSeekMode?: "seconds" | "subtitle"; playerSubtitleStep: number; playerMiningReplayOnMine: boolean; playerCardFormat?: "audio" | "video"; playerVideoQuality?: "tiny" | "compact" | "balanced" | "high"; playerAnkiDeck?: string; playerMiningUseClipForAnki: boolean;
+  playerPauseOnHover?: boolean; playerSubsVisibility?: "always" | "paused" | "repeat"; playerBlurTranslation?: boolean;
+  playerAutoPauseResumeMode?: "manual" | "fixed" | "dynamic"; playerAutoPauseFixedSec?: number; playerAutoPauseCharMs?: number;
+  playerSkipMinGap?: number; playerSubtitleRegexFilter?: string; playerClipPadStart?: number; playerClipPadEnd?: number;
+  playerSubFontSize?: number; playerSubBottomOffset?: number; playerSubBgOpacity?: number;
   playerKeyPlayPause: string; playerKeyBack: string; playerKeyForward: string; playerKeyMine: string; playerKeyOffsetMinus: string; playerKeyOffsetPlus: string;
+  playerKeyUpdateLast?: string; playerKeyReplayCue?: string; playerKeyCopySub?: string;
   discordEnabled: boolean; discordClientId: string; discordShowTab: boolean; discordShowStats: boolean; discordShowChars: boolean; discordShowWords: boolean; discordShowSentences: boolean; discordShowProgress: boolean; discordShowPaused: boolean; discordShowTimer: boolean; discordShowButtons: boolean; discordShowSpeed?: boolean; discordTitleInMemberList?: boolean;
   discordTextActivityType: 'playing' | 'watching' | 'listening' | 'competing'; discordTextStatus: 'playing' | 'reading' | 'watching' | 'mining' | 'custom'; discordCustomTextStatus: string;
   discordLargeImage: string; discordSmallImage: string; discordButtonLabel: string; discordButtonUrl: string; discordSecondButtonLabel: string; discordSecondButtonUrl: string;
@@ -852,12 +857,12 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
       text: { title: t('settings.nav.text'), description: isEnglish ? 'Appearance, text sources and reading behavior' : 'Внешний вид, источники текста и поведение читалки' },
       sync: { title: 'Setsuna Sync', description: isEnglish ? 'Connected devices and capture' : 'Подключённые устройства и захват' },
       jl: { title: 'Setsuna Flow', description: isEnglish ? 'Floating reading mode' : 'Компактный режим чтения поверх окон' },
-      epub: { title: isEnglish ? 'EPUB reader' : 'EPUB-ридер', description: isEnglish ? 'Book reader settings' : 'Настройки чтения книг' },
+      epub: { title: isEnglish ? 'Reader (Beta)' : 'Читалка (Бета)', description: isEnglish ? 'Books, manga & light novel reader settings' : 'Настройки читалки книг, манги и ранобэ' },
       lookup: { title: t('settings.nav.lookup'), description: isEnglish ? 'Lookup window, dictionaries and shortcuts' : 'Окно поиска, словари и горячие клавиши' },
       anki: { title: 'Anki', description: isEnglish ? 'Cards, decks and screenshots' : 'Карточки, колоды и скриншоты' },
-      ai: { title: isEnglish ? 'AI explanations' : 'ИИ-объяснения', description: isEnglish ? 'A local model that explains lines in Russian or Ukrainian' : 'Локальная модель объясняет строки на русском или украинском' },
+      ai: { title: isEnglish ? 'AI explanations (Test)' : 'ИИ-объяснения (Тест)', description: isEnglish ? 'Experimental local LLM — may not make it into the final release' : 'Экспериментальная локальная LLM — может не добраться до финального релиза' },
       cloud: { title: 'Google Drive', description: isEnglish ? 'Private backups and restore' : 'Приватные резервные копии и восстановление' },
-      player: { title: isEnglish ? 'Player' : 'Плеер', description: isEnglish ? 'Video and subtitle settings' : 'Видео и настройки субтитров' },
+      player: { title: isEnglish ? 'Video Player (Beta)' : 'Видео-плеер (Бета)', description: isEnglish ? 'Video and subtitle settings' : 'Видео и настройки субтитров' },
       discord: { title: 'Discord', description: isEnglish ? 'Rich Presence and activity preview' : 'Rich Presence и предпросмотр активности' },
       updates: { title: isEnglish ? 'Updates' : 'Обновления', description: isEnglish ? 'Version and automatic update settings' : 'Версия и параметры автоматического обновления' },
       feedback: { title: isEnglish ? 'Feedback' : 'Обратная связь', description: isEnglish ? 'Bug reports and feature requests' : 'Ошибки и пожелания по новым функциям' },
@@ -936,7 +941,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                   </div>}
                   {EPUB_READER_AVAILABLE && (
                       <>
-                          <SettingsNavButton active={activeTab === 'epub'} icon={<IconBookTab />} label={isEnglish ? 'EPUB reader' : 'EPUB-ридер'} onClick={() => handleNav('epub', 'epub-reader')} />
+                          <SettingsNavButton active={activeTab === 'epub'} icon={<IconBookTab />} label={isEnglish ? 'Reader' : 'Читалка'} badge={isEnglish ? 'Beta' : 'Бета'} onClick={() => handleNav('epub', 'epub-reader')} />
                           {activeTab === 'epub' && <div className="settings-subnav">
                               <SettingsSubNavButton active={activeSubTab === 'epub-reader'} label={isEnglish ? 'Reading view' : 'Вид читалки'} onClick={() => handleNav('epub', 'epub-reader')} />
                               <SettingsSubNavButton active={activeSubTab === 'epub-layout'} label={isEnglish ? 'Layout & images' : 'Раскладка и картинки'} onClick={() => handleNav('epub', 'epub-layout')} />
@@ -944,7 +949,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                           </div>}
                       </>
                   )}
-                  {ANIME_PLAYER_AVAILABLE && <SettingsNavButton active={activeTab === 'player'} icon={<IconPlayerTab />} label={isEnglish ? 'Media player' : 'Видеоплеер'} onClick={() => handleNav('player', 'player-main')} />}
+                  {ANIME_PLAYER_AVAILABLE && <SettingsNavButton active={activeTab === 'player'} icon={<IconPlayerTab />} label={isEnglish ? 'Video Player' : 'Видео-плеер'} badge={isEnglish ? 'Beta' : 'Бета'} onClick={() => handleNav('player', 'player-main')} />}
                   <SettingsNavButton active={activeTab === 'jl'} icon={<IconTextTab />} label="Setsuna Flow" onClick={() => handleNav('jl', 'jl-main')} />
               </div>
 
@@ -961,7 +966,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                       <SettingsSubNavButton active={activeSubTab === 'anki-audio'} label={isEnglish ? 'Audio' : 'Озвучка'} onClick={() => handleNav('anki', 'anki-audio')} />
                       <SettingsSubNavButton active={activeSubTab === 'anki-hooks'} label={t('settings.nav.screenshots')} onClick={() => handleNav('anki', 'anki-hooks')} />
                   </div>}
-                  {!isMobilePlatform() && <SettingsNavButton active={activeTab === 'ai'} icon={<IconSparkle />} label={isEnglish ? 'AI explanations' : 'ИИ-объяснения'} onClick={() => handleNav('ai', 'ai-main')} />}
+                  {!isMobilePlatform() && <SettingsNavButton active={activeTab === 'ai'} icon={<IconSparkle />} label={isEnglish ? 'AI explanations' : 'ИИ-объяснения'} badge={isEnglish ? 'Test' : 'Тест'} onClick={() => handleNav('ai', 'ai-main')} />}
               </div>
 
               <div className="settings-nav-group">
@@ -990,6 +995,16 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                               <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '6px' }}>{t('settings.language')}</div>
                               <select className="modern-select" value={settings.appLanguage || 'ru'} onChange={(e) => updateSetting('appLanguage', e.target.value as any)}><option value="ru">{t('wizard.language.ru')}</option><option value="en">{t('wizard.language.en')}</option></select>
                           </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 11px', marginBottom: 15, borderRadius: 8, background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.25)', fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 999, background: 'rgba(245, 158, 11, 0.18)', color: '#f59e0b', flexShrink: 0 }}>
+                              {isEnglish ? 'ALPHA' : 'АЛЬФА'}
+                          </span>
+                          <span>
+                              {isEnglish
+                                  ? 'Target learning language: Japanese is primary. English as a target learning language is in early alpha.'
+                                  : 'Язык изучения: основной язык — японский. Поддержка английского как целевого языка изучения — ранняя альфа.'}
+                          </span>
                       </div>
                       <div className={peekRowClass('fontSize')} style={{ display: 'flex', gap: '15px', alignItems: 'center', marginBottom: '15px' }}>
                           <span style={{ color: 'var(--text-muted)', fontSize: '13px', width: '130px' }}>{t('settings.fontSize')}</span>
@@ -1548,7 +1563,12 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
               {activeTab === 'epub' && (
                 <div className="tab-content-anim">
                     <div id="epub-reader" className={`modern-card ${highlightedSection === 'epub-reader' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>
-                        <div className="card-label" style={{ color: 'var(--text-main)' }}>{settings.appLanguage === 'en' ? 'EPUB reading view' : 'Вид EPUB-читалки'}</div>
+                        <div className="card-label" style={{ color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span>{settings.appLanguage === 'en' ? 'Reader settings' : 'Вид читалки'}</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, padding: '2px 7px', borderRadius: 999, background: 'rgba(103, 197, 135, 0.16)', color: '#67c587' }}>
+                                {settings.appLanguage === 'en' ? 'BETA' : 'БЕТА'}
+                            </span>
+                        </div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px', marginBottom: 16 }}>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Theme' : 'Тема'}
@@ -1682,8 +1702,25 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
               {activeTab === 'player' && (
                 <div className="tab-content-anim">
                     <div id="player-main" className={`modern-card ${highlightedSection === 'player-main' ? 'card-highlighted' : ''}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-main)' }}>
-                        <div className="card-label" style={{ color: 'var(--text-main)' }}>{settings.appLanguage === 'en' ? 'Playback' : 'Воспроизведение'}</div>
+                        <div className="card-label" style={{ color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span>{settings.appLanguage === 'en' ? 'Video Player & Immersion' : 'Видео-плеер и погружение'}</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, padding: '2px 7px', borderRadius: 999, background: 'rgba(229, 169, 87, 0.16)', color: '#e5a957' }}>
+                                {settings.appLanguage === 'en' ? 'BETA' : 'БЕТА'}
+                            </span>
+                        </div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px', gridColumn: '1 / -1' }}>
+                                {settings.appLanguage === 'en' ? 'Arrow keys ← / → seek' : 'Перемотка на стрелки ← / →'}
+                                <select
+                                    className="modern-input"
+                                    value={settings.playerArrowSeekMode ?? 'seconds'}
+                                    onChange={(e) => updateSetting('playerArrowSeekMode', e.target.value as 'seconds' | 'subtitle')}
+                                    style={{ marginTop: 6 }}
+                                >
+                                    <option value="seconds">{settings.appLanguage === 'en' ? 'By seconds (seek step)' : 'По секундам (шаг перемотки)'}</option>
+                                    <option value="subtitle">{settings.appLanguage === 'en' ? 'Between subtitle lines' : 'Между репликами субтитров'}</option>
+                                </select>
+                            </label>
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Seek step, seconds' : 'Шаг перемотки, секунды'}
                                 <input type="number" min="0.25" max="30" step="0.25" className="modern-input" value={settings.playerRewindSeconds ?? 2} onChange={(e) => updateSetting('playerRewindSeconds', Number(e.target.value))} style={{ marginTop: 6 }} />
@@ -1691,6 +1728,93 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                             <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
                                 {settings.appLanguage === 'en' ? 'Subtitle offset step' : 'Шаг сдвига субтитров'}
                                 <input type="number" min="0.05" max="2" step="0.05" className="modern-input" value={settings.playerSubtitleStep ?? 0.1} onChange={(e) => updateSetting('playerSubtitleStep', Number(e.target.value))} style={{ marginTop: 6 }} />
+                            </label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? 'Min gap to skip/fast-forward (s)' : 'Мин. пауза для пропуска/ускорения (с)'}
+                                <input type="number" min="0.3" max="15" step="0.1" className="modern-input" value={settings.playerSkipMinGap ?? 1.5} onChange={(e) => updateSetting('playerSkipMinGap', Number(e.target.value))} style={{ marginTop: 6 }} />
+                            </label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? 'Subtitle visibility' : 'Видимость субтитров'}
+                                <select
+                                    className="modern-input"
+                                    value={settings.playerSubsVisibility ?? 'always'}
+                                    onChange={(e) => updateSetting('playerSubsVisibility', e.target.value as 'always' | 'paused' | 'repeat')}
+                                    style={{ marginTop: 6 }}
+                                >
+                                    <option value="always">{settings.appLanguage === 'en' ? 'Always visible' : 'Всегда'}</option>
+                                    <option value="paused">{settings.appLanguage === 'en' ? 'Only when paused (listening)' : 'Только на паузе (на слух)'}</option>
+                                    <option value="repeat">{settings.appLanguage === 'en' ? 'On pause or replay (R)' : 'На паузе или по повтору (R)'}</option>
+                                </select>
+                            </label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? 'Auto-pause resume' : 'Продолжение после автопаузы'}
+                                <select
+                                    className="modern-input"
+                                    value={settings.playerAutoPauseResumeMode ?? 'manual'}
+                                    onChange={(e) => updateSetting('playerAutoPauseResumeMode', e.target.value as 'manual' | 'fixed' | 'dynamic')}
+                                    style={{ marginTop: 6 }}
+                                >
+                                    <option value="manual">{settings.appLanguage === 'en' ? 'Manual (Space)' : 'Вручную (Пробел)'}</option>
+                                    <option value="fixed">{settings.appLanguage === 'en' ? 'Fixed delay' : 'Фикс. задержка'}</option>
+                                    <option value="dynamic">{settings.appLanguage === 'en' ? 'By subtitle length' : 'По длине реплики'}</option>
+                                </select>
+                            </label>
+                            {(settings.playerAutoPauseResumeMode ?? 'manual') === 'fixed' && (
+                                <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                    {settings.appLanguage === 'en' ? 'Auto-resume delay (s)' : 'Задержка авто-продолжения (с)'}
+                                    <input type="number" min="0.5" max="15" step="0.25" className="modern-input" value={settings.playerAutoPauseFixedSec ?? 2.5} onChange={(e) => updateSetting('playerAutoPauseFixedSec', Number(e.target.value))} style={{ marginTop: 6 }} />
+                                </label>
+                            )}
+                            {(settings.playerAutoPauseResumeMode ?? 'manual') === 'dynamic' && (
+                                <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                    {settings.appLanguage === 'en' ? 'ms per character' : 'мс на символ реплики'}
+                                    <input type="number" min="50" max="500" step="10" className="modern-input" value={settings.playerAutoPauseCharMs ?? 160} onChange={(e) => updateSetting('playerAutoPauseCharMs', Number(e.target.value))} style={{ marginTop: 6 }} />
+                                </label>
+                            )}
+                        </div>
+                        <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
+                            <label className="checkbox-label"><input type="checkbox" checked={settings.playerPauseOnHover ?? false} onChange={(e) => updateSetting('playerPauseOnHover', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Pause playback when hovering a subtitle' : 'Ставить на паузу при наведении на субтитр'}</label>
+                            <label className="checkbox-label"><input type="checkbox" checked={settings.playerBlurTranslation ?? false} onChange={(e) => updateSetting('playerBlurTranslation', e.target.checked)} /> {settings.appLanguage === 'en' ? 'Blur translation until hover' : 'Размывать перевод до наведения мыши'}</label>
+                        </div>
+                        <div style={{ marginTop: 14 }}>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: 6 }}>
+                                {settings.appLanguage === 'en' ? 'Subtitle regex filter (strip stage cues / SFX)' : 'Regex-фильтр субтитров (вырезает ремарки и звуки)'}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <input
+                                    type="text"
+                                    className="modern-input"
+                                    placeholder={String.raw`\[[^\]]*\]|\([^)]*\)|（[^）]*）|♪[^♪]*♪`}
+                                    value={settings.playerSubtitleRegexFilter ?? ''}
+                                    onChange={(e) => updateSetting('playerSubtitleRegexFilter', e.target.value)}
+                                />
+                                <button
+                                    type="button"
+                                    className="modern-btn-secondary"
+                                    style={{ whiteSpace: 'nowrap' }}
+                                    onClick={() => updateSetting('playerSubtitleRegexFilter', String.raw`\[[^\]]*\]|\([^)]*\)|（[^）]*）|♪[^♪]*♪`)}
+                                >
+                                    {settings.appLanguage === 'en' ? 'Preset [SFX]' : 'Шаблон [SFX]'}
+                                </button>
+                                {settings.playerSubtitleRegexFilter && (
+                                    <button type="button" className="modern-btn-secondary" onClick={() => updateSetting('playerSubtitleRegexFilter', '')}>
+                                        {settings.appLanguage === 'en' ? 'Clear' : 'Сброс'}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 14 }}>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? `Font: ${settings.playerSubFontSize ?? 26}px` : `Шрифт: ${settings.playerSubFontSize ?? 26}px`}
+                                <input type="range" min="16" max="44" step="1" value={settings.playerSubFontSize ?? 26} onChange={(e) => updateSetting('playerSubFontSize', Number(e.target.value))} style={{ width: '100%', marginTop: 6 }} />
+                            </label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? `Bottom: ${settings.playerSubBottomOffset ?? 22}px` : `Отступ снизу: ${settings.playerSubBottomOffset ?? 22}px`}
+                                <input type="range" min="0" max="160" step="2" value={settings.playerSubBottomOffset ?? 22} onChange={(e) => updateSetting('playerSubBottomOffset', Number(e.target.value))} style={{ width: '100%', marginTop: 6 }} />
+                            </label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? `Backdrop: ${settings.playerSubBgOpacity ?? 76}%` : `Фон сабов: ${settings.playerSubBgOpacity ?? 76}%`}
+                                <input type="range" min="0" max="100" step="2" value={settings.playerSubBgOpacity ?? 76} onChange={(e) => updateSetting('playerSubBgOpacity', Number(e.target.value))} style={{ width: '100%', marginTop: 6 }} />
                             </label>
                         </div>
                     </div>
@@ -1705,8 +1829,34 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                 <option value="audio">{settings.appLanguage === 'en' ? 'Original audio only' : 'Только оригинальный звук'}</option>
                             </select>
                         </label>
+                        {(settings.playerCardFormat ?? 'video') === 'video' && (
+                            <label className="checkbox-label" style={{ marginTop: 12 }}>{settings.appLanguage === 'en' ? 'Video clip quality' : 'Качество видеоклипа'}
+                                <select
+                                    className="modern-input"
+                                    value={settings.playerVideoQuality ?? 'balanced'}
+                                    onChange={(e) => updateSetting('playerVideoQuality', e.target.value as 'tiny' | 'compact' | 'balanced' | 'high')}
+                                >
+                                    <option value="tiny">{settings.appLanguage === 'en' ? 'Tiny size (480p · light bitrate)' : 'Минимальный вес (480p · минимум МБ)'}</option>
+                                    <option value="compact">{settings.appLanguage === 'en' ? 'Compact (640p · 24fps)' : 'Компактный (640p · 24fps)'}</option>
+                                    <option value="balanced">{settings.appLanguage === 'en' ? 'Balanced (720p · crisp & light)' : 'Оптимальное (720p · чётко и легко)'}</option>
+                                    <option value="high">{settings.appLanguage === 'en' ? 'High (960p · max detail)' : 'Высокое (960p · максимум чёткости)'}</option>
+                                </select>
+                            </label>
+                        )}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', marginTop: 12 }}>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? 'Clip padding before cue (s)' : 'Запас клипа до реплики (с)'}
+                                <input type="number" min="0" max="5" step="0.1" className="modern-input" value={settings.playerClipPadStart ?? 0.5} onChange={(e) => updateSetting('playerClipPadStart', Number(e.target.value))} style={{ marginTop: 6 }} />
+                            </label>
+                            <label style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                {settings.appLanguage === 'en' ? 'Clip padding after cue (s)' : 'Запас клипа после реплики (с)'}
+                                <input type="number" min="0" max="5" step="0.1" className="modern-input" value={settings.playerClipPadEnd ?? 0.5} onChange={(e) => updateSetting('playerClipPadEnd', Number(e.target.value))} style={{ marginTop: 6 }} />
+                            </label>
+                        </div>
                         <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: 12 }}>
-                            {settings.appLanguage === 'en' ? 'The clip starts half a second before the subtitle and ends half a second after it. FFmpeg is required.' : 'Клип начинается за 0,5 секунды до реплики и заканчивается через 0,5 секунды после неё. Для экспорта нужен FFmpeg.'}
+                            {settings.appLanguage === 'en'
+                                ? 'Requires FFmpeg. Tip: mine a word via lookup, then press U (or ↻) to attach the anime clip & frame to the last Anki note.'
+                                : 'Для экспорта нужен FFmpeg. Совет: добавь слово через словарь и нажми U (или ↻), чтобы прикрепить кадр и звук/видео к последней карточке Anki.'}
                         </div>
                     </div>
 
@@ -1717,7 +1867,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                 ['playerKeyPlayPause', settings.appLanguage === 'en' ? 'Play / pause' : 'Пауза / старт'],
                                 ['playerKeyBack', settings.appLanguage === 'en' ? 'Back' : 'Назад'],
                                 ['playerKeyForward', settings.appLanguage === 'en' ? 'Forward' : 'Вперёд'],
+                                ['playerKeyReplayCue', settings.appLanguage === 'en' ? 'Replay / prev cue' : 'Повтор / пред. реплика'],
                                 ['playerKeyMine', settings.appLanguage === 'en' ? 'Mine clip' : 'Майнить клип'],
+                                ['playerKeyUpdateLast', settings.appLanguage === 'en' ? 'Update last Anki card' : 'Дополнить посл. карточку'],
+                                ['playerKeyCopySub', settings.appLanguage === 'en' ? 'Copy subtitle' : 'Копировать реплику'],
                                 ['playerKeyOffsetMinus', settings.appLanguage === 'en' ? 'Subs later' : 'Субтитры позже'],
                                 ['playerKeyOffsetPlus', settings.appLanguage === 'en' ? 'Subs earlier' : 'Субтитры раньше'],
                             ].map(([key, label]) => (
@@ -1726,6 +1879,11 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                     <input type="text" className="modern-input" value={(settings as any)[key] || ''} onChange={(e) => updateSetting(key as keyof AppSettings, e.target.value as any)} style={{ marginTop: 6 }} />
                                 </label>
                             ))}
+                        </div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: 10 }}>
+                            {settings.appLanguage === 'en'
+                                ? 'Shift + [ / Shift + ] snaps subtitle timing to the previous / next cue at the current playback time.'
+                                : 'Shift + [ / Shift + ] мгновенно подгоняет сдвиг субтитров к предыдущей / следующей реплике по текущему времени.'}
                         </div>
                     </div>
                 </div>

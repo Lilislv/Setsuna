@@ -9,7 +9,7 @@ import EpubLibrary, { type EpubBookMetaPatch } from "./EpubLibrary";
 import EpubReader from "./EpubReader";
 import EpubStatsModal from "./EpubStatsModal";
 import { loadEpubChapter, loadEpubCover, openEpubBook } from "./epubApi";
-import { getInitialCoverSnapshot, hasCachedCover, setMemoryCover } from "./epubCoverCache";
+import { compactCoverDataUrl, getInitialCoverSnapshot, hasCachedCover, setMemoryCover } from "./epubCoverCache";
 import {
     computeWeightedBookProgress,
     isPdfBookPath,
@@ -23,8 +23,11 @@ import {
 import { loadEpubGoals, type EpubReadingGoals } from "./epubTracker";
 import type { EpubPortableBackup } from "./epubBackup";
 import type { EpubSyncStatus } from "./useEpubSync";
+import { resolveBookSeries, resolveEpubViewModeAfterChange } from "./epubLibraryModel";
+import { MOBILE_BACK_PRIORITY, useMobileBackHandler } from "../../utils/mobileBack";
 import MangaReader from "../manga/MangaReader";
-import { loadMangaCover, openMangaVolume } from "../manga/mangaApi";
+import CatalogPickerModal from "../manga/CatalogPickerModal";
+import { loadMangaCover, openMangaVolume, type MangaExportResult } from "../manga/mangaApi";
 import { isMangaTabData, type MangaMeta } from "../manga/mangaModel";
 import "./epub.css";
 
@@ -76,11 +79,14 @@ interface EpubWorkspaceProps {
     onLookupToken?: LookupTokenHandler;
     resumePromptBookId?: number | null;
     onDismissResumePrompt?: () => void;
+    catalogPrompt?: { tabIds: number[]; sourceHint?: string; totalFound?: number } | null;
+    onDismissCatalogPrompt?: () => void;
     syncStatus?: EpubSyncStatus;
     lastSyncedAt?: number | null;
     syncError?: string | null;
     downloadingBookId?: number | null;
     onSyncNow?: () => void;
+    onConvertMangaToCbz?: (tabId: number) => Promise<MangaExportResult | null>;
     onOpenCloudSettings?: () => void;
 }
 
@@ -117,11 +123,14 @@ export default function EpubWorkspace({
     onLookupToken,
     resumePromptBookId = null,
     onDismissResumePrompt,
+    catalogPrompt = null,
+    onDismissCatalogPrompt,
     syncStatus = "idle",
     lastSyncedAt = null,
     syncError = null,
     downloadingBookId = null,
     onSyncNow,
+    onConvertMangaToCbz,
     onOpenCloudSettings,
 }: EpubWorkspaceProps) {
     const language = settings.appLanguage || "ru";
@@ -129,11 +138,17 @@ export default function EpubWorkspace({
     const t = getTranslator(language);
 
     const [viewMode, setViewMode] = useState<"library" | "reader">(() => {
-        if (resumePromptBookId) return "library";
+        if (resumePromptBookId || catalogPrompt) return "library";
         if (lastEpubViewMode === "library") return "library";
         if (lastEpubViewMode === "reader" && activeBookTab) return "reader";
         return activeBookTab ? "reader" : "library";
     });
+
+    useEffect(() => {
+        if (catalogPrompt) {
+            setViewMode("library");
+        }
+    }, [catalogPrompt]);
     const [bookMeta, setBookMeta] = useState<EpubBookMeta | null>(null);
     const [mangaMeta, setMangaMeta] = useState<MangaMeta | null>(null);
     const [chapter, setChapter] = useState<EpubChapterContent | null>(null);
@@ -149,6 +164,7 @@ export default function EpubWorkspace({
     const [mobileImmersive, setMobileImmersive] = useState(false);
     const [statsOpen, setStatsOpen] = useState(false);
     const [readingGoals, setReadingGoals] = useState<EpubReadingGoals>(() => loadEpubGoals());
+    const [readerCatalogBookId, setReaderCatalogBookId] = useState<number | null>(null);
     const [escMenuMounted, setEscMenuMounted] = useState(false);
     const [escMenuVisible, setEscMenuVisible] = useState(false);
     const [escMenuEntering, setEscMenuEntering] = useState(false);
@@ -173,16 +189,28 @@ export default function EpubWorkspace({
         }
     }, [viewMode]);
 
-    // Switch into reader view automatically when a new book tab becomes active
+    // Switch into reader view automatically when a new book tab becomes active,
+    // except when any book was just removed/deleted (stay in or return to the
+    // library instead of opening a fallback book).
     const prevActiveTabIdRef = useRef<number | null>(activeTabId);
+    const prevBookIdsRef = useRef<Set<number>>(new Set(books.map((b) => b.id)));
     useEffect(() => {
-        if (activeTabId !== null && activeTabId !== prevActiveTabIdRef.current) {
-            setViewMode("reader");
-        } else if (activeTabId === null) {
-            setViewMode("library");
-        }
+        const nextBookIds = new Set(books.map((b) => b.id));
+        const prevId = prevActiveTabIdRef.current;
+        const prevBookIds = prevBookIdsRef.current;
+        setViewMode((cur) =>
+            resolveEpubViewModeAfterChange({
+                currentViewMode: cur,
+                prevActiveTabId: prevId,
+                nextActiveTabId: activeTabId,
+                prevBookIds,
+                nextBookIds,
+                hasCatalogPrompt: Boolean(catalogPrompt),
+            }),
+        );
         prevActiveTabIdRef.current = activeTabId;
-    }, [activeTabId]);
+        prevBookIdsRef.current = nextBookIds;
+    }, [activeTabId, books, catalogPrompt]);
 
     // Esc menu enter/exit animation lifecycle (identical to AppMenu.tsx)
     useEffect(() => {
@@ -245,54 +273,31 @@ export default function EpubWorkspace({
         setEscMenuOpen(false);
     }, []);
 
-    // Android hardware/gesture Back button: close active sheets/drawers first, then return to Home menu.
-    const mobileBackRef = useRef({
-        lookupOpen,
-        readerOverlayOpen,
-        onCloseLookup,
-        onHome,
+    // Android hardware/gesture Back button: peel one UI layer at a time.
+    useMobileBackHandler(isMobile && statsOpen, MOBILE_BACK_PRIORITY.MODAL, () => {
+        setStatsOpen(false);
     });
-    mobileBackRef.current = {
-        lookupOpen,
-        readerOverlayOpen,
-        onCloseLookup,
-        onHome,
-    };
-
-    useEffect(() => {
-        if (!isMobile || !standaloneMobile) return;
-        const pushWorkspaceGuard = () => {
-            const state = window.history.state as Record<string, unknown> | null;
-            if (!state?.setsunaMobileWorkspace) {
-                window.history.pushState({ ...(state || {}), setsunaMobileWorkspace: "epub" }, "", window.location.href);
-            }
-        };
-        pushWorkspaceGuard();
-
-        const handlePopState = () => {
-            const current = mobileBackRef.current;
-            const fontPickerClose = document.querySelector<HTMLButtonElement>(".font-picker-overlay .font-picker-close");
-            if (fontPickerClose) {
-                fontPickerClose.click();
-                pushWorkspaceGuard();
-                return;
-            }
-            if (current.lookupOpen) {
-                current.onCloseLookup?.();
-                pushWorkspaceGuard();
-                return;
-            }
-            if (current.readerOverlayOpen) {
-                setCloseOverlaySignal((n) => n + 1);
-                pushWorkspaceGuard();
-                return;
-            }
-            current.onHome();
-        };
-
-        window.addEventListener("popstate", handlePopState);
-        return () => window.removeEventListener("popstate", handlePopState);
-    }, [isMobile, standaloneMobile]);
+    useMobileBackHandler(
+        isMobile && readerOverlayOpen,
+        MOBILE_BACK_PRIORITY.READER_OVERLAY - 1,
+        () => {
+            setCloseOverlaySignal((n) => n + 1);
+        },
+    );
+    useMobileBackHandler(
+        isMobile && viewMode === "reader",
+        MOBILE_BACK_PRIORITY.SUBVIEW,
+        () => {
+            setViewMode("library");
+        },
+    );
+    useMobileBackHandler(
+        isMobile && standaloneMobile,
+        MOBILE_BACK_PRIORITY.WORKSPACE,
+        () => {
+            onHome();
+        },
+    );
 
     // Sync any newly cached covers from importEpubPath into state immediately
     useEffect(() => {
@@ -452,8 +457,8 @@ export default function EpubWorkspace({
                         meta = await openMangaVolume(bookPath);
                         if (loadGenerationRef.current !== generation) return;
                         mangaMetaCacheRef.current.set(bookPath, meta);
-                        if (meta.cover !== undefined) {
-                            setMemoryCover(bookPath, meta.cover ?? null);
+                        if (meta.cover && !hasCachedCover(bookPath)) {
+                            setMemoryCover(bookPath, meta.cover);
                             setCoversByPath((prev) => ({ ...prev, [bookPath]: meta!.cover ?? null }));
                         }
                         onUpdateMangaMeta?.(activeBookTab.id, meta);
@@ -518,6 +523,27 @@ export default function EpubWorkspace({
         onSelectBook(tabId);
         setViewMode("reader");
     }, [onSelectBook]);
+
+    const handleWorkspaceConvertToCbz = useCallback(async (tabId: number): Promise<MangaExportResult | null> => {
+        if (!onConvertMangaToCbz) return null;
+        const target = books.find((b) => b.id === tabId);
+        if (target?.epub?.path) {
+            mangaMetaCacheRef.current.delete(target.epub.path);
+        }
+        const res = await onConvertMangaToCbz(tabId);
+        if (res?.outputPath) {
+            mangaMetaCacheRef.current.delete(res.outputPath);
+        }
+        return res;
+    }, [onConvertMangaToCbz, books]);
+
+    const handleWorkspaceUpdateMangaMeta = useCallback((tabId: number, meta: MangaMeta) => {
+        const target = books.find((b) => b.id === tabId);
+        if (target?.epub?.path) {
+            mangaMetaCacheRef.current.set(target.epub.path, meta);
+        }
+        onUpdateMangaMeta?.(tabId, meta);
+    }, [books, onUpdateMangaMeta]);
 
     const visibleBooks = books.filter((tab) => !tab.archived);
     const activeBookTitle = viewMode === "reader" && activeBookTab
@@ -695,6 +721,10 @@ export default function EpubWorkspace({
         ? books.find((b) => b.id === resumePromptBookId && !b.archived) || null
         : null;
 
+    useMobileBackHandler(isMobile && Boolean(resumeBook), MOBILE_BACK_PRIORITY.MODAL, () => {
+        onDismissResumePrompt?.();
+    });
+
     useEffect(() => {
         if (!resumeBook) return;
         const onKeyDown = (event: KeyboardEvent) => {
@@ -746,6 +776,7 @@ export default function EpubWorkspace({
                 activeIsManga ? (
                     mangaMeta ? (
                         <MangaReader
+                            tab={activeBookTab}
                             tabId={activeBookTab.id}
                             mangaPath={bookPath}
                             meta={mangaMeta}
@@ -754,6 +785,8 @@ export default function EpubWorkspace({
                             language={language}
                             isMobile={isMobile}
                             lookupOpen={lookupOpen}
+                            escMenuOpen={escMenuOpen}
+                            goals={readingGoals}
                             onBackToLibrary={() => setViewMode("library")}
                             onMetaUpdated={(updated) => {
                                 mangaMetaCacheRef.current.set(bookPath, updated);
@@ -763,13 +796,24 @@ export default function EpubWorkspace({
                             onProgressChange={(pageIdx, progress) =>
                                 onProgressChange(activeBookTab.id, pageIdx, 0, progress)
                             }
+                            onChangeBookBookmarks={onChangeBookBookmarks
+                                ? (bookmarks) => onChangeBookBookmarks(activeBookTab.id, bookmarks)
+                                : undefined}
+                            onChangeBookNotes={onChangeBookNotes
+                                ? (notes) => onChangeBookNotes(activeBookTab.id, notes)
+                                : undefined}
                             onRecordReadingStats={(deltaChars, deltaSeconds) =>
                                 onRecordReadingStats?.(activeBookTab.id, deltaChars, deltaSeconds)
                             }
+                            onOpenStats={() => setStatsOpen(true)}
                             onLookupToken={onLookupToken}
                             onAnkiScreenshot={onMangaScreenshot}
                             onCloseLookup={onCloseLookup}
                             onMobileImmersiveChange={setMobileImmersive}
+                            onOverlayStateChange={setReaderOverlayOpen}
+                            closeOverlaySignal={closeOverlaySignal}
+                            onOpenCatalogPicker={() => setReaderCatalogBookId(activeBookTab.id)}
+                            onConvertMangaToCbz={onConvertMangaToCbz ? () => handleWorkspaceConvertToCbz(activeBookTab.id) : undefined}
                         />
                     ) : (
                         <div className="mode-empty-state">
@@ -845,12 +889,24 @@ export default function EpubWorkspace({
                     onRemoveBook={onRemoveBook}
                     onRemoveBooks={onRemoveBooks}
                     onPatchBooks={onPatchBooks}
+                    onCoverUpdated={(path, cover) => {
+                        setMemoryCover(path, cover);
+                        setCoversByPath((prev) => ({ ...prev, [path]: cover }));
+                        const matched = books.find((b) => b.epub?.path === path);
+                        if (matched && cover) {
+                            void compactCoverDataUrl(cover).then((thumb) => {
+                                if (thumb) onPatchBooks?.([matched.id], { coverThumb: thumb });
+                            });
+                        }
+                    }}
                     onOpenStats={() => setStatsOpen(true)}
                     syncStatus={syncStatus}
                     lastSyncedAt={lastSyncedAt}
                     syncError={syncError}
                     downloadingBookId={downloadingBookId}
                     onSyncNow={onSyncNow}
+                    onUpdateMangaMeta={onUpdateMangaMeta ? handleWorkspaceUpdateMangaMeta : undefined}
+                    onConvertMangaToCbz={onConvertMangaToCbz ? handleWorkspaceConvertToCbz : undefined}
                     onOpenCloudSettings={onOpenCloudSettings}
                 />
             )}
@@ -922,6 +978,81 @@ export default function EpubWorkspace({
                 onGoalsChange={setReadingGoals}
                 onResetStats={onResetStats}
             />
+            {(() => {
+                const readerBook = readerCatalogBookId !== null
+                    ? books.find((b) => b.id === readerCatalogBookId) || null
+                    : null;
+                const promptBooks = !readerBook && catalogPrompt?.tabIds.length
+                    ? catalogPrompt.tabIds
+                        .map((id) => books.find((b) => b.id === id))
+                        .filter((b): b is Tab => Boolean(b))
+                    : [];
+                const targetBook = readerBook || promptBooks[0] || null;
+                if (!targetBook) return null;
+
+                const promptIdSet = new Set(promptBooks.map((b) => b.id));
+                const targetSeries = targetBook.epub?.series || resolveBookSeries(targetBook, books);
+                const siblingBooks = books.filter((other) => {
+                    if (other.id === targetBook.id || other.archived) return false;
+                    if (promptIdSet.has(other.id)) return true;
+                    const otherSeries = other.epub?.series || resolveBookSeries(other, books);
+                    return Boolean(targetSeries && otherSeries && targetSeries.trim().toLowerCase() === otherSeries.trim().toLowerCase());
+                });
+
+                const isImportPrompt = !readerBook && promptBooks.length > 0;
+                const importBanner = isImportPrompt
+                    ? (promptBooks.length > 1
+                        ? (isEn
+                            ? `Imported ${promptBooks.length} volumes. Pick a title and cover for the series, or skip.`
+                            : `Импортировано томов: ${promptBooks.length}. Подбери название и обложку для серии или пропусти этот шаг.`)
+                        : (isEn
+                            ? "Imported! Pick a cleaner title and cover from AniList / MAL, or skip."
+                            : "Добавлено! Можно сразу подобрать название и обложку с AniList / MAL или пропустить."))
+                    : undefined;
+
+                return (
+                    <CatalogPickerModal
+                        key={targetBook.id}
+                        book={targetBook}
+                        siblingBooks={siblingBooks}
+                        language={language}
+                        initialQueryHint={isImportPrompt ? catalogPrompt?.sourceHint : undefined}
+                        importBanner={importBanner}
+                        skipLabel={isImportPrompt ? (isEn ? "Skip" : "Пропустить") : undefined}
+                        onClose={() => {
+                            if (readerBook) setReaderCatalogBookId(null);
+                            else onDismissCatalogPrompt?.();
+                        }}
+                        onApply={(updates, fallbackCover) => {
+                            const updatedCovers: Record<string, string> = {};
+                            for (const u of updates) {
+                                onPatchBooks?.([u.tabId], u.patch);
+                                const cov = u.coverDataUrl ?? fallbackCover;
+                                const updatedPath = books.find((b) => b.id === u.tabId)?.epub?.path;
+                                if (cov && updatedPath) {
+                                    setMemoryCover(updatedPath, cov);
+                                    updatedCovers[updatedPath] = cov;
+                                }
+                                if (cov) {
+                                    void compactCoverDataUrl(cov).then((thumb) => {
+                                        if (thumb) onPatchBooks?.([u.tabId], { coverThumb: thumb });
+                                    });
+                                }
+                            }
+                            if (updates.length === 0 && fallbackCover && targetBook.epub?.path) {
+                                setMemoryCover(targetBook.epub.path, fallbackCover);
+                                updatedCovers[targetBook.epub.path] = fallbackCover;
+                                void compactCoverDataUrl(fallbackCover).then((thumb) => {
+                                    if (thumb) onPatchBooks?.([targetBook.id], { coverThumb: thumb });
+                                });
+                            }
+                            if (Object.keys(updatedCovers).length > 0) {
+                                setCoversByPath((prev) => ({ ...prev, ...updatedCovers }));
+                            }
+                        }}
+                    />
+                );
+            })()}
         </div>
     );
 

@@ -1,7 +1,7 @@
-import type { EpubBookData, EpubBookmark, Tab, TabStats } from "../../utils/constants";
+import type { EpubBookData, EpubBookmark, EpubManualStatus, Tab, TabStats } from "../../utils/constants";
 import type { EpubBookNote, EpubHighlight } from "./epubModel";
 
-export type LibraryStatusFilter = "all" | "reading" | "unread" | "completed";
+export type LibraryStatusFilter = "all" | EpubManualStatus;
 export type LibraryLangFilter = "all" | "ja" | "en";
 export type LibraryGroupBy = "none" | "series" | "author";
 export type LibraryBookSort = "recent" | "added" | "title" | "author" | "series" | "characters" | "progress";
@@ -56,7 +56,7 @@ export interface RetainedBookRecord {
     seriesPosition?: number | null;
     tags?: string[];
     shelves?: string[];
-    manualStatus?: "unread" | "reading" | "completed";
+    manualStatus?: EpubManualStatus;
     coverBlurred?: boolean;
     chapterIndex?: number;
     chapterOffset?: number;
@@ -330,9 +330,16 @@ export function resolveBookSeries(book: Pick<Tab, "name" | "epub">, allBooks?: r
     return "";
 }
 
-export function resolveBookStatus(book: Pick<Tab, "epub">): "unread" | "reading" | "completed" {
+export function resolveBookStatus(book: Pick<Tab, "epub">): EpubManualStatus {
     const manual = book.epub?.manualStatus;
-    if (manual === "completed" || manual === "unread" || manual === "reading") {
+    if (
+        manual === "completed"
+        || manual === "unread"
+        || manual === "reading"
+        || manual === "planned"
+        || manual === "on-hold"
+        || manual === "dropped"
+    ) {
         return manual;
     }
     const progress = book.epub?.progress || 0;
@@ -628,4 +635,39 @@ export function restoreRetainedBookData(title: string): Partial<{ epub: Partial<
     } catch {
         return null;
     }
+}
+
+export function resolveEpubViewModeAfterChange(params: {
+    currentViewMode: "library" | "reader";
+    prevActiveTabId: number | null;
+    nextActiveTabId: number | null;
+    prevBookIds: ReadonlySet<number>;
+    nextBookIds: ReadonlySet<number>;
+    hasCatalogPrompt: boolean;
+}): "library" | "reader" {
+    const {
+        currentViewMode,
+        prevActiveTabId,
+        nextActiveTabId,
+        prevBookIds,
+        nextBookIds,
+        hasCatalogPrompt,
+    } = params;
+    if (hasCatalogPrompt || nextActiveTabId === null) {
+        return "library";
+    }
+    if (prevActiveTabId !== null && !nextBookIds.has(prevActiveTabId)) {
+        return "library";
+    }
+    for (const id of prevBookIds) {
+        if (!nextBookIds.has(id)) {
+            return currentViewMode === "reader" && nextActiveTabId === prevActiveTabId
+                ? "reader"
+                : "library";
+        }
+    }
+    if (nextActiveTabId !== prevActiveTabId) {
+        return "reader";
+    }
+    return currentViewMode;
 }

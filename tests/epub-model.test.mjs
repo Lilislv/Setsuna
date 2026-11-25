@@ -307,6 +307,9 @@ test("series inference, explicit seriesPosition priority, and library grouping",
     assert.equal(resolveBookStatus(b1), "completed");
     assert.equal(resolveBookStatus(b2), "reading");
     assert.equal(resolveBookStatus(b3), "unread");
+    assert.equal(resolveBookStatus(mkBook(4, "Planned", { manualStatus: "planned", progress: 0 })), "planned");
+    assert.equal(resolveBookStatus(mkBook(5, "OnHold", { manualStatus: "on-hold", progress: 0.4 })), "on-hold");
+    assert.equal(resolveBookStatus(mkBook(6, "Dropped", { manualStatus: "dropped", progress: 0.2 })), "dropped");
 });
 
 test("highlight DOM injection preserves HTML tags and ruby markup", () => {
@@ -419,6 +422,95 @@ test("EPUB Drive sync merges newer phone reading position, union-merges annotati
     assert.equal(res.nextTabs[0].epub.cloudOnly, true);
     assert.equal(res.nextTabs[0].epub.chapterIndex, 4);
     assert.equal(res.nextTabs[0].epub.driveFileId, "drive-file-2");
+});
+
+test("Manga CBZ conversion sync preserves format, mokuro, custom cover thumbnail, and fileRevision updates", () => {
+    assert.equal(inferFileExtFromPath("C:/Setsuna/books/book_42.cbz"), "cbz");
+    assert.equal(inferFileExtFromPath("D:/Manga/vol01.zip"), "zip");
+
+    const pcConvertedTab = {
+        id: 42,
+        name: "宝石の国 01",
+        lines: [],
+        stats: { chars: 1200, words: 0, sentences: 0, time: 300 },
+        mode: "epub",
+        readerProgress: 0.25,
+        epub: {
+            title: "宝石の国 01",
+            series: "宝石の国",
+            seriesPosition: 1,
+            format: "manga",
+            fileExt: "cbz",
+            hasMokuro: true,
+            fileRevision: 1,
+            coverThumb: "data:image/jpeg;base64,thumbdata",
+            path: "C:/Setsuna/books/book_42.cbz",
+            chapterIndex: 44,
+            chapterOffset: 0,
+            chapterCount: 198,
+            progress: 0.25,
+            lastOpenedAt: 8000,
+            syncUpdatedAt: 8000,
+            driveFileId: "drive-cbz-1",
+            lines: [],
+        },
+    };
+
+    const pcSyncRes = mergeManifestWithLocalTabs([pcConvertedTab], { schemaVersion: 1, updatedAt: 0, books: {} }, () => 1);
+    assert.equal(pcSyncRes.remoteChanged, true);
+    const manifestEntry = pcSyncRes.mergedManifest.books["宝石の国01"];
+    assert.equal(manifestEntry.format, "manga");
+    assert.equal(manifestEntry.fileExt, "cbz");
+    assert.equal(manifestEntry.hasMokuro, true);
+    assert.equal(manifestEntry.fileRevision, 1);
+    assert.equal(manifestEntry.coverThumb, "data:image/jpeg;base64,thumbdata");
+
+    // Phone pulls the manifest -> creates cloud-only manga CBZ with coverThumb & .mokuro flag
+    let phoneNextId = 100;
+    const phonePull = mergeManifestWithLocalTabs([], pcSyncRes.mergedManifest, () => phoneNextId++);
+    assert.equal(phonePull.localChanged, true);
+    const phoneTab = phonePull.nextTabs[0];
+    assert.equal(phoneTab.epub.cloudOnly, true);
+    assert.equal(phoneTab.epub.format, "manga");
+    assert.equal(phoneTab.epub.fileExt, "cbz");
+    assert.equal(phoneTab.epub.hasMokuro, true);
+    assert.equal(phoneTab.epub.fileRevision, 1);
+    assert.equal(phoneTab.epub.coverThumb, "data:image/jpeg;base64,thumbdata");
+    assert.equal(phoneTab.epub.chapterIndex, 44);
+
+    // PC re-converts into a newer CBZ revision (clears old driveFileId until uploaded)
+    const pcRev2 = {
+        ...manifestEntry,
+        fileRevision: 2,
+        driveFileId: undefined,
+        updatedAt: 9000,
+    };
+    const mergedBeforeUpload = mergeEpubBookEntries(pcRev2, manifestEntry);
+    assert.equal(mergedBeforeUpload.merged.fileRevision, 2);
+    assert.equal(mergedBeforeUpload.merged.driveFileId, undefined);
+
+    // Once PC uploads rev 2 with driveFileId = "drive-cbz-2", an existing phone tab marks cloudOnly=true so it refreshes
+    const remoteWithRev2 = {
+        schemaVersion: 1,
+        updatedAt: 9500,
+        books: {
+            "宝石の国01": {
+                ...manifestEntry,
+                fileRevision: 2,
+                driveFileId: "drive-cbz-2",
+                updatedAt: 9500,
+            },
+        },
+    };
+    const phoneDownloadedRev1 = {
+        ...phoneTab,
+        epub: { ...phoneTab.epub, cloudOnly: false, path: "/data/book_100.cbz" },
+    };
+    const phoneUpdate = mergeManifestWithLocalTabs([phoneDownloadedRev1], remoteWithRev2, () => 200);
+    assert.equal(phoneUpdate.localChanged, true);
+    assert.equal(phoneUpdate.nextTabs[0].epub.fileRevision, 2);
+    assert.equal(phoneUpdate.nextTabs[0].epub.driveFileId, "drive-cbz-2");
+    assert.equal(phoneUpdate.nextTabs[0].epub.cloudOnly, true);
 });
 
 test("parseSubtitles parses SRT and WebVTT, binary-searches active cues, and matches Japanese EPUB paragraphs", () => {

@@ -5,6 +5,8 @@ import {
     useRef,
     useState,
     type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
+    type PointerEvent as ReactPointerEvent,
     type TouchEvent as ReactTouchEvent,
     type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -12,9 +14,14 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { TokenizedLine } from "../../components/TextContainer";
 import type { AppSettings } from "../../components/SettingsModal";
-import { IconSettings } from "../../components/Icons";
-import type { AppLanguage } from "../../utils/i18n";
+import { IconBookTab, IconClose, IconSearch, IconSettings } from "../../components/Icons";
+import type { EpubBookmark, Tab } from "../../utils/constants";
+import { getDay, sumDayForTabs, useDailyStatsVersion } from "../../utils/dailyStats";
+import { getTranslator, type AppLanguage } from "../../utils/i18n";
 import { setMobileVolumePagingEnabled } from "../../utils/mobileFiles";
+import { MOBILE_BACK_PRIORITY, useMobileBackHandler } from "../../utils/mobileBack";
+import type { EpubBookNote } from "../epub/epubModel";
+import { evaluateGoalProgress, loadEpubGoals, type EpubReadingGoals } from "../epub/epubTracker";
 import {
     attachMokuroOverlay,
     checkMokuroStatus,
@@ -23,16 +30,22 @@ import {
     loadMangaPage,
     runMokuroOnVolume,
     saveMangaOverride,
+    type MangaExportResult,
 } from "./mangaApi";
 import {
     applyBlockTextOverrides,
     buildSpreadPairs,
     computeBubbleCropRect,
+    computeBubbleLineHeight,
     computeFittedBubbleFontPx,
+    DEFAULT_MANGA_PREFS,
+    detectBubbleParagraphGaps,
     findSpreadIndexForPage,
     joinMokuroLines,
     loadMangaPrefs,
+    prepareBubbleDisplayLines,
     saveMangaPrefs,
+    type MangaBgTheme,
     type MangaCropMode,
     type MangaMeta,
     type MangaMokuroStatus,
@@ -53,6 +66,25 @@ import {
 import "./manga.css";
 
 const MAX_CACHED_PAGES = 18;
+const CHROME_TOP_ZONE_PX = 76;
+const CHROME_BOTTOM_ZONE_PX = 70;
+const CHROME_HIDE_DELAY_MS = 320;
+const EDGE_CLICK_RATIO = 0.12;
+const EDGE_CLICK_MAX_PX = 130;
+const WHEEL_PAGE_COOLDOWN_MS = 220;
+
+const BG_THEME_OPTIONS: Array<{
+    value: MangaBgTheme;
+    swatch: string;
+    fg: string;
+    labelRu: string;
+    labelEn: string;
+}> = [
+    { value: "dark", swatch: "#0e1014", fg: "#eef1f5", labelRu: "Тёмная", labelEn: "Dark" },
+    { value: "black", swatch: "#000000", fg: "#eef1f5", labelRu: "Чёрная OLED", labelEn: "Black" },
+    { value: "gray", swatch: "#1f242d", fg: "#eef1f5", labelRu: "Серая", labelEn: "Gray" },
+    { value: "paper", swatch: "#ede9e0", fg: "#1f2328", labelRu: "Светлая", labelEn: "Light" },
+];
 
 type LookupMatch = { start: number; length: number };
 type LookupTokenHandler = (
@@ -64,6 +96,7 @@ type LookupTokenHandler = (
 ) => LookupMatch | null | void | Promise<LookupMatch | null | void>;
 
 interface MangaReaderProps {
+    tab?: Tab;
     tabId: number;
     mangaPath: string;
     meta: MangaMeta;
@@ -72,15 +105,30 @@ interface MangaReaderProps {
     language: AppLanguage;
     isMobile: boolean;
     lookupOpen?: boolean;
+    escMenuOpen?: boolean;
+    goals?: EpubReadingGoals;
     onBackToLibrary: () => void;
     onMetaUpdated: (meta: MangaMeta) => void;
     onProgressChange: (pageIndex: number, progress: number) => void;
+    onChangeBookBookmarks?: (bookmarks: EpubBookmark[]) => void;
+    onChangeBookNotes?: (notes: EpubBookNote[]) => void;
     onRecordReadingStats?: (deltaChars: number, deltaSeconds: number) => void;
+    onOpenStats?: () => void;
     onLookupToken?: LookupTokenHandler;
     onAnkiScreenshot?: (dataUrl: string | null) => void;
     onCloseLookup?: () => void;
     onMobileImmersiveChange?: (immersive: boolean) => void;
+    onOverlayStateChange?: (open: boolean) => void;
+    closeOverlaySignal?: number;
+    onOpenCatalogPicker?: () => void;
+    onConvertMangaToCbz?: () => Promise<MangaExportResult | null>;
 }
+
+const IconBookmarkSvg = () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+    </svg>
+);
 
 async function renderMangaCropDataUrl(
     imageSrc: string,
@@ -212,7 +260,18 @@ function formatOcrEngineLabel(engine: string, device: string | null | undefined,
     return engine;
 }
 
+function clearMangaOverlaySelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    const anchor = sel.anchorNode;
+    const el = anchor instanceof Element ? anchor : anchor?.parentElement;
+    if (el?.closest(".manga-overlay-layer")) {
+        sel.removeAllRanges();
+    }
+}
+
 export default function MangaReader({
+    tab,
     tabId,
     mangaPath,
     meta,
@@ -221,16 +280,30 @@ export default function MangaReader({
     language,
     isMobile,
     lookupOpen = false,
+    escMenuOpen = false,
+    goals: externalGoals,
     onBackToLibrary,
     onMetaUpdated,
     onProgressChange,
+    onChangeBookBookmarks,
+    onChangeBookNotes,
     onRecordReadingStats,
+    onOpenStats,
     onLookupToken,
     onAnkiScreenshot,
     onCloseLookup,
     onMobileImmersiveChange,
+    onOverlayStateChange,
+    closeOverlaySignal = 0,
+    onOpenCatalogPicker,
+    onConvertMangaToCbz,
 }: MangaReaderProps) {
     const isEn = language === "en";
+    const t = getTranslator(language);
+    const displayTitle = (tab?.epub?.title || tab?.name || meta.title || "Manga").trim();
+    const bookmarks = useMemo(() => tab?.epub?.bookmarks || [], [tab?.epub?.bookmarks]);
+    const notes = useMemo(() => tab?.epub?.notes || [], [tab?.epub?.notes]);
+
     const [prefs, setPrefs] = useState<MangaReaderPrefs>(() => {
         const loaded = loadMangaPrefs();
         return isMobile && loaded.spreadMode === "spread"
@@ -241,10 +314,31 @@ export default function MangaReader({
         Math.max(0, Math.min(Math.max(0, meta.pageCount - 1), initialPage)),
     );
     const [zoom, setZoom] = useState(1);
+
+    // EPUB-parity UI panels & auto-hiding LiquidGlass chrome
     const [controlsOpen, setControlsOpen] = useState(false);
+    const [drawerOpen, setDrawerOpen] = useState(false);
+    const [drawerTab, setDrawerTab] = useState<"pages" | "bookmarks" | "notes">("pages");
     const [mokuroModalOpen, setMokuroModalOpen] = useState(false);
     const [chromeVisible, setChromeVisible] = useState(true);
+    const [topHover, setTopHover] = useState(false);
+    const [bottomHover, setBottomHover] = useState(false);
+    const [edgeHover, setEdgeHover] = useState<"left" | "right" | null>(null);
+    const [zenMode, setZenMode] = useState(false);
+    const [positionFrozen, setPositionFrozen] = useState(false);
+    const [trackingPaused, setTrackingPaused] = useState(false);
+    const [lookupKeyHeld, setLookupKeyHeld] = useState(false);
+    const [pageJumpEditing, setPageJumpEditing] = useState(false);
+    const [pageJumpInput, setPageJumpInput] = useState("");
+    const [bookmarkLabelInput, setBookmarkLabelInput] = useState("");
+    const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null);
+    const [editingBookmarkLabel, setEditingBookmarkLabel] = useState("");
+    const [noteTitleInput, setNoteTitleInput] = useState("");
+    const [noteBodyInput, setNoteBodyInput] = useState("");
+
     const [pagesByIndex, setPagesByIndex] = useState<Record<number, MangaPagePayload>>({});
+    const [pageErrors, setPageErrors] = useState<Record<number, string>>({});
+    const [cacheEpoch, setCacheEpoch] = useState(0);
     const [overrides, setOverrides] = useState<Record<number, Record<number, string>>>({});
     const [activeBubble, setActiveBubble] = useState<{ pageIndex: number; blockIndex: number } | null>(null);
     const [editingBubble, setEditingBubble] = useState<{
@@ -266,6 +360,7 @@ export default function MangaReader({
         line: string;
     } | null>(null);
     const [mokuroError, setMokuroError] = useState<string | null>(null);
+    const [convertingCbz, setConvertingCbz] = useState(false);
     const [exportingCbz, setExportingCbz] = useState(false);
     const [exportStatus, setExportStatus] = useState<{ ok: boolean; message: string } | null>(null);
 
@@ -295,18 +390,70 @@ export default function MangaReader({
         hasRemote: boolean;
     } | null>(null);
 
+    const stageRef = useRef<HTMLDivElement>(null);
+    const viewportRef = useRef<HTMLDivElement>(null);
+    const pageListRef = useRef<HTMLDivElement>(null);
+    const topHideTimerRef = useRef<number | null>(null);
+    const bottomHideTimerRef = useRef<number | null>(null);
+    const lastPointerPosRef = useRef<{ x: number; y: number } | null>(null);
     const pageCacheRef = useRef<Map<number, MangaPagePayload>>(new Map());
     const loadingSetRef = useRef<Set<number>>(new Set());
+    const cacheGenerationRef = useRef(0);
+    const retryTimersRef = useRef<Map<number, number>>(new Map());
+    const visiblePagesRef = useRef<number[]>([]);
     const highWaterPageRef = useRef<number>(initialPage);
     const pageEnteredAtRef = useRef<number>(Date.now());
+    const lastActivityAtRef = useRef<number>(Date.now());
+    const pendingSecondsRef = useRef(0);
+    const positionFrozenRef = useRef(false);
+    positionFrozenRef.current = positionFrozen;
+    const onRecordStatsRef = useRef(onRecordReadingStats);
+    onRecordStatsRef.current = onRecordReadingStats;
     const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
-    const viewportRef = useRef<HTMLDivElement>(null);
+    const lastWheelPageRef = useRef(0);
+    const scrubbingRef = useRef(false);
 
-    // Once the dictionary popup closes, drop the pinned bubble (CSS :hover still
-    // keeps it visible if the pointer is actually over it).
+    const statsVersion = useDailyStatsVersion();
+    const activeGoals = useMemo(() => externalGoals || loadEpubGoals(), [externalGoals, statsVersion]);
+    const todayTotals = useMemo(
+        () => sumDayForTabs(getDay(), new Set([String(tabId)])),
+        [statsVersion, tabId],
+    );
+    const goalSummary = useMemo(
+        () => evaluateGoalProgress(todayTotals.chars, todayTotals.seconds, activeGoals, trackingPaused || positionFrozen),
+        [todayTotals.chars, todayTotals.seconds, activeGoals, trackingPaused, positionFrozen],
+    );
+
+    const resetPageCache = useCallback(() => {
+        cacheGenerationRef.current += 1;
+        for (const timer of retryTimersRef.current.values()) {
+            window.clearTimeout(timer);
+        }
+        retryTimersRef.current.clear();
+        pageCacheRef.current.clear();
+        loadingSetRef.current.clear();
+        setPagesByIndex({});
+        setPageErrors({});
+        setCacheEpoch((n) => n + 1);
+    }, []);
+
+    useEffect(() => () => {
+        if (topHideTimerRef.current !== null) window.clearTimeout(topHideTimerRef.current);
+        if (bottomHideTimerRef.current !== null) window.clearTimeout(bottomHideTimerRef.current);
+        cacheGenerationRef.current += 1;
+        for (const timer of retryTimersRef.current.values()) {
+            window.clearTimeout(timer);
+        }
+        retryTimersRef.current.clear();
+    }, []);
+
+    // Once the dictionary popup closes, drop the pinned bubble.
     const prevLookupOpenRef = useRef(lookupOpen);
     useEffect(() => {
-        if (prevLookupOpenRef.current && !lookupOpen) setActiveBubble(null);
+        if (prevLookupOpenRef.current && !lookupOpen) {
+            setActiveBubble(null);
+            clearMangaOverlaySelection();
+        }
         prevLookupOpenRef.current = lookupOpen;
     }, [lookupOpen]);
 
@@ -320,9 +467,7 @@ export default function MangaReader({
 
     // Reset caches when switching volume
     useEffect(() => {
-        pageCacheRef.current.clear();
-        loadingSetRef.current.clear();
-        setPagesByIndex({});
+        resetPageCache();
         const clamped = Math.max(0, Math.min(Math.max(0, meta.pageCount - 1), initialPage));
         setCurrentPage(clamped);
         highWaterPageRef.current = clamped;
@@ -332,19 +477,26 @@ export default function MangaReader({
         setSessionBlocksByPage({});
         setOcrResult(null);
         setOcrError(null);
-        setExportStatus(null);
         setCropToolActive(false);
+        setPageJumpEditing(false);
         setZoom(1);
+        clearMangaOverlaySelection();
         void loadMangaOverrides(mangaPath).then(setOverrides).catch(() => setOverrides({}));
-    }, [tabId, mangaPath]);
+    }, [tabId, mangaPath, resetPageCache]);
+
+    useEffect(() => {
+        setExportStatus(null);
+    }, [tabId]);
+
+    useEffect(() => {
+        clearMangaOverlaySelection();
+    }, [currentPage]);
 
     // Refresh page cache when mokuro overlay gets newly attached/generated
     const mokuroKey = `${meta.hasMokuro}|${meta.mokuroPath || ""}`;
     useEffect(() => {
-        pageCacheRef.current.clear();
-        loadingSetRef.current.clear();
-        setPagesByIndex({});
-    }, [mokuroKey]);
+        resetPageCache();
+    }, [mokuroKey, resetPageCache]);
 
     // Sync mobile immersive bar visibility
     useEffect(() => {
@@ -352,12 +504,273 @@ export default function MangaReader({
         return () => onMobileImmersiveChange?.(false);
     }, [isMobile, chromeVisible, onMobileImmersiveChange]);
 
+    // Report overlays to Workspace (for Android Back handling)
+    useEffect(() => {
+        onOverlayStateChange?.(drawerOpen || controlsOpen || mokuroModalOpen || Boolean(editingBubble));
+    }, [drawerOpen, controlsOpen, mokuroModalOpen, editingBubble, onOverlayStateChange]);
+
+    useEffect(() => {
+        if (!closeOverlaySignal) return;
+        setDrawerOpen(false);
+        setControlsOpen(false);
+        if (!mokuroRunning) setMokuroModalOpen(false);
+        setEditingBubble(null);
+        setCropToolActive(false);
+    }, [closeOverlaySignal, mokuroRunning]);
+
+    useMobileBackHandler(
+        isMobile
+            && (Boolean(editingBubble)
+                || (mokuroModalOpen && !mokuroRunning)
+                || cropToolActive
+                || Boolean(ocrResult)
+                || pageJumpEditing
+                || controlsOpen
+                || drawerOpen),
+        MOBILE_BACK_PRIORITY.READER_OVERLAY,
+        () => {
+            if (editingBubble) {
+                setEditingBubble(null);
+                return;
+            }
+            if (mokuroModalOpen && !mokuroRunning) {
+                setMokuroModalOpen(false);
+                return;
+            }
+            if (cropToolActive) {
+                setCropToolActive(false);
+                return;
+            }
+            if (ocrResult) {
+                setOcrResult(null);
+                return;
+            }
+            if (pageJumpEditing) {
+                setPageJumpEditing(false);
+                return;
+            }
+            if (controlsOpen) {
+                setControlsOpen(false);
+                return;
+            }
+            if (drawerOpen) {
+                setDrawerOpen(false);
+                return;
+            }
+            return false;
+        },
+    );
+
     // Android hardware volume-key paging
     useEffect(() => {
         if (!isMobile || settings.epubVolumeKeyPaging === false) return;
         setMobileVolumePagingEnabled(true);
         return () => setMobileVolumePagingEnabled(false);
     }, [isMobile, settings.epubVolumeKeyPaging]);
+
+    // Track lookup hotkey state (e.g. Shift) so floating bars stay completely hidden during lookup
+    useEffect(() => {
+        if (isMobile) return;
+        const hotkey = String(settings.lookupHotkey || "Shift");
+        if (hotkey === "__disabled__") {
+            setLookupKeyHeld(false);
+            return;
+        }
+        const parts = hotkey.split("+").map((p) => p.trim()).filter(Boolean);
+        const needShift = parts.some((p) => /^shift$/i.test(p));
+        const needCtrl = parts.some((p) => /^(ctrl|control)$/i.test(p));
+        const needAlt = parts.some((p) => /^alt$/i.test(p));
+        const trigger = parts.find((p) => !/^(ctrl|control|alt|shift)$/i.test(p)) || "";
+        const norm = (c: string) => c.toLowerCase().replace(/^key/, "").replace(/^digit/, "");
+        let triggerDown = false;
+
+        const isActiveFor = (ev: KeyboardEvent) =>
+            ev.shiftKey === needShift
+            && ev.ctrlKey === needCtrl
+            && ev.altKey === needAlt
+            && (!trigger || triggerDown);
+
+        const onKeyDown = (ev: KeyboardEvent) => {
+            if (trigger && norm(ev.code) === norm(trigger)) triggerDown = true;
+            if (isActiveFor(ev)) setLookupKeyHeld(true);
+        };
+        const onKeyUp = (ev: KeyboardEvent) => {
+            if (trigger && norm(ev.code) === norm(trigger)) triggerDown = false;
+            if (!isActiveFor(ev)) setLookupKeyHeld(false);
+        };
+        const onBlur = () => {
+            triggerDown = false;
+            setLookupKeyHeld(false);
+        };
+
+        window.addEventListener("keydown", onKeyDown, { capture: true });
+        window.addEventListener("keyup", onKeyUp, { capture: true });
+        window.addEventListener("blur", onBlur);
+        return () => {
+            window.removeEventListener("keydown", onKeyDown, { capture: true });
+            window.removeEventListener("keyup", onKeyUp, { capture: true });
+            window.removeEventListener("blur", onBlur);
+        };
+    }, [isMobile, settings.lookupHotkey]);
+
+    const lookupActive = Boolean(lookupOpen) || lookupKeyHeld;
+
+    const evaluateHoverZones = useCallback((clientX: number, clientY: number, suppressChrome: boolean) => {
+        const stage = stageRef.current;
+        if (!stage) return;
+        const rect = stage.getBoundingClientRect();
+        const relY = clientY - rect.top;
+        const relX = clientX - rect.left;
+        const insideStage = relX >= 0 && relX <= rect.width && relY >= 0 && relY <= rect.height;
+        const nearTop = insideStage && relY <= CHROME_TOP_ZONE_PX;
+        const nearBottom = insideStage && relY >= rect.height - CHROME_BOTTOM_ZONE_PX;
+
+        if (nearTop) {
+            if (topHideTimerRef.current !== null) {
+                window.clearTimeout(topHideTimerRef.current);
+                topHideTimerRef.current = null;
+            }
+            setTopHover(true);
+        } else if (topHover && topHideTimerRef.current === null) {
+            topHideTimerRef.current = window.setTimeout(() => {
+                topHideTimerRef.current = null;
+                setTopHover(false);
+            }, CHROME_HIDE_DELAY_MS);
+        }
+
+        if (nearBottom) {
+            if (bottomHideTimerRef.current !== null) {
+                window.clearTimeout(bottomHideTimerRef.current);
+                bottomHideTimerRef.current = null;
+            }
+            setBottomHover(true);
+        } else if (bottomHover && bottomHideTimerRef.current === null) {
+            bottomHideTimerRef.current = window.setTimeout(() => {
+                bottomHideTimerRef.current = null;
+                setBottomHover(false);
+            }, CHROME_HIDE_DELAY_MS);
+        }
+
+        if (
+            !suppressChrome
+            && insideStage
+            && prefs.spreadMode !== "webtoon"
+            && !nearTop
+            && !nearBottom
+            && !drawerOpen
+            && !controlsOpen
+            && !cropToolActive
+        ) {
+            const edgePx = Math.min(EDGE_CLICK_MAX_PX, rect.width * EDGE_CLICK_RATIO);
+            if (relX <= edgePx) {
+                setEdgeHover((prev) => (prev === "left" ? prev : "left"));
+            } else if (relX >= rect.width - edgePx) {
+                setEdgeHover((prev) => (prev === "right" ? prev : "right"));
+            } else if (edgeHover !== null) {
+                setEdgeHover(null);
+            }
+        } else if (edgeHover !== null) {
+            setEdgeHover(null);
+        }
+    }, [topHover, bottomHover, prefs.spreadMode, drawerOpen, controlsOpen, cropToolActive, edgeHover]);
+
+    useEffect(() => {
+        if (isMobile || lookupActive || escMenuOpen) return;
+        const pos = lastPointerPosRef.current;
+        if (pos) {
+            evaluateHoverZones(pos.x, pos.y, false);
+        }
+    }, [isMobile, lookupActive, escMenuOpen, evaluateHoverZones]);
+
+    const handleStageMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+        if (isMobile) return;
+        lastPointerPosRef.current = { x: event.clientX, y: event.clientY };
+        const hotkey = String(settings.lookupHotkey || "Shift");
+        const parts = hotkey.split("+").map((p) => p.trim()).filter(Boolean);
+        const modLookup = hotkey !== "__disabled__"
+            && !parts.some((p) => !/^(ctrl|control|alt|shift)$/i.test(p))
+            && event.shiftKey === parts.some((p) => /^shift$/i.test(p))
+            && event.ctrlKey === parts.some((p) => /^(ctrl|control)$/i.test(p))
+            && event.altKey === parts.some((p) => /^alt$/i.test(p));
+        if (modLookup !== lookupKeyHeld && !parts.some((p) => !/^(ctrl|control|alt|shift)$/i.test(p))) {
+            setLookupKeyHeld(modLookup);
+        }
+        evaluateHoverZones(event.clientX, event.clientY, Boolean(lookupOpen) || modLookup || escMenuOpen);
+    }, [isMobile, settings.lookupHotkey, lookupKeyHeld, lookupOpen, escMenuOpen, evaluateHoverZones]);
+
+    const handleStageMouseLeave = useCallback(() => {
+        if (isMobile) return;
+        lastPointerPosRef.current = null;
+        setEdgeHover(null);
+        if (topHideTimerRef.current !== null) window.clearTimeout(topHideTimerRef.current);
+        if (bottomHideTimerRef.current !== null) window.clearTimeout(bottomHideTimerRef.current);
+        topHideTimerRef.current = window.setTimeout(() => {
+            topHideTimerRef.current = null;
+            setTopHover(false);
+        }, CHROME_HIDE_DELAY_MS);
+        bottomHideTimerRef.current = window.setTimeout(() => {
+            bottomHideTimerRef.current = null;
+            setBottomHover(false);
+        }, CHROME_HIDE_DELAY_MS);
+    }, [isMobile]);
+
+    const topChromeVisible =
+        !zenMode
+        && !lookupActive
+        && !escMenuOpen
+        && ((isMobile && chromeVisible) || topHover || drawerOpen || controlsOpen || cropToolActive);
+    const bottomChromeVisible =
+        !zenMode
+        && !lookupActive
+        && !escMenuOpen
+        && ((isMobile && chromeVisible) || bottomHover || pageJumpEditing || positionFrozen);
+
+    // Smart reading timer with lookup-aware idle auto-pause
+    useEffect(() => {
+        const markActive = () => {
+            lastActivityAtRef.current = Date.now();
+        };
+        window.addEventListener("pointerdown", markActive, { passive: true });
+        window.addEventListener("keydown", markActive, { passive: true });
+        window.addEventListener("wheel", markActive, { passive: true });
+        return () => {
+            window.removeEventListener("pointerdown", markActive);
+            window.removeEventListener("keydown", markActive);
+            window.removeEventListener("wheel", markActive);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (lookupOpen) {
+            lastActivityAtRef.current = Date.now();
+        }
+    }, [lookupOpen]);
+
+    useEffect(() => {
+        if (trackingPaused || positionFrozen || escMenuOpen || mokuroModalOpen || Boolean(editingBubble)) {
+            return;
+        }
+        const idleLimitMs = Math.max(15, activeGoals.idlePauseSeconds || 60) * 1000;
+        const interval = window.setInterval(() => {
+            if (document.hidden) return;
+            const idleMs = Date.now() - lastActivityAtRef.current;
+            if (!lookupOpen && idleMs > idleLimitMs) return;
+            pendingSecondsRef.current += 1;
+            if (pendingSecondsRef.current >= 5) {
+                const secs = pendingSecondsRef.current;
+                pendingSecondsRef.current = 0;
+                onRecordStatsRef.current?.(0, secs);
+            }
+        }, 1000);
+        return () => {
+            window.clearInterval(interval);
+            if (pendingSecondsRef.current > 0) {
+                const secs = pendingSecondsRef.current;
+                pendingSecondsRef.current = 0;
+                onRecordStatsRef.current?.(0, secs);
+            }
+        };
+    }, [trackingPaused, positionFrozen, escMenuOpen, mokuroModalOpen, editingBubble, lookupOpen, activeGoals.idlePauseSeconds]);
 
     const spreadPairs = useMemo(
         () => buildSpreadPairs(meta.pageCount, isMobile && prefs.spreadMode === "spread" ? "single" : prefs.spreadMode, prefs.coverOffset),
@@ -380,49 +793,121 @@ export default function MangaReader({
         return spreadPairs[currentSpreadIdx] || [0];
     }, [prefs.spreadMode, spreadPairs, currentSpreadIdx, currentPage, meta.pageCount]);
 
-    const ensurePageLoaded = useCallback((pageIdx: number) => {
+    visiblePagesRef.current = visiblePages;
+
+    const ensurePageLoaded = useCallback((pageIdx: number, retryAttempt = 0) => {
         if (pageIdx < 0 || pageIdx >= meta.pageCount) return;
-        if (pageCacheRef.current.has(pageIdx) || loadingSetRef.current.has(pageIdx)) return;
+        const cached = pageCacheRef.current.get(pageIdx);
+        if (cached) {
+            setPagesByIndex((prev) => (prev[pageIdx] === cached ? prev : { ...prev, [pageIdx]: cached }));
+            return;
+        }
+        if (loadingSetRef.current.has(pageIdx)) return;
+
+        const pendingRetry = retryTimersRef.current.get(pageIdx);
+        if (pendingRetry !== undefined) {
+            window.clearTimeout(pendingRetry);
+            retryTimersRef.current.delete(pageIdx);
+        }
+
+        const gen = cacheGenerationRef.current;
         loadingSetRef.current.add(pageIdx);
+        setPageErrors((prev) => {
+            if (!(pageIdx in prev)) return prev;
+            const next = { ...prev };
+            delete next[pageIdx];
+            return next;
+        });
+
         void loadMangaPage(mangaPath, pageIdx)
             .then((payload) => {
+                if (cacheGenerationRef.current !== gen) return;
                 pageCacheRef.current.set(pageIdx, payload);
+                const evicted: number[] = [];
                 while (pageCacheRef.current.size > MAX_CACHED_PAGES) {
                     const oldest = pageCacheRef.current.keys().next().value;
-                    if (typeof oldest === "number" && !visiblePages.includes(oldest)) {
+                    if (typeof oldest === "number" && !visiblePagesRef.current.includes(oldest)) {
                         pageCacheRef.current.delete(oldest);
+                        evicted.push(oldest);
                     } else {
                         break;
                     }
                 }
-                setPagesByIndex((prev) => ({ ...prev, [pageIdx]: payload }));
+                setPagesByIndex((prev) => {
+                    const next = { ...prev, [pageIdx]: payload };
+                    for (const key of evicted) delete next[key];
+                    return next;
+                });
+                setPageErrors((prev) => {
+                    if (!(pageIdx in prev)) return prev;
+                    const next = { ...prev };
+                    delete next[pageIdx];
+                    return next;
+                });
             })
-            .catch(() => {})
+            .catch((err) => {
+                if (cacheGenerationRef.current !== gen) return;
+                if (retryAttempt < 2 && visiblePagesRef.current.includes(pageIdx)) {
+                    const delay = retryAttempt === 0 ? 250 : 650;
+                    const timer = window.setTimeout(() => {
+                        retryTimersRef.current.delete(pageIdx);
+                        if (cacheGenerationRef.current === gen) {
+                            ensurePageLoaded(pageIdx, retryAttempt + 1);
+                        }
+                    }, delay);
+                    retryTimersRef.current.set(pageIdx, timer);
+                    return;
+                }
+                if (visiblePagesRef.current.includes(pageIdx) || retryAttempt >= 2) {
+                    setPageErrors((prev) => ({ ...prev, [pageIdx]: String(err) }));
+                }
+            })
             .finally(() => {
-                loadingSetRef.current.delete(pageIdx);
+                if (cacheGenerationRef.current === gen) {
+                    loadingSetRef.current.delete(pageIdx);
+                }
             });
-    }, [mangaPath, meta.pageCount, visiblePages]);
+    }, [mangaPath, meta.pageCount]);
 
-    // Load visible pages + prefetch next 2 and previous 1
+    // Load visible pages immediately, then prefetch neighbors after brief settle
     useEffect(() => {
-        const toLoad = new Set<number>(visiblePages);
-        const maxVisible = visiblePages[visiblePages.length - 1] ?? currentPage;
-        const minVisible = visiblePages[0] ?? currentPage;
-        toLoad.add(maxVisible + 1);
-        toLoad.add(maxVisible + 2);
-        if (minVisible > 0) toLoad.add(minVisible - 1);
-        for (const idx of toLoad) {
+        for (const idx of visiblePages) {
             ensurePageLoaded(idx);
         }
-    }, [visiblePages, currentPage, ensurePageLoaded]);
+        const maxVisible = visiblePages[visiblePages.length - 1] ?? currentPage;
+        const minVisible = visiblePages[0] ?? currentPage;
+        const prefetchTargets = [maxVisible + 1, maxVisible + 2];
+        if (minVisible > 0) prefetchTargets.push(minVisible - 1);
+
+        const timer = window.setTimeout(() => {
+            for (const idx of prefetchTargets) {
+                if (!visiblePagesRef.current.includes(idx)) {
+                    ensurePageLoaded(idx);
+                }
+            }
+        }, 60);
+        return () => window.clearTimeout(timer);
+    }, [visiblePages, currentPage, cacheEpoch, ensurePageLoaded]);
+
+    // Self-heal if visible page state is ever evicted or reset while remaining on the same page
+    useEffect(() => {
+        for (const idx of visiblePages) {
+            if (!pagesByIndex[idx] && !pageErrors[idx]) {
+                ensurePageLoaded(idx);
+            }
+        }
+    }, [visiblePages, pagesByIndex, pageErrors, cacheEpoch, ensurePageLoaded]);
 
     // Report progress & monotonic reading stats
     useEffect(() => {
         const maxPage = Math.max(1, meta.pageCount - 1);
         const progress = meta.pageCount <= 1 ? 1 : Math.max(0, Math.min(1, currentPage / maxPage));
-        onProgressChange(currentPage, progress);
+        lastActivityAtRef.current = Date.now();
+        if (!positionFrozenRef.current) {
+            onProgressChange(currentPage, progress);
+        }
 
-        if (currentPage > highWaterPageRef.current && onRecordReadingStats) {
+        if (!positionFrozenRef.current && !trackingPaused && currentPage > highWaterPageRef.current && onRecordReadingStats) {
             const elapsedSec = Math.max(1, Math.min(120, Math.round((Date.now() - pageEnteredAtRef.current) / 1000)));
             let deltaChars = 0;
             for (let p = highWaterPageRef.current; p < currentPage; p += 1) {
@@ -434,7 +919,22 @@ export default function MangaReader({
             }
         }
         pageEnteredAtRef.current = Date.now();
-    }, [currentPage, meta.pageCount, meta.pages, onProgressChange, onRecordReadingStats]);
+    }, [currentPage, meta.pageCount, meta.pages, onProgressChange, onRecordReadingStats, trackingPaused]);
+
+    // Scroll active page card into view when drawer opens on Pages tab
+    useEffect(() => {
+        if (!drawerOpen || drawerTab !== "pages") return;
+        const timer = window.setTimeout(() => {
+            pageListRef.current?.querySelector(".epub-toc-item.is-active")?.scrollIntoView({ block: "nearest" });
+        }, 40);
+        return () => window.clearTimeout(timer);
+    }, [drawerOpen, drawerTab]);
+
+    const jumpToPage = useCallback((pageIdx: number) => {
+        setActiveBubble(null);
+        setEditingBubble(null);
+        setCurrentPage(Math.max(0, Math.min(Math.max(0, meta.pageCount - 1), pageIdx)));
+    }, [meta.pageCount]);
 
     const goNext = useCallback(() => {
         setActiveBubble(null);
@@ -460,6 +960,73 @@ export default function MangaReader({
         if (typeof target === "number") setCurrentPage(target);
     }, [prefs.spreadMode, spreadPairs, currentSpreadIdx]);
 
+    const getCurrentPageExcerpt = useCallback((): string => {
+        const payload = pagesByIndex[currentPage];
+        if (!payload) return "";
+        const effective = applyBlockTextOverrides(payload.blocks, overrides[currentPage]);
+        const joined = effective.map((b) => joinMokuroLines(b.lines)).filter(Boolean).join(" ").trim();
+        return joined.length > 90 ? `${joined.slice(0, 90)}…` : joined;
+    }, [pagesByIndex, currentPage, overrides]);
+
+    const handleAddBookmark = useCallback(() => {
+        if (!onChangeBookBookmarks) return;
+        const customLabel = bookmarkLabelInput.trim();
+        const pageLabel = isEn ? `Page ${currentPage + 1}` : `Стр. ${currentPage + 1}`;
+        const nextBookmark: EpubBookmark = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            label: customLabel || pageLabel,
+            chapterIndex: currentPage,
+            chapterTitle: pageLabel,
+            paragraphIndex: 0,
+            excerpt: getCurrentPageExcerpt(),
+            createdAt: Date.now(),
+        };
+        onChangeBookBookmarks([nextBookmark, ...bookmarks]);
+        setBookmarkLabelInput("");
+    }, [onChangeBookBookmarks, bookmarkLabelInput, isEn, currentPage, getCurrentPageExcerpt, bookmarks]);
+
+    const handleRenameBookmark = useCallback((id: string) => {
+        if (!onChangeBookBookmarks) return;
+        const nextLabel = editingBookmarkLabel.trim();
+        if (nextLabel) {
+            onChangeBookBookmarks(bookmarks.map((item) => (item.id === id ? { ...item, label: nextLabel } : item)));
+        }
+        setEditingBookmarkId(null);
+        setEditingBookmarkLabel("");
+    }, [onChangeBookBookmarks, editingBookmarkLabel, bookmarks]);
+
+    const handleDeleteBookmark = useCallback((id: string) => {
+        if (!onChangeBookBookmarks) return;
+        onChangeBookBookmarks(bookmarks.filter((item) => item.id !== id));
+    }, [onChangeBookBookmarks, bookmarks]);
+
+    const handleAddBookNote = useCallback(() => {
+        if (!onChangeBookNotes) return;
+        const body = noteBodyInput.trim();
+        const title = noteTitleInput.trim();
+        if (!body && !title) return;
+        const pageLabel = isEn ? `Page ${currentPage + 1}` : `Стр. ${currentPage + 1}`;
+        const now = Date.now();
+        const nextNote: EpubBookNote = {
+            id: `note-${now}-${Math.random().toString(36).slice(2, 7)}`,
+            title: title || pageLabel,
+            body,
+            chapterIndex: currentPage,
+            chapterTitle: pageLabel,
+            paragraphIndex: 0,
+            createdAt: now,
+            updatedAt: now,
+        };
+        onChangeBookNotes([nextNote, ...notes]);
+        setNoteTitleInput("");
+        setNoteBodyInput("");
+    }, [onChangeBookNotes, noteBodyInput, noteTitleInput, isEn, currentPage, notes]);
+
+    const handleDeleteBookNote = useCallback((id: string) => {
+        if (!onChangeBookNotes) return;
+        onChangeBookNotes(notes.filter((n) => n.id !== id));
+    }, [onChangeBookNotes, notes]);
+
     // Listen for Android volume keys
     useEffect(() => {
         if (!isMobile || settings.epubVolumeKeyPaging === false) return;
@@ -472,12 +1039,29 @@ export default function MangaReader({
         return () => window.removeEventListener("setsuna-volume-key", onVolKey);
     }, [isMobile, settings.epubVolumeKeyPaging, goNext, goPrev]);
 
-    // Keyboard navigation
+    // Keyboard navigation & shortcuts (harmonized with EpubReader)
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
             if (editingBubble) return;
             const target = event.target as HTMLElement | null;
-            if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+            if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+
+            if (event.key === "Escape") {
+                if (cropToolActive) {
+                    event.preventDefault();
+                    setCropToolActive(false);
+                } else if (controlsOpen || drawerOpen) {
+                    event.preventDefault();
+                    setControlsOpen(false);
+                    setDrawerOpen(false);
+                } else if (ocrResult || ocrError) {
+                    event.preventDefault();
+                    setOcrResult(null);
+                    setOcrError(null);
+                }
+                return;
+            }
+            if (escMenuOpen || mokuroModalOpen) return;
 
             if (event.key === "ArrowLeft") {
                 event.preventDefault();
@@ -495,42 +1079,79 @@ export default function MangaReader({
                 goPrev();
             } else if (event.key === "Home") {
                 event.preventDefault();
-                setCurrentPage(0);
+                jumpToPage(0);
             } else if (event.key === "End") {
                 event.preventDefault();
-                setCurrentPage(Math.max(0, meta.pageCount - 1));
-            } else if (event.key.toLowerCase() === "o" && !event.ctrlKey && !event.altKey) {
-                const order: MangaOverlayMode[] = ["hover", "outline", "readable"];
-                const next = order[(order.indexOf(prefs.overlayMode) + 1) % order.length];
-                updatePrefs({ overlayMode: next });
-            } else if (event.key.toLowerCase() === "d" && !event.ctrlKey && !event.altKey && !isMobile) {
-                updatePrefs({ spreadMode: prefs.spreadMode === "spread" ? "single" : "spread" });
-            } else if (event.key.toLowerCase() === "c" && !event.ctrlKey && !event.altKey) {
-                updatePrefs({ coverOffset: !prefs.coverOffset });
-            } else if (event.key.toLowerCase() === "s" && !event.ctrlKey && !event.altKey) {
-                setCropToolActive((v) => !v);
-            } else if (event.key === "Escape") {
-                if (cropToolActive) setCropToolActive(false);
-                else if (ocrResult || ocrError) {
-                    setOcrResult(null);
-                    setOcrError(null);
+                jumpToPage(Math.max(0, meta.pageCount - 1));
+            } else if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+                if (event.code === "KeyO") {
+                    const order: MangaOverlayMode[] = ["hover", "outline", "readable"];
+                    const next = order[(order.indexOf(prefs.overlayMode) + 1) % order.length];
+                    updatePrefs({ overlayMode: next });
+                } else if (event.code === "KeyD" && !isMobile) {
+                    updatePrefs({ spreadMode: prefs.spreadMode === "spread" ? "single" : "spread" });
+                } else if (event.code === "KeyC") {
+                    updatePrefs({ coverOffset: !prefs.coverOffset });
+                } else if (event.code === "KeyS") {
+                    setCropToolActive((v) => !v);
+                } else if (event.code === "KeyZ") {
+                    event.preventDefault();
+                    setZenMode((prev) => !prev);
+                } else if (event.code === "KeyE") {
+                    event.preventDefault();
+                    setPositionFrozen((prev) => !prev);
+                } else if (event.code === "KeyP") {
+                    event.preventDefault();
+                    setTrackingPaused((prev) => !prev);
+                } else if (event.code === "KeyB" && onChangeBookBookmarks) {
+                    event.preventDefault();
+                    if (event.shiftKey) {
+                        handleAddBookmark();
+                    } else {
+                        setControlsOpen(false);
+                        setDrawerTab("bookmarks");
+                        setDrawerOpen(true);
+                    }
+                } else if (event.key === "=" || event.key === "+") {
+                    setZoom((z) => Math.min(3, Number((z + 0.15).toFixed(2))));
+                } else if (event.key === "-") {
+                    setZoom((z) => Math.max(0.5, Number((z - 0.15).toFixed(2))));
+                } else if (event.key === "0") {
+                    setZoom(1);
                 }
-            } else if (event.key === "=" || event.key === "+") {
-                setZoom((z) => Math.min(3, Number((z + 0.15).toFixed(2))));
-            } else if (event.key === "-") {
-                setZoom((z) => Math.max(0.5, Number((z - 0.15).toFixed(2))));
-            } else if (event.key === "0") {
-                setZoom(1);
             }
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [editingBubble, cropToolActive, ocrResult, ocrError, prefs.rtl, prefs.overlayMode, prefs.spreadMode, prefs.coverOffset, isMobile, meta.pageCount, goNext, goPrev, updatePrefs]);
+    }, [
+        editingBubble,
+        cropToolActive,
+        controlsOpen,
+        drawerOpen,
+        ocrResult,
+        ocrError,
+        escMenuOpen,
+        mokuroModalOpen,
+        prefs.rtl,
+        prefs.overlayMode,
+        prefs.spreadMode,
+        prefs.coverOffset,
+        isMobile,
+        meta.pageCount,
+        goNext,
+        goPrev,
+        jumpToPage,
+        updatePrefs,
+        onChangeBookBookmarks,
+        handleAddBookmark,
+    ]);
 
-    // Check mokuro CLI availability when opening the OCR modal on desktop, or ONNX/ML Kit status on mobile
+    // Check mokuro CLI availability when opening the OCR modal
     useEffect(() => {
-        if (!mokuroModalOpen) return;
-        setExportStatus(null);
+        if (!mokuroModalOpen) {
+            setExportStatus(null);
+            return;
+        }
         if (!isMobile) {
             void checkMokuroStatus().then(setMokuroStatus).catch(() => {});
         } else {
@@ -548,7 +1169,7 @@ export default function MangaReader({
         }
     }, [mokuroModalOpen, isMobile]);
 
-    // Listen to mokuro CLI progress events (real-time CR/LF tqdm updates + GPU/CPU detection)
+    // Listen to mokuro CLI progress events
     useEffect(() => {
         if (isMobile) return;
         let unlisten: (() => void) | null = null;
@@ -582,7 +1203,6 @@ export default function MangaReader({
         };
     }, [mangaPath, isMobile]);
 
-    // Prepare Anki panel crop whenever the user interacts with a bubble
     const prepareAnkiPanelCrop = useCallback(
         (page: MangaPagePayload, block: MokuroBlock) => {
             if (!onAnkiScreenshot) return;
@@ -593,7 +1213,6 @@ export default function MangaReader({
         [onAnkiScreenshot, prefs.cropMode],
     );
 
-    // Clear manga screenshot when unmounting reader
     useEffect(() => {
         return () => {
             onAnkiScreenshot?.(null);
@@ -642,10 +1261,42 @@ export default function MangaReader({
         }
     }, [mokuroRunning, mangaPath, meta.pageCount, onMetaUpdated]);
 
+    const handleConvertInPlaceCbz = useCallback(async () => {
+        if (!onConvertMangaToCbz || convertingCbz || exportingCbz) return;
+        setConvertingCbz(true);
+        setExportStatus(null);
+        try {
+            const res = await onConvertMangaToCbz();
+            if (!res) {
+                setExportStatus({
+                    ok: false,
+                    message: isEn
+                        ? "Could not resolve manga path for conversion."
+                        : "Не удалось определить путь к файлу манги.",
+                });
+                return;
+            }
+            const mb = (res.bytes / (1024 * 1024)).toFixed(1);
+            setExportStatus({
+                ok: true,
+                message: isEn
+                    ? `Converted in place to .cbz (${res.pageCount} p., ${mb} MB)${res.hasMokuro ? " · .mokuro embedded" : ""} · ready for Drive sync.`
+                    : `Преобразовано в CBZ на ПК (${res.pageCount} стр., ${mb} МБ)${res.hasMokuro ? " · .mokuro встроен" : ""} · готово к синхронизации на телефон.`,
+            });
+        } catch (error) {
+            setExportStatus({
+                ok: false,
+                message: String(error),
+            });
+        } finally {
+            setConvertingCbz(false);
+        }
+    }, [onConvertMangaToCbz, convertingCbz, exportingCbz, isEn]);
+
     const handleExportMobileCbz = useCallback(async () => {
         if (exportingCbz) return;
         try {
-            const safeTitle = (meta.title || "manga").replace(/[\\/:*?"<>|]/g, "_").trim() || "manga";
+            const safeTitle = (displayTitle || "manga").replace(/[\\/:*?"<>|]/g, "_").trim() || "manga";
             const outputPath = await save({
                 defaultPath: `${safeTitle}.cbz`,
                 filters: [{ name: "Comic Book Archive (.cbz)", extensions: ["cbz"] }],
@@ -670,7 +1321,7 @@ export default function MangaReader({
         } finally {
             setExportingCbz(false);
         }
-    }, [exportingCbz, meta.title, mangaPath, isEn]);
+    }, [exportingCbz, displayTitle, mangaPath, isEn]);
 
     const handleRunBubbleCropOcr = useCallback(
         async (page: MangaPagePayload, box: [number, number, number, number]) => {
@@ -834,8 +1485,19 @@ export default function MangaReader({
             event.preventDefault();
             const delta = event.deltaY < 0 ? 0.12 : -0.12;
             setZoom((z) => Math.max(0.5, Math.min(3, Number((z + delta).toFixed(2)))));
+            return;
         }
-    }, []);
+        if (prefs.spreadMode === "webtoon" || zoom > 1.02) return;
+        const vp = viewportRef.current;
+        if (vp && vp.scrollHeight > vp.clientHeight + 4) return;
+        if (Math.abs(event.deltaY) >= 8) {
+            const now = Date.now();
+            if (now - lastWheelPageRef.current < WHEEL_PAGE_COOLDOWN_MS) return;
+            lastWheelPageRef.current = now;
+            if (event.deltaY > 0) goNext();
+            else goPrev();
+        }
+    }, [prefs.spreadMode, zoom, goNext, goPrev]);
 
     const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
         if (event.touches.length !== 1) return;
@@ -864,16 +1526,22 @@ export default function MangaReader({
 
     const handleStageClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
         const target = event.target as HTMLElement | null;
-        if (target?.closest(".manga-bubble, .manga-bubble-edit-btn, .manga-edit-popover, button, input")) {
+        if (target?.closest(".manga-bubble, .manga-bubble-edit-btn, .epub-glass-pill, .epub-appearance-popover, .epub-toc-drawer, .manga-modal, .manga-ocr-result-bar, button, input, textarea")) {
             return;
         }
         setActiveBubble(null);
+        clearMangaOverlaySelection();
         if (lookupOpen) {
             onCloseLookup?.();
             return;
         }
-        if (controlsOpen) {
+        if (controlsOpen || drawerOpen) {
             setControlsOpen(false);
+            setDrawerOpen(false);
+            return;
+        }
+        if (pageJumpEditing) {
+            setPageJumpEditing(false);
             return;
         }
         if (prefs.spreadMode === "webtoon") {
@@ -891,24 +1559,78 @@ export default function MangaReader({
         } else if (isMobile) {
             setChromeVisible((v) => !v);
         }
-    }, [lookupOpen, onCloseLookup, controlsOpen, prefs.spreadMode, prefs.rtl, isMobile, goNext, goPrev]);
+    }, [lookupOpen, onCloseLookup, controlsOpen, drawerOpen, pageJumpEditing, prefs.spreadMode, prefs.rtl, isMobile, goNext, goPrev]);
+
+    const scrubToClientX = useCallback((el: HTMLDivElement, clientX: number) => {
+        const rect = el.getBoundingClientRect();
+        const rawRatio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+        const logicalRatio = prefs.rtl ? 1 - rawRatio : rawRatio;
+        const target = Math.round(logicalRatio * Math.max(0, meta.pageCount - 1));
+        jumpToPage(target);
+    }, [prefs.rtl, meta.pageCount, jumpToPage]);
+
+    const handleScrubPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+        event.stopPropagation();
+        scrubbingRef.current = true;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        scrubToClientX(event.currentTarget, event.clientX);
+    }, [scrubToClientX]);
+
+    const handleScrubPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+        if (!scrubbingRef.current) return;
+        scrubToClientX(event.currentTarget, event.clientX);
+    }, [scrubToClientX]);
+
+    const handleScrubPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+        if (!scrubbingRef.current) return;
+        scrubbingRef.current = false;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+    }, []);
 
     const orderedDisplayPages = useMemo(() => {
         if (prefs.spreadMode === "spread" && prefs.rtl && visiblePages.length === 2) {
-            // In RTL spread, first page goes on the RIGHT, second page on the LEFT
             return [visiblePages[1], visiblePages[0]];
         }
         return visiblePages;
     }, [prefs.spreadMode, prefs.rtl, visiblePages]);
 
     const pct = meta.pageCount <= 1 ? 100 : Math.round((currentPage / (meta.pageCount - 1)) * 100);
+    const pageSpanLabel = prefs.spreadMode === "spread" && visiblePages.length === 2
+        ? `${visiblePages[0] + 1}–${visiblePages[1] + 1}`
+        : `${currentPage + 1}`;
+    const hasLeftAction = prefs.rtl ? currentPage < meta.pageCount - 1 : currentPage > 0;
+    const hasRightAction = prefs.rtl ? currentPage > 0 : currentPage < meta.pageCount - 1;
 
     const renderPageCard = (pageIdx: number) => {
         const payload = pagesByIndex[pageIdx];
         if (!payload) {
+            const pageErr = pageErrors[pageIdx];
             return (
                 <div key={pageIdx} className="manga-page-placeholder">
-                    <span>{isEn ? `Loading page ${pageIdx + 1}…` : `Загрузка стр. ${pageIdx + 1}…`}</span>
+                    <span>
+                        {pageErr
+                            ? (isEn ? `Failed to load page ${pageIdx + 1}` : `Не удалось загрузить стр. ${pageIdx + 1}`)
+                            : (isEn ? `Loading page ${pageIdx + 1}…` : `Загрузка стр. ${pageIdx + 1}…`)}
+                    </span>
+                    {pageErr && (
+                        <button
+                            type="button"
+                            className="epub-glass-btn"
+                            style={{ marginTop: 8 }}
+                            onClick={() => {
+                                setPageErrors((prev) => {
+                                    const next = { ...prev };
+                                    delete next[pageIdx];
+                                    return next;
+                                });
+                                ensurePageLoaded(pageIdx, 0);
+                            }}
+                        >
+                            {isEn ? "Retry" : "Повторить"}
+                        </button>
+                    )}
                 </div>
             );
         }
@@ -947,10 +1669,18 @@ export default function MangaReader({
                             const widthPct = Math.max(1.5, ((x2 - x1) / natW) * 100);
                             const heightPct = Math.max(1.5, ((y2 - y1) / natH) * 100);
                             const sentence = joinMokuroLines(block.lines);
+                            const displayLines = prepareBubbleDisplayLines(block.lines);
+                            const paraGaps = detectBubbleParagraphGaps(block);
                             const isActive =
                                 activeBubble?.pageIndex === pageIdx && activeBubble?.blockIndex === bIdx;
-                            const fittedPx = computeFittedBubbleFontPx(block) * prefs.fontScale;
-                            const relFontCqw = Math.max(0.6, Math.min(6.5, (fittedPx / natW) * 100));
+                            const fittedBasePx = computeFittedBubbleFontPx(block);
+                            const fittedPx = fittedBasePx * prefs.fontScale;
+                            const relFontCqw = Math.max(0.35, Math.min(12, (fittedPx / natW) * 100));
+                            const baseLineHeight = computeBubbleLineHeight(block, fittedBasePx);
+                            const effectiveLineHeight = Math.max(
+                                1.2,
+                                Number((baseLineHeight / Math.max(1, prefs.fontScale)).toFixed(2)),
+                            );
 
                             return (
                                 <div
@@ -961,7 +1691,10 @@ export default function MangaReader({
                                         top: `${topPct}%`,
                                         width: `${widthPct}%`,
                                         height: `${heightPct}%`,
+                                        ["--bubble-w" as string]: `${widthPct}%`,
+                                        ["--bubble-h" as string]: `${heightPct}%`,
                                         fontSize: `${relFontCqw}cqw`,
+                                        lineHeight: String(effectiveLineHeight),
                                     }}
                                     onMouseEnter={() => {
                                         if (!isMobile) setActiveBubble({ pageIndex: pageIdx, blockIndex: bIdx });
@@ -969,6 +1702,7 @@ export default function MangaReader({
                                     }}
                                     onMouseLeave={() => {
                                         if (isMobile || lookupOpen) return;
+                                        clearMangaOverlaySelection();
                                         setActiveBubble((prev) =>
                                             prev?.pageIndex === pageIdx && prev?.blockIndex === bIdx ? null : prev,
                                         );
@@ -980,17 +1714,30 @@ export default function MangaReader({
                                     }}
                                 >
                                     <div className="manga-bubble-text text-line">
-                                        <TokenizedLine
-                                            text={sentence}
-                                            searchQuery=""
-                                            furiganaMode="none"
-                                            onLookupToken={onLookupToken
-                                                ? (token, sent, cursor, boundaries, lemma) => {
-                                                    prepareAnkiPanelCrop(payload, block);
-                                                    return onLookupToken(token, sent, cursor, boundaries, lemma);
-                                                }
-                                                : undefined}
-                                        />
+                                        {displayLines.map((line, lineIdx) => (
+                                            <p
+                                                key={lineIdx}
+                                                className={`manga-bubble-line${paraGaps[lineIdx] ? " has-para-gap" : ""}`}
+                                            >
+                                                <TokenizedLine
+                                                    text={line.appendSpace ? `${line.text} ` : line.text}
+                                                    searchQuery=""
+                                                    furiganaMode="none"
+                                                    onLookupToken={onLookupToken
+                                                        ? (token, _lineSent, cursor, boundaries, lemma) => {
+                                                            prepareAnkiPanelCrop(payload, block);
+                                                            return onLookupToken(
+                                                                token,
+                                                                sentence,
+                                                                line.offset + cursor,
+                                                                boundaries?.map((b) => b + line.offset),
+                                                                lemma,
+                                                            );
+                                                        }
+                                                        : undefined}
+                                                />
+                                            </p>
+                                        ))}
                                     </div>
                                     {isActive && (
                                         <button
@@ -1002,7 +1749,7 @@ export default function MangaReader({
                                                 setEditingBubble({
                                                     pageIndex: pageIdx,
                                                     blockIndex: bIdx,
-                                                    text: sentence,
+                                                    text: displayLines.map((l) => l.text).join("\n") || sentence,
                                                 });
                                             }}
                                         >
@@ -1077,554 +1824,1238 @@ export default function MangaReader({
         );
     };
 
-    const overlayLabel = prefs.overlayMode === "hover"
-        ? (isEn ? "Hover" : "Скрыт")
-        : prefs.overlayMode === "outline"
-            ? (isEn ? "Boxes" : "Рамки")
-            : (isEn ? "Text" : "Текст");
-
-    const cycleOverlayMode = () => {
-        const order: MangaOverlayMode[] = ["hover", "outline", "readable"];
-        updatePrefs({ overlayMode: order[(order.indexOf(prefs.overlayMode) + 1) % order.length] });
-    };
-
-    const cycleSpreadMode = () => {
-        const order: MangaSpreadMode[] = isMobile
-            ? ["single", "webtoon"]
-            : ["single", "spread", "webtoon"];
-        updatePrefs({ spreadMode: order[(order.indexOf(prefs.spreadMode) + 1) % order.length] });
-    };
+    const showEdgeChevrons =
+        !isMobile
+        && !zenMode
+        && !lookupActive
+        && !escMenuOpen
+        && prefs.spreadMode !== "webtoon"
+        && !drawerOpen
+        && !controlsOpen
+        && !cropToolActive;
 
     return (
-        <div className={`manga-reader-root${isMobile ? " is-mobile" : ""}`}>
-            {/* Top floating bar */}
-            <header className={`manga-topbar${!chromeVisible && isMobile ? " is-hidden" : ""}`}>
-                <div className="manga-topbar-left">
-                    <button
-                        type="button"
-                        className="manga-btn manga-btn-icon"
-                        onClick={onBackToLibrary}
-                        title={isEn ? "Back to library" : "В библиотеку"}
-                        aria-label={isEn ? "Back to library" : "В библиотеку"}
-                    >
-                        ←
-                    </button>
-                    <span className="manga-title" title={meta.title}>{meta.title}</span>
-                    <button
-                        type="button"
-                        className={`manga-badge-btn${meta.hasMokuro ? " is-mokuro" : " is-raw"}`}
-                        onClick={() => setMokuroModalOpen(true)}
-                        title={meta.hasMokuro
-                            ? (isEn ? "Mokuro OCR active (click to manage)" : "Слой Mokuro активен (нажми для управления)")
-                            : (isEn ? "No .mokuro OCR yet — click to run or attach" : "Нет .mokuro — нажми, чтобы распознать или прикрепить")}
-                    >
-                        {meta.hasMokuro ? "MOKURO" : (isEn ? "+ OCR" : "+ OCR")}
-                    </button>
-                </div>
-
-                <div className="manga-topbar-right">
-                    <button
-                        type="button"
-                        className={`manga-btn${cropToolActive ? " is-active" : ""}`}
-                        onClick={() => setCropToolActive((v) => !v)}
-                        title={isEn ? "Select bubble area to OCR (S)" : "Обвести бабл для OCR (S)"}
-                    >
-                        ✂ OCR
-                    </button>
-
-                    <button
-                        type="button"
-                        className="manga-btn"
-                        onClick={cycleSpreadMode}
-                        title={isEn ? "Page layout (D)" : "Режим страниц (D)"}
-                    >
-                        {prefs.spreadMode === "spread"
-                            ? (isEn ? "2p" : "2 стр")
-                            : prefs.spreadMode === "webtoon"
-                                ? (isEn ? "Strip" : "Лента")
-                                : (isEn ? "1p" : "1 стр")}
-                    </button>
-
-                    {!isMobile && prefs.spreadMode === "spread" && (
-                        <button
-                            type="button"
-                            className={`manga-btn${prefs.coverOffset ? " is-active" : ""}`}
-                            onClick={() => updatePrefs({ coverOffset: !prefs.coverOffset })}
-                            title={isEn ? "Cover page offset (C)" : "Сдвиг обложки для разворота (C)"}
-                        >
-                            {isEn ? "Cover" : "Обложка"}
-                        </button>
-                    )}
-
-                    <button
-                        type="button"
-                        className="manga-btn"
-                        onClick={() => updatePrefs({ rtl: !prefs.rtl })}
-                        title={isEn ? "Reading direction" : "Направление чтения"}
-                    >
-                        {prefs.rtl ? "RTL ←" : "LTR →"}
-                    </button>
-
-                    <button
-                        type="button"
-                        className={`manga-btn${prefs.overlayMode !== "hover" ? " is-active" : ""}`}
-                        onClick={cycleOverlayMode}
-                        title={isEn ? "OCR overlay visibility (O)" : "Отображение слоя текста (O)"}
-                    >
-                        {overlayLabel}
-                    </button>
-
-                    <button
-                        type="button"
-                        className={`manga-btn manga-btn-icon${controlsOpen ? " is-active" : ""}`}
-                        onClick={() => setControlsOpen((v) => !v)}
-                        title={isEn ? "Manga reader settings" : "Настройки читалки манги"}
-                        aria-label={isEn ? "Settings" : "Настройки"}
-                    >
-                        <IconSettings />
-                    </button>
-                </div>
-            </header>
-
-            {/* Settings popover */}
-            {controlsOpen && (
-                <div className="manga-popover" onClick={(e) => e.stopPropagation()}>
-                    <div className="manga-popover-row">
-                        <span>{isEn ? "Fit" : "Масштаб"}</span>
-                        <div className="manga-seg">
-                            {(["height", "width", "original"] as const).map((mode) => (
-                                <button
-                                    key={mode}
-                                    type="button"
-                                    className={prefs.fitMode === mode ? "is-active" : ""}
-                                    onClick={() => updatePrefs({ fitMode: mode })}
-                                >
-                                    {mode === "height"
-                                        ? (isEn ? "Height" : "Высота")
-                                        : mode === "width"
-                                            ? (isEn ? "Width" : "Ширина")
-                                            : "1:1"}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div className="manga-popover-row">
-                        <span>{isEn ? "Zoom" : "Зум"} ({Math.round(zoom * 100)}%)</span>
-                        <div className="manga-seg">
-                            <button type="button" onClick={() => setZoom((z) => Math.max(0.5, Number((z - 0.15).toFixed(2))))}>−</button>
-                            <button type="button" onClick={() => setZoom(1)}>100%</button>
-                            <button type="button" onClick={() => setZoom((z) => Math.min(3, Number((z + 0.15).toFixed(2))))}>+</button>
-                        </div>
-                    </div>
-
-                    <div className="manga-popover-row">
-                        <span>{isEn ? "OCR font" : "Шрифт OCR"} ({Math.round(prefs.fontScale * 100)}%)</span>
-                        <input
-                            type="range"
-                            min={0.75}
-                            max={1.6}
-                            step={0.05}
-                            value={prefs.fontScale}
-                            onChange={(e) => updatePrefs({ fontScale: Number(e.target.value) })}
-                        />
-                    </div>
-
-                    <div className="manga-popover-row">
-                        <span>{isEn ? "Anki picture" : "Картинка в Anki"}</span>
-                        <div className="manga-seg">
-                            <button
-                                type="button"
-                                className={prefs.cropMode === "bubble" ? "is-active" : ""}
-                                onClick={() => updatePrefs({ cropMode: "bubble" })}
-                            >
-                                {isEn ? "Panel crop" : "Кроп кадра"}
-                            </button>
-                            <button
-                                type="button"
-                                className={prefs.cropMode === "full" ? "is-active" : ""}
-                                onClick={() => updatePrefs({ cropMode: "full" })}
-                            >
-                                {isEn ? "Full page" : "Вся стр."}
-                            </button>
-                        </div>
-                    </div>
-
-                    <label className="manga-popover-check">
-                        <input
-                            type="checkbox"
-                            checked={prefs.dimBackground}
-                            onChange={(e) => updatePrefs({ dimBackground: e.target.checked })}
-                        />
-                        <span>{isEn ? "Slightly dim bright white pages" : "Слегка приглушить яркость белых страниц"}</span>
-                    </label>
-
-                    <div className="manga-popover-actions">
-                        <button
-                            type="button"
-                            className="manga-primary-btn"
-                            onClick={() => {
-                                setControlsOpen(false);
-                                setMokuroModalOpen(true);
-                            }}
-                        >
-                            {meta.hasMokuro
-                                ? (isEn ? "Manage .mokuro OCR" : "Управление .mokuro OCR")
-                                : (isEn ? "Add / Generate .mokuro OCR" : "Создать / прикрепить .mokuro")}
-                        </button>
-                    </div>
-                    {!isMobile && (
-                        <button
-                            type="button"
-                            className="manga-btn"
-                            disabled={exportingCbz}
-                            onClick={() => {
-                                setControlsOpen(false);
-                                void handleExportMobileCbz();
-                            }}
-                        >
-                            {exportingCbz
-                                ? (isEn ? "Packing .cbz…" : "Упаковка .cbz…")
-                                : (isEn ? "Pack .cbz for Phone" : "Упаковать для телефона (.cbz)")}
-                        </button>
-                    )}
-                </div>
-            )}
-
-            {/* Main page viewport */}
+        <div
+            className={`epub-reader-shell manga-reader-shell${isMobile ? " is-mobile" : ""}`}
+            data-manga-bg={prefs.bgTheme || "dark"}
+        >
             <div
-                ref={viewportRef}
-                className={`manga-viewport mode-${prefs.spreadMode}`}
-                onWheel={handleWheel}
-                onTouchStart={handleTouchStart}
-                onTouchEnd={handleTouchEnd}
-                onClick={handleStageClick}
+                ref={stageRef}
+                className="epub-reader-stage manga-reader-stage"
+                onMouseMove={handleStageMouseMove}
+                onMouseLeave={handleStageMouseLeave}
             >
-                <div className={`manga-spread-stage mode-${prefs.spreadMode}`}>
-                    {orderedDisplayPages.map((idx) => renderPageCard(idx))}
-                </div>
-            </div>
-
-            {/* Inline OCR typo editor modal */}
-            {editingBubble && (
-                <div className="manga-modal-backdrop" onClick={() => setEditingBubble(null)}>
-                    <div className="manga-modal" onClick={(e) => e.stopPropagation()}>
-                        <h3>{isEn ? "Fix OCR text in bubble" : "Исправить текст OCR в бабле"}</h3>
-                        <textarea
-                            className="manga-edit-textarea"
-                            rows={4}
-                            autoFocus
-                            value={editingBubble.text}
-                            onChange={(e) => setEditingBubble({ ...editingBubble, text: e.target.value })}
-                        />
-                        <div className="manga-modal-footer">
-                            <button type="button" className="manga-btn" onClick={() => setEditingBubble(null)}>
-                                {isEn ? "Cancel" : "Отмена"}
-                            </button>
-                            <button type="button" className="manga-primary-btn" onClick={() => void handleSaveBubbleEdit()}>
-                                {isEn ? "Save" : "Сохранить"}
-                            </button>
+                {/* Floating LiquidGlass Top Islands (auto-hide on desktop until hover) */}
+                <div
+                    className={`epub-floating-top${isMobile ? " is-mobile" : ""}${topChromeVisible ? " is-visible" : " is-hidden"}`}
+                    onFocus={() => setTopHover(true)}
+                >
+                    <div className="epub-glass-pill epub-glass-pill-main" onClick={(e) => e.stopPropagation()}>
+                        <button
+                            type="button"
+                            className="epub-glass-btn"
+                            onClick={onBackToLibrary}
+                            title={t("epub.backToLibrary")}
+                        >
+                            ← {!isMobile && <span>{t("epub.backToLibrary")}</span>}
+                        </button>
+                        <button
+                            type="button"
+                            className={`epub-glass-btn${drawerOpen && drawerTab === "pages" ? " is-active" : ""}`}
+                            onClick={() => {
+                                setControlsOpen(false);
+                                if (drawerOpen && drawerTab === "pages") {
+                                    setDrawerOpen(false);
+                                } else {
+                                    setDrawerTab("pages");
+                                    setDrawerOpen(true);
+                                }
+                            }}
+                            title={isEn ? "Pages" : "Страницы"}
+                        >
+                            <IconBookTab /> {!isMobile && <span>{isEn ? "Pages" : "Страницы"}</span>}
+                        </button>
+                        <span className="epub-pill-divider" aria-hidden="true" />
+                        <div className="epub-toolbar-title">
+                            <span className="epub-toolbar-book" title={displayTitle}>{displayTitle}</span>
+                            <span className="epub-toolbar-chapter">
+                                {isEn ? `Page ${pageSpanLabel} of ${meta.pageCount}` : `Стр. ${pageSpanLabel} из ${meta.pageCount}`} · {pct}%
+                                {meta.totalChars > 0 ? ` · ${meta.totalChars.toLocaleString(isEn ? "en-US" : "ru-RU")} ${isEn ? "ch." : "зн."}` : ""}
+                            </span>
                         </div>
+                        <button
+                            type="button"
+                            className={`manga-badge-btn${meta.hasMokuro ? " is-mokuro" : " is-raw"}`}
+                            onClick={() => setMokuroModalOpen(true)}
+                            title={meta.hasMokuro
+                                ? (isEn ? "Mokuro OCR active (click to manage)" : "Слой Mokuro активен (нажми для управления)")
+                                : (isEn ? "No .mokuro OCR yet — click to run or attach" : "Нет .mokuro — нажми, чтобы распознать или прикрепить")}
+                        >
+                            {meta.hasMokuro ? "MOKURO" : "+ OCR"}
+                        </button>
                     </div>
-                </div>
-            )}
 
-            {/* Mokuro OCR manager / CLI runner modal */}
-            {mokuroModalOpen && (
-                <div className="manga-modal-backdrop" onClick={() => !mokuroRunning && setMokuroModalOpen(false)}>
-                    <div className="manga-modal" onClick={(e) => e.stopPropagation()}>
-                        <h3>{isEn ? "Mokuro OCR Text Layer" : "Слой текста Mokuro OCR"}</h3>
-                        <p className="manga-modal-desc">
-                            {mokuroRunning
-                                ? (isEn
-                                    ? "Recognizing speech bubbles and Japanese text in this volume. When finished, clickable text overlays will activate automatically."
-                                    : "Идёт распознавание баблов и японского текста в этом томе. После завершения кликабельный слой текста подключится автоматически.")
-                                : meta.hasMokuro
-                                    ? (isEn
-                                        ? `Active .mokuro layer (${meta.totalChars.toLocaleString()} chars across ${meta.pageCount} pages). Hover any speech bubble and hold Shift to look up words.`
-                                        : `Слой .mokuro подключён (${meta.totalChars.toLocaleString("ru-RU")} зн. на ${meta.pageCount} стр.). Наведи курсор на бабл с Shift (или тапни на телефоне) для словаря.`)
-                                    : (isEn
-                                        ? "This manga currently has raw images without a .mokuro overlay. You can attach an existing .mokuro file or generate one right here via mokuro CLI."
-                                        : "Сейчас в этом томе только картинки без .mokuro-слоя. Можно прикрепить готовый файл .mokuro или запустить генерацию прямо отсюда через mokuro CLI.")}
-                        </p>
+                    <div className="epub-glass-pill epub-glass-pill-tools" onClick={(e) => e.stopPropagation()}>
+                        <button
+                            type="button"
+                            className={`epub-glass-btn epub-glass-circle${cropToolActive ? " is-active" : ""}`}
+                            onClick={() => setCropToolActive((v) => !v)}
+                            title={isEn ? "Select bubble area to OCR (S)" : "Обвести бабл для OCR (S)"}
+                            aria-label={isEn ? "Crop bubble OCR" : "Обвести бабл OCR"}
+                        >
+                            ✂
+                        </button>
+
+                        {onChangeBookBookmarks && (
+                            <button
+                                type="button"
+                                className={`epub-glass-btn epub-glass-circle${drawerOpen && drawerTab === "bookmarks" ? " is-active" : ""}`}
+                                title={`${t("epub.bookmarks")} (B)`}
+                                aria-label={t("epub.bookmarks")}
+                                onClick={() => {
+                                    setControlsOpen(false);
+                                    if (drawerOpen && drawerTab === "bookmarks") {
+                                        setDrawerOpen(false);
+                                    } else {
+                                        setDrawerTab("bookmarks");
+                                        setDrawerOpen(true);
+                                    }
+                                }}
+                            >
+                                <IconBookmarkSvg />
+                            </button>
+                        )}
+
+                        {onChangeBookNotes && (
+                            <button
+                                type="button"
+                                className={`epub-glass-btn epub-glass-circle${drawerOpen && drawerTab === "notes" ? " is-active" : ""}`}
+                                title={t("epub.notes")}
+                                aria-label={t("epub.notes")}
+                                onClick={() => {
+                                    setControlsOpen(false);
+                                    if (drawerOpen && drawerTab === "notes") {
+                                        setDrawerOpen(false);
+                                    } else {
+                                        setDrawerTab("notes");
+                                        setDrawerOpen(true);
+                                    }
+                                }}
+                            >
+                                ✎
+                            </button>
+                        )}
+
+                        {onOpenCatalogPicker && (
+                            <button
+                                type="button"
+                                className="epub-glass-btn epub-glass-circle"
+                                title={isEn ? "Find title & cover" : "Найти название и обложку"}
+                                aria-label={isEn ? "Find title & cover" : "Найти название и обложку"}
+                                onClick={() => {
+                                    setControlsOpen(false);
+                                    onOpenCatalogPicker();
+                                }}
+                            >
+                                <IconSearch />
+                            </button>
+                        )}
 
                         {!isMobile && (
-                            <div className="manga-mokuro-box">
-                                <div className="manga-mokuro-status">
-                                    <span>mokuro CLI:</span>
-                                    {mokuroStatus === null ? (
-                                        <span className="is-muted">{isEn ? "Checking…" : "Проверка…"}</span>
-                                    ) : mokuroStatus.available ? (
-                                        <span className="is-ok">
-                                            ✓ {mokuroStatus.command} {mokuroStatus.version ? `(${mokuroStatus.version})` : ""}
-                                        </span>
-                                    ) : (
-                                        <span className="is-warn">
-                                            {isEn ? "Not found" : "Не установлен"}
-                                        </span>
-                                    )}
-                                </div>
-
-                                {mokuroStatus && !mokuroStatus.available && (
-                                    <div className="manga-mokuro-hint">
-                                        {isEn ? "Install once in terminal:" : "Установи один раз в терминале:"}
-                                        <code>pip install mokuro</code>
-                                    </div>
-                                )}
-
-                                {mokuroRunning && (
-                                    <div className="manga-mokuro-progress">
-                                        <div className="manga-mokuro-progress-head">
-                                            <span>
-                                                {mokuroProgress?.stage === "ocr" && mokuroProgress.current !== null && mokuroProgress.total
-                                                    ? (isEn
-                                                        ? `Scanning pages: ${mokuroProgress.current} / ${mokuroProgress.total} (${mokuroProgress.percent ?? 0}%)`
-                                                        : `Распознавание страниц: ${mokuroProgress.current} / ${mokuroProgress.total} (${mokuroProgress.percent ?? 0}%)`)
-                                                    : mokuroProgress?.stage === "model_load"
-                                                        ? (isEn ? "Loading manga-ocr neural model…" : "Загрузка нейросети manga-ocr…")
-                                                        : mokuroProgress?.stage === "detector_init"
-                                                            ? (isEn ? "Initializing speech-bubble detector…" : "Запуск детектора баблов…")
-                                                            : mokuroProgress?.stage === "downloading"
-                                                                ? (isEn ? "Downloading OCR weights…" : "Скачивание весов OCR…")
-                                                                : (isEn ? "Starting mokuro…" : "Запуск mokuro…")}
-                                            </span>
-                                            {mokuroProgress?.device && (
-                                                <span className={`manga-device-pill is-${mokuroProgress.device}`}>
-                                                    {mokuroProgress.device === "cuda" ? "⚡ GPU (CUDA)" : "CPU"}
-                                                </span>
-                                            )}
-                                        </div>
-                                        <div className="manga-progress-track">
-                                            <div
-                                                className={`manga-progress-fill${mokuroProgress?.percent == null ? " is-indeterminate" : ""}`}
-                                                style={mokuroProgress?.percent != null ? { width: `${mokuroProgress.percent}%` } : undefined}
-                                            />
-                                        </div>
-                                        {mokuroProgress?.eta && (
-                                            <div className="manga-mokuro-eta">
-                                                {isEn ? `Estimated time left: ~${mokuroProgress.eta}` : `Осталось примерно: ~${mokuroProgress.eta}`}
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
-                                {mokuroError && <div className="manga-mokuro-error">{mokuroError}</div>}
-                                {exportStatus && (
-                                    <div className={exportStatus.ok ? "manga-export-ok" : "manga-mokuro-error"}>
-                                        {exportStatus.message}
-                                    </div>
-                                )}
-                            </div>
+                            <button
+                                type="button"
+                                className={`epub-glass-btn epub-glass-circle${zenMode ? " is-active" : ""}`}
+                                title={`${t("epub.zenMode")} (Z)`}
+                                aria-label={t("epub.zenMode")}
+                                onClick={() => setZenMode((prev) => !prev)}
+                            >
+                                ⛶
+                            </button>
                         )}
 
-                        {isMobile && (
-                            <div className="manga-mokuro-box">
-                                <div className="manga-mokuro-status">
-                                    <span>{isEn ? "On-device OCR:" : "OCR на телефоне:"}</span>
-                                    <span className={mobileOcrReady?.onnxReady ? "is-ok" : "is-muted"}>
-                                        {mobileOcrReady?.onnxReady
-                                            ? "ML Kit + ONNX INT8"
-                                            : mobileOcrReady?.onnxDownloading
-                                                ? (isEn ? "ML Kit · ONNX downloading…" : "ML Kit · ONNX скачивается…")
-                                                : "ML Kit"}
-                                        {mobileOcrReady?.hasRemote ? (isEn ? " + PC Wi-Fi" : " + ПК Wi-Fi") : ""}
-                                    </span>
-                                </div>
-                                <div className="manga-mokuro-hint">
-                                    {isEn
-                                        ? "Use ✂ OCR to draw over any bubble, or scan all bubbles on the current page. Configure ONNX INT8 (~117 MB) and PC Wi-Fi GPU in Settings → EPUB & Manga → Manga & OCR."
-                                        : "Нажми ✂ OCR, чтобы обвести бабл вручную, или найди все баблы на странице через ML Kit. Модель ONNX (~117 МБ) и адрес ПК Wi-Fi настраиваются в Настройках → EPUB → Манга и OCR."}
-                                </div>
-                            </div>
-                        )}
+                        <button
+                            type="button"
+                            className={`epub-glass-btn epub-aa-btn${controlsOpen ? " is-active" : ""}`}
+                            aria-expanded={controlsOpen}
+                            title={isEn ? "Reader appearance & layout" : "Настройки читалки"}
+                            onClick={() => {
+                                setDrawerOpen(false);
+                                setControlsOpen((v) => !v);
+                            }}
+                        >
+                            {isMobile ? <IconSettings /> : "Aa"}
+                        </button>
+                    </div>
+                </div>
 
-                        <div className="manga-modal-footer">
-                            {isMobile && hasAndroidMangaOcrBridge() && (
+                {/* LiquidGlass Appearance & Settings Popover */}
+                {controlsOpen && (
+                    <div
+                        className={`epub-appearance-popover manga-appearance-popover${isMobile ? " is-mobile" : ""}`}
+                        role="dialog"
+                        aria-label={isEn ? "Manga appearance" : "Внешний вид"}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="epub-pop-head">
+                            <span>{t("epub.appearance")}</span>
+                            <button
+                                type="button"
+                                className="epub-pop-reset"
+                                onClick={() => {
+                                    updatePrefs({
+                                        ...DEFAULT_MANGA_PREFS,
+                                        spreadMode: isMobile ? "single" : DEFAULT_MANGA_PREFS.spreadMode,
+                                    });
+                                    setZoom(1);
+                                }}
+                            >
+                                {t("epub.resetTypography")}
+                            </button>
+                        </div>
+
+                        <div className="epub-pop-row">
+                            <span className="epub-pop-label">{isEn ? "Pages" : "Страницы"}</span>
+                            <div className="epub-segmented">
+                                {([
+                                    ["single", isEn ? "1p" : "1 стр"],
+                                    ...(!isMobile ? [["spread", isEn ? "2p" : "2 стр"] as const] : []),
+                                    ["webtoon", isEn ? "Strip" : "Лента"],
+                                ] as Array<[MangaSpreadMode, string]>).map(([mode, label]) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        className={`epub-seg-btn${prefs.spreadMode === mode ? " is-active" : ""}`}
+                                        onClick={() => updatePrefs({ spreadMode: mode })}
+                                    >
+                                        {label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="epub-pop-row">
+                            <span className="epub-pop-label">{isEn ? "Direction" : "Направление"}</span>
+                            <div className="epub-segmented">
                                 <button
                                     type="button"
-                                    className="manga-primary-btn"
-                                    disabled={Boolean(ocrBusy) || !pagesByIndex[currentPage]}
-                                    onClick={() => void handleAutoScanPage()}
+                                    className={`epub-seg-btn${prefs.rtl ? " is-active" : ""}`}
+                                    onClick={() => updatePrefs({ rtl: true })}
                                 >
-                                    {isEn ? "Scan page bubbles (ML Kit)" : "Найти баблы на стр. (ML Kit)"}
+                                    RTL ←
                                 </button>
-                            )}
-                            {isMobile && (
                                 <button
                                     type="button"
-                                    className="manga-btn"
+                                    className={`epub-seg-btn${!prefs.rtl ? " is-active" : ""}`}
+                                    onClick={() => updatePrefs({ rtl: false })}
+                                >
+                                    LTR →
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="epub-pop-row">
+                            <span className="epub-pop-label">{isEn ? "Fit" : "Вписывание"}</span>
+                            <div className="epub-segmented">
+                                {(["height", "width", "original"] as const).map((mode) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        className={`epub-seg-btn${prefs.fitMode === mode ? " is-active" : ""}`}
+                                        onClick={() => updatePrefs({ fitMode: mode })}
+                                    >
+                                        {mode === "height"
+                                            ? (isEn ? "Height" : "Высота")
+                                            : mode === "width"
+                                                ? (isEn ? "Width" : "Ширина")
+                                                : "1:1"}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="epub-pop-row">
+                            <span className="epub-pop-label">{isEn ? "Zoom" : "Масштаб"}</span>
+                            <div className="epub-stepper">
+                                <button
+                                    type="button"
+                                    className="epub-step-btn"
+                                    onClick={() => setZoom((z) => Math.max(0.5, Number((z - 0.15).toFixed(2))))}
+                                >
+                                    −
+                                </button>
+                                <button
+                                    type="button"
+                                    className="epub-step-btn"
+                                    onClick={() => setZoom(1)}
+                                >
+                                    {Math.round(zoom * 100)}%
+                                </button>
+                                <button
+                                    type="button"
+                                    className="epub-step-btn"
+                                    onClick={() => setZoom((z) => Math.min(3, Number((z + 0.15).toFixed(2))))}
+                                >
+                                    +
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="epub-pop-row">
+                            <span className="epub-pop-label">{isEn ? "OCR layer (O)" : "Слой OCR (O)"}</span>
+                            <div className="epub-segmented">
+                                {([
+                                    ["hover", isEn ? "Hover" : "Скрыт"],
+                                    ["outline", isEn ? "Boxes" : "Рамки"],
+                                    ["readable", isEn ? "Text" : "Текст"],
+                                ] as Array<[MangaOverlayMode, string]>).map(([mode, label]) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        className={`epub-seg-btn${prefs.overlayMode === mode ? " is-active" : ""}`}
+                                        onClick={() => updatePrefs({ overlayMode: mode })}
+                                    >
+                                        {label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="epub-pop-slider-group">
+                            <div className="epub-pop-slider-head">
+                                <span className="epub-pop-label">{isEn ? "OCR font scale" : "Размер шрифта OCR"}</span>
+                                <span className="epub-pop-val">{Math.round(prefs.fontScale * 100)}%</span>
+                            </div>
+                            <input
+                                type="range"
+                                min={0.75}
+                                max={1.6}
+                                step={0.05}
+                                value={prefs.fontScale}
+                                onChange={(e) => updatePrefs({ fontScale: Number(e.target.value) })}
+                            />
+                        </div>
+
+                        <div className="epub-pop-row">
+                            <span className="epub-pop-label">{isEn ? "Anki picture" : "Картинка в Anki"}</span>
+                            <div className="epub-segmented">
+                                <button
+                                    type="button"
+                                    className={`epub-seg-btn${prefs.cropMode === "bubble" ? " is-active" : ""}`}
+                                    onClick={() => updatePrefs({ cropMode: "bubble" })}
+                                >
+                                    {isEn ? "Panel crop" : "Кроп кадра"}
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`epub-seg-btn${prefs.cropMode === "full" ? " is-active" : ""}`}
+                                    onClick={() => updatePrefs({ cropMode: "full" })}
+                                >
+                                    {isEn ? "Full page" : "Вся стр."}
+                                </button>
+                            </div>
+                        </div>
+
+                        {!isMobile && prefs.spreadMode === "spread" && (
+                            <label className="epub-pop-row epub-pop-check-row">
+                                <span className="epub-pop-label">{isEn ? "Single cover page in spread (C)" : "Отдельная обложка в развороте (C)"}</span>
+                                <input
+                                    type="checkbox"
+                                    checked={prefs.coverOffset}
+                                    onChange={(e) => updatePrefs({ coverOffset: e.target.checked })}
+                                />
+                            </label>
+                        )}
+
+                        <label className="epub-pop-row epub-pop-check-row">
+                            <span className="epub-pop-label">{isEn ? "Dim bright white pages" : "Приглушить яркость белых страниц"}</span>
+                            <input
+                                type="checkbox"
+                                checked={prefs.dimBackground}
+                                onChange={(e) => updatePrefs({ dimBackground: e.target.checked })}
+                            />
+                        </label>
+
+                        <div className="epub-pop-row epub-pop-themes-row">
+                            <span className="epub-pop-label">{t("epub.theme")}</span>
+                            <div className="epub-theme-swatches">
+                                {BG_THEME_OPTIONS.map((item) => (
+                                    <button
+                                        key={item.value}
+                                        type="button"
+                                        className={`epub-theme-swatch${(prefs.bgTheme || "dark") === item.value ? " is-active" : ""}`}
+                                        style={{ background: item.swatch, color: item.fg }}
+                                        title={isEn ? item.labelEn : item.labelRu}
+                                        aria-label={isEn ? item.labelEn : item.labelRu}
+                                        onClick={() => updatePrefs({ bgTheme: item.value })}
+                                    >
+                                        A
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="manga-pop-footer-btns">
+                            <button
+                                type="button"
+                                className="btn-primary"
+                                style={{ width: "100%", borderRadius: 12, height: 34 }}
+                                onClick={() => {
+                                    setControlsOpen(false);
+                                    setMokuroModalOpen(true);
+                                }}
+                            >
+                                {meta.hasMokuro
+                                    ? (isEn ? "Manage .mokuro OCR" : "Управление .mokuro OCR")
+                                    : (isEn ? "Add / Generate .mokuro OCR" : "Создать / прикрепить .mokuro")}
+                            </button>
+                            {!isMobile && onConvertMangaToCbz && (
+                                <button
+                                    type="button"
+                                    className="epub-glass-btn manga-pop-sub-btn"
+                                    disabled={convertingCbz || exportingCbz}
                                     onClick={() => {
-                                        setMokuroModalOpen(false);
-                                        setCropToolActive(true);
+                                        setControlsOpen(false);
+                                        setMokuroModalOpen(true);
+                                        void handleConvertInPlaceCbz();
                                     }}
                                 >
-                                    {isEn ? "✂ Crop bubble" : "✂ Обвести бабл"}
+                                    {convertingCbz
+                                        ? (isEn ? "Converting to CBZ…" : "Преобразование в CBZ…")
+                                        : (isEn ? "Convert to CBZ (PC & Sync)" : "Преобразовать в CBZ (ПК + синхр.)")}
                                 </button>
                             )}
-                            {!isMobile && (
+                            {!isMobile && !onConvertMangaToCbz && (
                                 <button
                                     type="button"
-                                    className="manga-btn"
-                                    disabled={mokuroRunning || exportingCbz}
-                                    onClick={() => void handleExportMobileCbz()}
+                                    className="epub-glass-btn manga-pop-sub-btn"
+                                    disabled={exportingCbz}
+                                    onClick={() => {
+                                        setControlsOpen(false);
+                                        void handleExportMobileCbz();
+                                    }}
                                 >
                                     {exportingCbz
                                         ? (isEn ? "Packing .cbz…" : "Упаковка .cbz…")
                                         : (isEn ? "Pack .cbz for Phone" : "Упаковать для телефона (.cbz)")}
                                 </button>
                             )}
-                            {!isMobile && (
+                            {onOpenCatalogPicker && (
                                 <button
                                     type="button"
-                                    className="manga-btn"
-                                    disabled={mokuroRunning}
-                                    onClick={() => void handleAttachMokuroFile()}
+                                    className="epub-glass-btn manga-pop-sub-btn"
+                                    onClick={() => {
+                                        setControlsOpen(false);
+                                        onOpenCatalogPicker();
+                                    }}
                                 >
-                                    {isEn ? "Attach .mokuro file" : "Прикрепить .mokuro"}
+                                    {isEn ? "Find title & cover (AniList / MAL)" : "Подобрать название и обложку"}
                                 </button>
                             )}
-                            {!isMobile && (
-                                <button
-                                    type="button"
-                                    className="manga-primary-btn"
-                                    disabled={mokuroRunning || !mokuroStatus?.available}
-                                    onClick={() => void handleRunMokuroCli()}
-                                >
-                                    {mokuroRunning
-                                        ? (isEn ? "Running OCR…" : "Распознавание…")
-                                        : (isEn ? "Generate .mokuro" : "Распознать том (mokuro)")}
-                                </button>
-                            )}
-                            <button
-                                type="button"
-                                className="manga-btn"
-                                disabled={mokuroRunning}
-                                onClick={() => setMokuroModalOpen(false)}
-                            >
-                                {isEn ? "Close" : "Закрыть"}
-                            </button>
                         </div>
                     </div>
-                </div>
-            )}
+                )}
 
-            {/* Floating OCR result bar for on-demand bubble crop / ML Kit scan */}
-            {(ocrBusy || ocrError || ocrResult) && (
-                <div className="manga-ocr-result-bar" onClick={(e) => e.stopPropagation()}>
-                    {ocrBusy ? (
-                        <div className="manga-ocr-result-busy">
-                            <span className="manga-ocr-spinner" aria-hidden="true" />
-                            <span>{ocrBusy}</span>
+                {/* Edge-turn Chevrons matching EpubReader */}
+                {showEdgeChevrons && (
+                    <>
+                        <div className={`epub-edge-hint epub-edge-hint-left${edgeHover === "left" ? " is-visible" : ""}`} aria-hidden="true">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="15 18 9 12 15 6" />
+                            </svg>
                         </div>
-                    ) : ocrError ? (
-                        <div className="manga-ocr-result-row">
-                            <span className="manga-mokuro-error">{ocrError}</span>
-                            <button
-                                type="button"
-                                className="manga-btn"
-                                onClick={() => setOcrError(null)}
-                            >
-                                ×
-                            </button>
+                        <div className={`epub-edge-hint epub-edge-hint-right${edgeHover === "right" ? " is-visible" : ""}`} aria-hidden="true">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="9 18 15 12 9 6" />
+                            </svg>
                         </div>
-                    ) : ocrResult && (
-                        <div className="manga-ocr-result-row">
-                            <span className="manga-ocr-engine-pill">
-                                {formatOcrEngineLabel(ocrResult.engine, ocrResult.device, isEn)} · {ocrResult.elapsedMs}ms
-                            </span>
-                            <div className="manga-ocr-result-text text-line">
-                                {ocrResult.text ? (
-                                    <TokenizedLine
-                                        text={ocrResult.text}
-                                        searchQuery=""
-                                        furiganaMode="none"
-                                        onLookupToken={onLookupToken}
-                                    />
-                                ) : (
-                                    <span style={{ opacity: 0.6 }}>
-                                        {isEn ? "(no text detected)" : "(текст не найден)"}
-                                    </span>
-                                )}
-                            </div>
-                            <div className="manga-ocr-result-actions">
+                    </>
+                )}
+
+                {/* Main page viewport */}
+                <div
+                    ref={viewportRef}
+                    className={`manga-viewport mode-${prefs.spreadMode}`}
+                    onWheel={handleWheel}
+                    onTouchStart={handleTouchStart}
+                    onTouchEnd={handleTouchEnd}
+                    onClick={handleStageClick}
+                >
+                    <div className={`manga-spread-stage mode-${prefs.spreadMode}`}>
+                        {orderedDisplayPages.map((idx) => renderPageCard(idx))}
+                    </div>
+                </div>
+
+                {/* Left LiquidGlass Navigation / Bookmarks / Notes Drawer */}
+                {drawerOpen && (
+                    <div className="epub-toc-backdrop" onClick={() => setDrawerOpen(false)}>
+                        <aside className="epub-toc-drawer" onClick={(event) => event.stopPropagation()}>
+                            <div className="epub-toc-head">
+                                <div className="epub-segmented">
+                                    <button
+                                        type="button"
+                                        className={`epub-seg-btn${drawerTab === "pages" ? " is-active" : ""}`}
+                                        onClick={() => setDrawerTab("pages")}
+                                    >
+                                        {isEn ? "Pages" : "Страницы"} ({meta.pageCount})
+                                    </button>
+                                    {onChangeBookBookmarks && (
+                                        <button
+                                            type="button"
+                                            className={`epub-seg-btn${drawerTab === "bookmarks" ? " is-active" : ""}`}
+                                            onClick={() => setDrawerTab("bookmarks")}
+                                        >
+                                            {t("epub.bookmarks")}{bookmarks.length > 0 ? ` (${bookmarks.length})` : ""}
+                                        </button>
+                                    )}
+                                    {onChangeBookNotes && (
+                                        <button
+                                            type="button"
+                                            className={`epub-seg-btn${drawerTab === "notes" ? " is-active" : ""}`}
+                                            onClick={() => setDrawerTab("notes")}
+                                        >
+                                            {t("epub.notes")}{notes.length > 0 ? ` (${notes.length})` : ""}
+                                        </button>
+                                    )}
+                                </div>
                                 <button
                                     type="button"
-                                    className="manga-btn"
-                                    title={isEn ? "Crop another bubble (S)" : "Обвести другой бабл (S)"}
-                                    onClick={() => setCropToolActive(true)}
+                                    className="epub-glass-btn epub-glass-circle"
+                                    aria-label={t("common.close")}
+                                    onClick={() => setDrawerOpen(false)}
                                 >
-                                    ✂
+                                    <IconClose />
                                 </button>
-                                {ocrResult.text && (
+                            </div>
+
+                            {drawerTab === "pages" ? (
+                                <div className="epub-bookmarks-pane">
+                                    <form
+                                        className="manga-drawer-jump-form"
+                                        onSubmit={(e) => {
+                                            e.preventDefault();
+                                            const n = Number.parseInt(pageJumpInput, 10);
+                                            if (Number.isFinite(n) && n >= 1) {
+                                                jumpToPage(n - 1);
+                                                setPageJumpInput("");
+                                                setDrawerOpen(false);
+                                            }
+                                        }}
+                                    >
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            max={Math.max(1, meta.pageCount)}
+                                            className="epub-bookmark-input"
+                                            value={pageJumpInput}
+                                            onChange={(e) => setPageJumpInput(e.target.value)}
+                                            placeholder={isEn ? `Go to page (1–${meta.pageCount})…` : `Перейти к стр. (1–${meta.pageCount})…`}
+                                        />
+                                        <button type="submit" className="btn-primary manga-drawer-jump-btn">
+                                            {isEn ? "Go" : "Перейти"}
+                                        </button>
+                                    </form>
+                                    <div ref={pageListRef} className="epub-toc-list">
+                                        {meta.pages.map((p, idx) => {
+                                            const isActive = visiblePages.includes(idx);
+                                            const fileLabel = p.name.split(/[\\/]/).pop() || "";
+                                            return (
+                                                <button
+                                                    key={idx}
+                                                    type="button"
+                                                    className={`epub-toc-item epub-toc-card${isActive ? " is-active" : ""}`}
+                                                    onClick={() => {
+                                                        jumpToPage(idx);
+                                                        setDrawerOpen(false);
+                                                    }}
+                                                >
+                                                    <div className="epub-toc-card-main">
+                                                        <span className="epub-toc-card-title">
+                                                            {isEn ? `Page ${idx + 1}` : `Страница ${idx + 1}`}
+                                                        </span>
+                                                        {fileLabel && (
+                                                            <span className="epub-toc-card-sub">{fileLabel}</span>
+                                                        )}
+                                                    </div>
+                                                    {p.blockCount > 0 && (
+                                                        <span className="epub-toc-card-pct">
+                                                            {p.charCount} {isEn ? "ch" : "зн"}
+                                                        </span>
+                                                    )}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            ) : drawerTab === "bookmarks" ? (
+                                <div className="epub-bookmarks-pane">
+                                    <form
+                                        className="epub-bookmark-add-form"
+                                        onSubmit={(event) => {
+                                            event.preventDefault();
+                                            handleAddBookmark();
+                                        }}
+                                    >
+                                        <input
+                                            type="text"
+                                            className="epub-bookmark-input"
+                                            value={bookmarkLabelInput}
+                                            onChange={(event) => setBookmarkLabelInput(event.target.value)}
+                                            placeholder={t("epub.bookmarkPlaceholder")}
+                                        />
+                                        <button type="submit" className="btn-primary epub-bookmark-add-btn">
+                                            {t("epub.addBookmark")}
+                                        </button>
+                                    </form>
+
+                                    {bookmarks.length === 0 ? (
+                                        <div className="epub-bookmarks-empty">{t("epub.noBookmarks")}</div>
+                                    ) : (
+                                        <div className="epub-toc-list">
+                                            {bookmarks.map((bm) => (
+                                                <div key={bm.id} className="epub-bookmark-card">
+                                                    {editingBookmarkId === bm.id ? (
+                                                        <form
+                                                            className="epub-bookmark-rename-form"
+                                                            onSubmit={(event) => {
+                                                                event.preventDefault();
+                                                                handleRenameBookmark(bm.id);
+                                                            }}
+                                                        >
+                                                            <input
+                                                                type="text"
+                                                                className="epub-bookmark-input"
+                                                                autoFocus
+                                                                value={editingBookmarkLabel}
+                                                                onChange={(event) => setEditingBookmarkLabel(event.target.value)}
+                                                                onBlur={() => handleRenameBookmark(bm.id)}
+                                                            />
+                                                        </form>
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            className="epub-bookmark-jump"
+                                                            onClick={() => {
+                                                                setDrawerOpen(false);
+                                                                jumpToPage(bm.chapterIndex);
+                                                            }}
+                                                        >
+                                                            <span className="epub-bookmark-title">{bm.label}</span>
+                                                            <span className="epub-bookmark-meta">
+                                                                {bm.chapterTitle || (isEn ? `Page ${bm.chapterIndex + 1}` : `Стр. ${bm.chapterIndex + 1}`)}
+                                                            </span>
+                                                            {bm.excerpt && (
+                                                                <span className="epub-bookmark-excerpt">{bm.excerpt}</span>
+                                                            )}
+                                                        </button>
+                                                    )}
+                                                    <div className="epub-bookmark-actions">
+                                                        <button
+                                                            type="button"
+                                                            className="epub-glass-btn epub-bookmark-act-btn"
+                                                            title={t("epub.renameBookmark")}
+                                                            onClick={() => {
+                                                                setEditingBookmarkId(bm.id);
+                                                                setEditingBookmarkLabel(bm.label);
+                                                            }}
+                                                        >
+                                                            ✎
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="epub-glass-btn epub-bookmark-act-btn is-danger"
+                                                            title={t("epub.deleteBookmark")}
+                                                            onClick={() => handleDeleteBookmark(bm.id)}
+                                                        >
+                                                            <IconClose />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="epub-bookmarks-pane epub-notes-pane">
+                                    {onChangeBookNotes && (
+                                        <form
+                                            className="epub-note-add-form"
+                                            onSubmit={(event) => {
+                                                event.preventDefault();
+                                                handleAddBookNote();
+                                            }}
+                                        >
+                                            <input
+                                                type="text"
+                                                className="epub-bookmark-input"
+                                                value={noteTitleInput}
+                                                onChange={(event) => setNoteTitleInput(event.target.value)}
+                                                placeholder={t("epub.noteTitlePlaceholder")}
+                                            />
+                                            <textarea
+                                                className="epub-note-textarea"
+                                                rows={2}
+                                                value={noteBodyInput}
+                                                onChange={(event) => setNoteBodyInput(event.target.value)}
+                                                placeholder={t("epub.noteBodyPlaceholder")}
+                                            />
+                                            <button type="submit" className="btn-primary epub-bookmark-add-btn">
+                                                {t("epub.addNote")}
+                                            </button>
+                                        </form>
+                                    )}
+
+                                    {notes.length === 0 ? (
+                                        <div className="epub-bookmarks-empty">{t("epub.noNotes")}</div>
+                                    ) : (
+                                        <div className="epub-toc-list">
+                                            {notes.map((note) => (
+                                                <div key={note.id} className="epub-bookmark-card">
+                                                    <button
+                                                        type="button"
+                                                        className="epub-bookmark-jump"
+                                                        onClick={() => {
+                                                            if (typeof note.chapterIndex === "number") {
+                                                                setDrawerOpen(false);
+                                                                jumpToPage(note.chapterIndex);
+                                                            }
+                                                        }}
+                                                    >
+                                                        <span className="epub-bookmark-title">{note.title}</span>
+                                                        {note.chapterTitle && (
+                                                            <span className="epub-bookmark-meta">{note.chapterTitle}</span>
+                                                        )}
+                                                        {note.body && (
+                                                            <span className="epub-bookmark-excerpt">{note.body}</span>
+                                                        )}
+                                                    </button>
+                                                    <div className="epub-bookmark-actions">
+                                                        <button
+                                                            type="button"
+                                                            className="epub-glass-btn epub-bookmark-act-btn is-danger"
+                                                            title={t("common.close")}
+                                                            onClick={() => handleDeleteBookNote(note.id)}
+                                                        >
+                                                            <IconClose />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </aside>
+                    </div>
+                )}
+
+                {/* Floating LiquidGlass Bottom Navigation Capsule (matching EpubReader) */}
+                <div
+                    className={`epub-floating-bottom${isMobile ? " is-mobile" : ""}${bottomChromeVisible ? " is-visible" : " is-hidden"}`}
+                    onFocus={() => setBottomHover(true)}
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <div className="epub-glass-pill epub-nav-capsule">
+                        <button
+                            type="button"
+                            className="epub-glass-btn epub-glass-circle"
+                            disabled={!hasLeftAction}
+                            title={prefs.rtl
+                                ? (isEn ? "Last page" : "Последняя страница")
+                                : (isEn ? "First page" : "Первая страница")}
+                            onClick={() => jumpToPage(prefs.rtl ? Math.max(0, meta.pageCount - 1) : 0)}
+                        >
+                            «
+                        </button>
+                        <button
+                            type="button"
+                            className="epub-glass-btn epub-glass-circle"
+                            disabled={!hasLeftAction}
+                            title={prefs.rtl ? t("epub.nextPage") : t("epub.prevPage")}
+                            onClick={prefs.rtl ? goNext : goPrev}
+                        >
+                            ‹
+                        </button>
+
+                        <div className="epub-nav-meta manga-nav-meta">
+                            <div className="epub-nav-meta-text">
+                                {pageJumpEditing ? (
+                                    <form
+                                        className="manga-inline-jump-form"
+                                        onSubmit={(e) => {
+                                            e.preventDefault();
+                                            const parsed = Number.parseInt(pageJumpInput, 10);
+                                            if (Number.isFinite(parsed) && parsed >= 1) {
+                                                jumpToPage(parsed - 1);
+                                            }
+                                            setPageJumpEditing(false);
+                                        }}
+                                    >
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            max={Math.max(1, meta.pageCount)}
+                                            autoFocus
+                                            className="manga-page-jump-input"
+                                            value={pageJumpInput}
+                                            onChange={(e) => setPageJumpInput(e.target.value)}
+                                            onBlur={() => setPageJumpEditing(false)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Escape") {
+                                                    e.stopPropagation();
+                                                    setPageJumpEditing(false);
+                                                }
+                                            }}
+                                        />
+                                        <span>/ {meta.pageCount}</span>
+                                    </form>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        className="manga-nav-page-btn"
+                                        title={isEn ? "Click to enter page number" : "Нажми, чтобы ввести номер страницы"}
+                                        onClick={() => {
+                                            setPageJumpInput(String(currentPage + 1));
+                                            setPageJumpEditing(true);
+                                        }}
+                                    >
+                                        {isEn ? `Page ${pageSpanLabel} / ${meta.pageCount}` : `Стр. ${pageSpanLabel} / ${meta.pageCount}`}
+                                    </button>
+                                )}
+                                {!isMobile && meta.totalChars > 0 && (
+                                    <span className="epub-nav-chars">
+                                        · {meta.totalChars.toLocaleString(isEn ? "en-US" : "ru-RU")} {isEn ? "ch." : "зн."}
+                                    </span>
+                                )}
+                                <span className="epub-nav-pct">{pct}%</span>
+                            </div>
+
+                            <div
+                                className={`manga-nav-scrubber${prefs.rtl ? " is-rtl" : ""}`}
+                                role="slider"
+                                aria-label={isEn ? "Page progress" : "Прогресс чтения"}
+                                aria-valuemin={1}
+                                aria-valuemax={Math.max(1, meta.pageCount)}
+                                aria-valuenow={currentPage + 1}
+                                onPointerDown={handleScrubPointerDown}
+                                onPointerMove={handleScrubPointerMove}
+                                onPointerUp={handleScrubPointerUp}
+                                onPointerCancel={handleScrubPointerUp}
+                            >
+                                <div
+                                    className="manga-nav-scrubber-fill"
+                                    style={{ width: `${pct}%` }}
+                                />
+                            </div>
+                        </div>
+
+                        <button
+                            type="button"
+                            className="epub-glass-btn epub-glass-circle"
+                            disabled={!hasRightAction}
+                            title={prefs.rtl ? t("epub.prevPage") : t("epub.nextPage")}
+                            onClick={prefs.rtl ? goPrev : goNext}
+                        >
+                            ›
+                        </button>
+                        <button
+                            type="button"
+                            className="epub-glass-btn epub-glass-circle"
+                            disabled={!hasRightAction}
+                            title={prefs.rtl
+                                ? (isEn ? "First page" : "Первая страница")
+                                : (isEn ? "Last page" : "Последняя страница")}
+                            onClick={() => jumpToPage(prefs.rtl ? 0 : Math.max(0, meta.pageCount - 1))}
+                        >
+                            »
+                        </button>
+
+                        <span className="epub-pill-divider" aria-hidden="true" />
+
+                        <button
+                            type="button"
+                            className={`epub-glass-btn epub-glass-circle${positionFrozen ? " is-active" : ""}`}
+                            title={t("epub.freezePos")}
+                            onClick={() => setPositionFrozen((prev) => !prev)}
+                        >
+                            ❄
+                        </button>
+
+                        <button
+                            type="button"
+                            className={`epub-glass-btn epub-glass-circle${trackingPaused ? " is-active" : ""}`}
+                            title={t("epub.pauseTracking")}
+                            onClick={() => setTrackingPaused((prev) => !prev)}
+                        >
+                            {trackingPaused ? "▶" : "⏱"}
+                        </button>
+
+                        {onOpenStats && (
+                            <button
+                                type="button"
+                                className="epub-glass-btn epub-goal-pill-btn"
+                                title={`${t("epub.statsTitle")} · ${Math.round(goalSummary.overallPct * 100)}%`}
+                                onClick={onOpenStats}
+                            >
+                                <span className={`epub-goal-dot is-${goalSummary.status}`} />
+                            </button>
+                        )}
+                    </div>
+                </div>
+
+                {/* Subtle bottom-right page readout & Goal light when bottom chrome is hidden */}
+                {!zenMode && !bottomChromeVisible && !lookupActive && !escMenuOpen && (
+                    <button
+                        type="button"
+                        className="epub-corner-status"
+                        title={onOpenStats
+                            ? `${t("epub.statsTitle")}${activeGoals.enabled ? ` · ${Math.round(goalSummary.overallPct * 100)}%` : ""}`
+                            : undefined}
+                        aria-label={t("epub.statsTitle")}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenStats?.();
+                        }}
+                    >
+                        <span className="epub-corner-progress">
+                            {pageSpanLabel} / {meta.pageCount} · {pct}%
+                        </span>
+                        {activeGoals.enabled && (
+                            <span className={`epub-goal-dot is-${goalSummary.status}`} />
+                        )}
+                    </button>
+                )}
+
+                {/* Floating OCR result bar for on-demand bubble crop / ML Kit scan */}
+                {(ocrBusy || ocrError || ocrResult) && (
+                    <div className="manga-ocr-result-bar" onClick={(e) => e.stopPropagation()}>
+                        {ocrBusy ? (
+                            <div className="manga-ocr-result-busy">
+                                <span className="manga-ocr-spinner" aria-hidden="true" />
+                                <span>{ocrBusy}</span>
+                            </div>
+                        ) : ocrError ? (
+                            <div className="manga-ocr-result-row">
+                                <span className="manga-mokuro-error">{ocrError}</span>
+                                <button
+                                    type="button"
+                                    className="epub-glass-btn epub-glass-circle"
+                                    onClick={() => setOcrError(null)}
+                                >
+                                    ×
+                                </button>
+                            </div>
+                        ) : ocrResult && (
+                            <div className="manga-ocr-result-row">
+                                <span className="manga-ocr-engine-pill">
+                                    {formatOcrEngineLabel(ocrResult.engine, ocrResult.device, isEn)} · {ocrResult.elapsedMs}ms
+                                </span>
+                                <div className="manga-ocr-result-text text-line">
+                                    {ocrResult.text ? (
+                                        <TokenizedLine
+                                            text={ocrResult.text}
+                                            searchQuery=""
+                                            furiganaMode="none"
+                                            onLookupToken={onLookupToken}
+                                        />
+                                    ) : (
+                                        <span style={{ opacity: 0.6 }}>
+                                            {isEn ? "(no text detected)" : "(текст не найден)"}
+                                        </span>
+                                    )}
+                                </div>
+                                <div className="manga-ocr-result-actions">
+                                    <button
+                                        type="button"
+                                        className="epub-glass-btn"
+                                        title={isEn ? "Crop another bubble (S)" : "Обвести другой бабл (S)"}
+                                        onClick={() => setCropToolActive(true)}
+                                    >
+                                        ✂
+                                    </button>
+                                    {ocrResult.text && (
+                                        <button
+                                            type="button"
+                                            className="epub-glass-btn"
+                                            title={isEn ? "Pin as bubble on page" : "Закрепить как бабл на странице"}
+                                            onClick={handlePinOcrResultAsBubble}
+                                        >
+                                            + {isEn ? "Bubble" : "Бабл"}
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        className="epub-glass-btn"
+                                        title={isEn ? "Edit OCR text" : "Исправить текст"}
+                                        onClick={() =>
+                                            setEditingBubble({
+                                                pageIndex: -1,
+                                                blockIndex: 0,
+                                                text: ocrResult.text,
+                                            })
+                                        }
+                                    >
+                                        ✎
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="epub-glass-btn epub-glass-circle"
+                                        title={isEn ? "Dismiss" : "Закрыть"}
+                                        onClick={() => setOcrResult(null)}
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Inline OCR typo editor modal */}
+                {editingBubble && (
+                    <div className="manga-modal-backdrop" onClick={() => setEditingBubble(null)}>
+                        <div className="manga-modal" onClick={(e) => e.stopPropagation()}>
+                            <h3>{isEn ? "Fix OCR text in bubble" : "Исправить текст OCR в бабле"}</h3>
+                            <textarea
+                                className="manga-edit-textarea"
+                                rows={4}
+                                autoFocus
+                                value={editingBubble.text}
+                                onChange={(e) => setEditingBubble({ ...editingBubble, text: e.target.value })}
+                            />
+                            <div className="manga-modal-footer">
+                                <button type="button" className="manga-btn" onClick={() => setEditingBubble(null)}>
+                                    {isEn ? "Cancel" : "Отмена"}
+                                </button>
+                                <button type="button" className="manga-primary-btn" onClick={() => void handleSaveBubbleEdit()}>
+                                    {isEn ? "Save" : "Сохранить"}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Mokuro OCR manager / CLI runner modal */}
+                {mokuroModalOpen && (
+                    <div className="manga-modal-backdrop" onClick={() => !mokuroRunning && setMokuroModalOpen(false)}>
+                        <div className="manga-modal" onClick={(e) => e.stopPropagation()}>
+                            <h3>{isEn ? "Mokuro OCR Text Layer" : "Слой текста Mokuro OCR"}</h3>
+                            <p className="manga-modal-desc">
+                                {mokuroRunning
+                                    ? (isEn
+                                        ? "Recognizing speech bubbles and Japanese text in this volume. When finished, clickable text overlays will activate automatically."
+                                        : "Идёт распознавание баблов и японского текста в этом томе. После завершения кликабельный слой текста подключится автоматически.")
+                                    : meta.hasMokuro
+                                        ? (isEn
+                                            ? `Active .mokuro layer (${meta.totalChars.toLocaleString()} chars across ${meta.pageCount} pages). Hover any speech bubble and hold Shift to look up words.`
+                                            : `Слой .mokuro подключён (${meta.totalChars.toLocaleString("ru-RU")} зн. на ${meta.pageCount} стр.). Наведи курсор на бабл с Shift (или тапни на телефоне) для словаря.`)
+                                        : (isEn
+                                            ? "This manga currently has raw images without a .mokuro overlay. You can attach an existing .mokuro file or generate one right here via mokuro CLI."
+                                            : "Сейчас в этом томе только картинки без .mokuro-слоя. Можно прикрепить готовый файл .mokuro или запустить генерацию прямо отсюда через mokuro CLI.")}
+                            </p>
+
+                            {!isMobile && (
+                                <div className="manga-mokuro-box">
+                                    <div className="manga-mokuro-status">
+                                        <span>{isEn ? "Format:" : "Формат:"}</span>
+                                        <span className={meta.sourceKind === "cbz" ? "is-ok" : "is-warn"}>
+                                            {meta.sourceKind === "cbz"
+                                                ? (meta.hasMokuro
+                                                    ? (meta.mokuroPath?.includes("::")
+                                                        ? (isEn ? "✓ CBZ · .mokuro embedded" : "✓ CBZ · .mokuro встроен")
+                                                        : (isEn
+                                                            ? "CBZ (external .mokuro — click Convert to embed)"
+                                                            : "CBZ (внешний .mokuro — нажми «Преобразовать в CBZ» для вшивания)"))
+                                                    : (isEn ? "✓ CBZ · ready for Google Drive" : "✓ CBZ · готов к Google Диск"))
+                                                : (isEn
+                                                    ? "Folder (convert to CBZ to sync to phone)"
+                                                    : "Папка (преобразуй в CBZ для синка на телефон)")}
+                                        </span>
+                                    </div>
+                                    <div className="manga-mokuro-status">
+                                        <span>mokuro CLI:</span>
+                                        {mokuroStatus === null ? (
+                                            <span className="is-muted">{isEn ? "Checking…" : "Проверка…"}</span>
+                                        ) : mokuroStatus.available ? (
+                                            <span className="is-ok">
+                                                ✓ {mokuroStatus.command} {mokuroStatus.version ? `(${mokuroStatus.version})` : ""}
+                                            </span>
+                                        ) : (
+                                            <span className="is-warn">
+                                                {isEn ? "Not found" : "Не установлен"}
+                                            </span>
+                                        )}
+                                    </div>
+
+                                    {mokuroStatus && !mokuroStatus.available && (
+                                        <div className="manga-mokuro-hint">
+                                            {isEn ? "Install once in terminal:" : "Установи один раз в терминале:"}
+                                            <code>pip install mokuro</code>
+                                        </div>
+                                    )}
+
+                                    {mokuroRunning && (
+                                        <div className="manga-mokuro-progress">
+                                            <div className="manga-mokuro-progress-head">
+                                                <span>
+                                                    {mokuroProgress?.stage === "ocr" && mokuroProgress.current !== null && mokuroProgress.total
+                                                        ? (isEn
+                                                            ? `Scanning pages: ${mokuroProgress.current} / ${mokuroProgress.total} (${mokuroProgress.percent ?? 0}%)`
+                                                            : `Распознавание страниц: ${mokuroProgress.current} / ${mokuroProgress.total} (${mokuroProgress.percent ?? 0}%)`)
+                                                        : mokuroProgress?.stage === "model_load"
+                                                            ? (isEn ? "Loading manga-ocr neural model…" : "Загрузка нейросети manga-ocr…")
+                                                            : mokuroProgress?.stage === "detector_init"
+                                                                ? (isEn ? "Initializing speech-bubble detector…" : "Запуск детектора баблов…")
+                                                                : mokuroProgress?.stage === "downloading"
+                                                                    ? (isEn ? "Downloading OCR weights…" : "Скачивание весов OCR…")
+                                                                    : (isEn ? "Starting mokuro…" : "Запуск mokuro…")}
+                                                </span>
+                                                {mokuroProgress?.device && (
+                                                    <span className={`manga-device-pill is-${mokuroProgress.device}`}>
+                                                        {mokuroProgress.device === "cuda" ? "⚡ GPU (CUDA)" : "CPU"}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="manga-progress-track">
+                                                <div
+                                                    className={`manga-progress-fill${mokuroProgress?.percent == null ? " is-indeterminate" : ""}`}
+                                                    style={mokuroProgress?.percent != null ? { width: `${mokuroProgress.percent}%` } : undefined}
+                                                />
+                                            </div>
+                                            {mokuroProgress?.eta && (
+                                                <div className="manga-mokuro-eta">
+                                                    {isEn ? `Estimated time left: ~${mokuroProgress.eta}` : `Осталось примерно: ~${mokuroProgress.eta}`}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {(convertingCbz || exportingCbz) && (
+                                        <div className="manga-mokuro-progress">
+                                            <div className="manga-mokuro-progress-head">
+                                                <span>
+                                                    {isEn
+                                                        ? "Packing volume into CBZ (pages, .mokuro & cover)…"
+                                                        : "Преобразование тома в CBZ (страницы, .mokuro и обложка)…"}
+                                                </span>
+                                            </div>
+                                            <div className="manga-progress-track">
+                                                <div className="manga-progress-fill is-indeterminate" />
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {mokuroError && <div className="manga-mokuro-error">{mokuroError}</div>}
+                                    {exportStatus && (
+                                        <div className={exportStatus.ok ? "manga-export-ok" : "manga-mokuro-error"}>
+                                            {exportStatus.message}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {isMobile && (
+                                <div className="manga-mokuro-box">
+                                    <div className="manga-mokuro-status">
+                                        <span>{isEn ? "On-device OCR:" : "OCR на телефоне:"}</span>
+                                        <span className={mobileOcrReady?.onnxReady ? "is-ok" : "is-muted"}>
+                                            {mobileOcrReady?.onnxReady
+                                                ? "ML Kit + ONNX INT8"
+                                                : mobileOcrReady?.onnxDownloading
+                                                    ? (isEn ? "ML Kit · ONNX downloading…" : "ML Kit · ONNX скачивается…")
+                                                    : "ML Kit"}
+                                            {mobileOcrReady?.hasRemote ? (isEn ? " + PC Wi-Fi" : " + ПК Wi-Fi") : ""}
+                                        </span>
+                                    </div>
+                                    <div className="manga-mokuro-hint">
+                                        {isEn
+                                            ? "Use ✂ to draw over any bubble, or scan all bubbles on the current page. Configure ONNX INT8 (~117 MB) and PC Wi-Fi GPU in Settings → EPUB & Manga → Manga & OCR."
+                                            : "Нажми ✂, чтобы обвести бабл вручную, или найди все баблы на странице через ML Kit. Модель ONNX (~117 МБ) и адрес ПК Wi-Fi настраиваются в Настройках → EPUB → Манга и OCR."}
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="manga-modal-footer">
+                                {isMobile && hasAndroidMangaOcrBridge() && (
+                                    <button
+                                        type="button"
+                                        className="manga-primary-btn"
+                                        disabled={Boolean(ocrBusy) || !pagesByIndex[currentPage]}
+                                        onClick={() => void handleAutoScanPage()}
+                                    >
+                                        {isEn ? "Scan page bubbles (ML Kit)" : "Найти баблы на стр. (ML Kit)"}
+                                    </button>
+                                )}
+                                {isMobile && (
                                     <button
                                         type="button"
                                         className="manga-btn"
-                                        title={isEn ? "Pin as bubble on page" : "Закрепить как бабл на странице"}
-                                        onClick={handlePinOcrResultAsBubble}
+                                        onClick={() => {
+                                            setMokuroModalOpen(false);
+                                            setCropToolActive(true);
+                                        }}
                                     >
-                                        + {isEn ? "Bubble" : "Бабл"}
+                                        {isEn ? "✂ Crop bubble" : "✂ Обвести бабл"}
+                                    </button>
+                                )}
+                                {!isMobile && onConvertMangaToCbz && (
+                                    <button
+                                        type="button"
+                                        className="manga-btn"
+                                        disabled={mokuroRunning || convertingCbz || exportingCbz}
+                                        onClick={() => void handleConvertInPlaceCbz()}
+                                    >
+                                        {convertingCbz
+                                            ? (isEn ? "Converting to CBZ…" : "Преобразование в CBZ…")
+                                            : (isEn ? "Convert to CBZ (PC & Sync)" : "Преобразовать в CBZ (ПК + синхр.)")}
+                                    </button>
+                                )}
+                                {!isMobile && (
+                                    <button
+                                        type="button"
+                                        className="manga-btn"
+                                        disabled={mokuroRunning || convertingCbz || exportingCbz}
+                                        onClick={() => void handleExportMobileCbz()}
+                                    >
+                                        {exportingCbz
+                                            ? (isEn ? "Saving .cbz…" : "Сохранение .cbz…")
+                                            : (isEn ? "Save copy .cbz…" : "Сохранить копию .cbz…")}
+                                    </button>
+                                )}
+                                {!isMobile && (
+                                    <button
+                                        type="button"
+                                        className="manga-btn"
+                                        disabled={mokuroRunning}
+                                        onClick={() => void handleAttachMokuroFile()}
+                                    >
+                                        {isEn ? "Attach .mokuro file" : "Прикрепить .mokuro"}
+                                    </button>
+                                )}
+                                {!isMobile && (
+                                    <button
+                                        type="button"
+                                        className="manga-primary-btn"
+                                        disabled={mokuroRunning || !mokuroStatus?.available}
+                                        onClick={() => void handleRunMokuroCli()}
+                                    >
+                                        {mokuroRunning
+                                            ? (isEn ? "Running OCR…" : "Распознавание…")
+                                            : (isEn ? "Generate .mokuro" : "Распознать том (mokuro)")}
                                     </button>
                                 )}
                                 <button
                                     type="button"
                                     className="manga-btn"
-                                    title={isEn ? "Edit OCR text" : "Исправить текст"}
-                                    onClick={() =>
-                                        setEditingBubble({
-                                            pageIndex: -1,
-                                            blockIndex: 0,
-                                            text: ocrResult.text,
-                                        })
-                                    }
+                                    disabled={mokuroRunning}
+                                    onClick={() => setMokuroModalOpen(false)}
                                 >
-                                    ✎
-                                </button>
-                                <button
-                                    type="button"
-                                    className="manga-btn"
-                                    title={isEn ? "Dismiss" : "Закрыть"}
-                                    onClick={() => setOcrResult(null)}
-                                >
-                                    ×
+                                    {isEn ? "Close" : "Закрыть"}
                                 </button>
                             </div>
                         </div>
-                    )}
-                </div>
-            )}
-
-            {/* Bottom slim scrubber bar */}
-            <footer className={`manga-bottombar${!chromeVisible && isMobile ? " is-hidden" : ""}`}>
-                <button
-                    type="button"
-                    className="manga-btn"
-                    onClick={prefs.rtl ? goNext : goPrev}
-                    disabled={prefs.rtl ? currentPage >= meta.pageCount - 1 : currentPage <= 0}
-                >
-                    ‹
-                </button>
-                <input
-                    type="range"
-                    className={`manga-scrubber${prefs.rtl ? " is-rtl" : ""}`}
-                    min={0}
-                    max={Math.max(0, meta.pageCount - 1)}
-                    value={currentPage}
-                    onChange={(e) => setCurrentPage(Number(e.target.value))}
-                    aria-label={isEn ? "Page" : "Страница"}
-                />
-                <button
-                    type="button"
-                    className="manga-btn"
-                    onClick={prefs.rtl ? goPrev : goNext}
-                    disabled={prefs.rtl ? currentPage <= 0 : currentPage >= meta.pageCount - 1}
-                >
-                    ›
-                </button>
-                <span className="manga-page-readout">
-                    {currentPage + 1} / {meta.pageCount} · {pct}%
-                    {meta.totalChars > 0 && !isMobile ? ` · ${meta.totalChars.toLocaleString("ru-RU")} зн.` : ""}
-                </span>
-            </footer>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

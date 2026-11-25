@@ -56,6 +56,7 @@ import {
     stopMobileTextCapture,
 } from '../utils/mobileTextCapture';
 import { openMobileDictionaryPicker } from '../utils/mobileFiles';
+import { MOBILE_BACK_PRIORITY, useMobileBackHandler } from '../utils/mobileBack';
 import SettingsFeedback from './Settings/SettingsFeedback';
 import {
     clearAnkiMetaCache,
@@ -559,72 +560,26 @@ export const MobileLayout = ({
         onCloseMobileSettings?.();
     };
 
-    const mobileBackStateRef = useRef({
-        lookupOpen,
-        isMobileSettingsOpen,
-        settingsHome,
-        tabsOpen,
-        isStatsOpen,
-        activeMobileView,
-        onCloseLookup,
-        onHome,
-        closeMobileSettings,
+    useMobileBackHandler(isMobileSettingsOpen, MOBILE_BACK_PRIORITY.MODAL, () => {
+        if (!settingsHome) {
+            setSettingsHome(true);
+        } else {
+            closeMobileSettings();
+        }
     });
-    mobileBackStateRef.current = {
-        lookupOpen,
-        isMobileSettingsOpen,
-        settingsHome,
-        tabsOpen,
-        isStatsOpen,
-        activeMobileView,
-        onCloseLookup,
-        onHome,
-        closeMobileSettings,
-    };
-
-    useEffect(() => {
-        const pushWorkspaceGuard = () => {
-            const state = window.history.state as Record<string, unknown> | null;
-            if (!state?.setsunaMobileWorkspace) {
-                window.history.pushState({ ...(state || {}), setsunaMobileWorkspace: 'texthooker' }, '', window.location.href);
-            }
-        };
-        pushWorkspaceGuard();
-
-        const handleMobileBack = () => {
-            const current = mobileBackStateRef.current;
-            const fontPickerClose = document.querySelector<HTMLButtonElement>('.font-picker-overlay .font-picker-close');
-            if (fontPickerClose) {
-                fontPickerClose.click();
-                pushWorkspaceGuard();
-                return;
-            }
-            if (current.lookupOpen) {
-                current.onCloseLookup?.();
-                pushWorkspaceGuard();
-            } else if (current.isMobileSettingsOpen) {
-                if (!current.settingsHome) {
-                    setSettingsHome(true);
-                } else {
-                    current.closeMobileSettings();
-                }
-                pushWorkspaceGuard();
-            } else if (current.tabsOpen) {
-                setTabsOpen(false);
-                pushWorkspaceGuard();
-            } else if (current.isStatsOpen) {
-                setIsStatsOpen(false);
-                pushWorkspaceGuard();
-            } else if (current.activeMobileView === 'lookup') {
-                setActiveMobileView('text');
-                pushWorkspaceGuard();
-            } else {
-                current.onHome?.();
-            }
-        };
-        window.addEventListener('popstate', handleMobileBack);
-        return () => window.removeEventListener('popstate', handleMobileBack);
-    }, []);
+    useMobileBackHandler(tabsOpen, MOBILE_BACK_PRIORITY.SUBVIEW + 2, () => {
+        setTabsOpen(false);
+    });
+    useMobileBackHandler(isStatsOpen, MOBILE_BACK_PRIORITY.SUBVIEW + 1, () => {
+        setIsStatsOpen(false);
+    });
+    useMobileBackHandler(activeMobileView === 'lookup', MOBILE_BACK_PRIORITY.SUBVIEW, () => {
+        setActiveMobileView('text');
+    });
+    useMobileBackHandler(Boolean(onHome), MOBILE_BACK_PRIORITY.WORKSPACE, () => {
+        if (!onHome) return false;
+        onHome();
+    });
 
     const refreshOverlayStatus = () => {
         try {
@@ -1373,8 +1328,8 @@ export const MobileLayout = ({
                 {activeTab?.mode === 'player' ? (
                     <div className="m-empty">
                         <div className="m-empty-icon">▶</div>
-                        <strong>{isEn ? 'Player' : 'Плеер'}</strong>
-                        <span>{isEn ? 'The mobile player will come after text, lookup, and Anki are stable.' : 'Мобильный плеер добавим после текста, лукапа и Anki.'}</span>
+                        <strong>{isEn ? 'Video Player (Beta)' : 'Видео-плеер (Бета)'}</strong>
+                        <span>{isEn ? 'The mobile video player will come after text, lookup, and Anki are stable.' : 'Мобильный видео-плеер добавим после текста, лукапа и Anki.'}</span>
                     </div>
                 ) : activeTab?.mode === 'epub' ? (
                     <EpubWorkspace
@@ -1609,6 +1564,12 @@ export const MobileLayout = ({
                                     <option value="en">English</option>
                                 </select>
                             </label>
+                            <div className="mobile-settings-note">
+                                <strong style={{ color: '#f59e0b', marginRight: 6 }}>{isEn ? 'ALPHA' : 'АЛЬФА'}</strong>
+                                {isEn
+                                    ? 'Primary target learning language: Japanese. English as a target learning language is early alpha.'
+                                    : 'Основной язык изучения: японский. Поддержка английского как целевого языка изучения — ранняя альфа.'}
+                            </div>
                             <label className="mobile-setting-row">
                                 <span>{isEn ? 'Font size' : 'Размер текста'}</span>
                                 <input

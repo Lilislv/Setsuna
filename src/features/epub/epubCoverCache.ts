@@ -107,6 +107,15 @@ export function setMemoryCover(path: string, src: string | null): void {
     });
 }
 
+export async function compactCoverDataUrl(src: string): Promise<string | null> {
+    const clean = src.trim();
+    if (!clean.startsWith("data:image/")) return null;
+    if (clean.length <= 45_000) return clean;
+    const downscaled = await downscaleDataUrl(clean);
+    if (!downscaled || downscaled.length > 45_000) return null;
+    return downscaled;
+}
+
 function downscaleDataUrl(dataUrl: string): Promise<string | null> {
     return new Promise((resolve) => {
         const img = new Image();

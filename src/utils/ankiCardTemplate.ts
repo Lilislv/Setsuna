@@ -7,7 +7,7 @@
 // works for both. Bump SETSUNA_TEMPLATE_VERSION when the templates change:
 // existing copies of the note type are upgraded in place (see anki.ts).
 
-export const SETSUNA_TEMPLATE_VERSION = 2;
+export const SETSUNA_TEMPLATE_VERSION = 3;
 export const SETSUNA_TEMPLATE_NAME = "Setsuna card";
 const MARKER = `<!-- setsuna-card:v${SETSUNA_TEMPLATE_VERSION} -->`;
 
@@ -140,7 +140,7 @@ export const SETSUNA_MODEL_CSS = `/* setsuna-card:v${SETSUNA_TEMPLATE_VERSION} *
 .ss-audio .replay-button svg circle { fill: var(--ss-text); }
 .ss-audio .replay-button svg path { fill: var(--ss-bg); }
 .ss-picture { display: flex; align-items: center; justify-content: center; border-radius: 14px; overflow: hidden; background: var(--ss-panel); }
-.ss-picture img { display: block; max-width: 100%; max-height: 300px; object-fit: contain; border-radius: 10px; }
+.ss-picture img, .ss-picture video { display: block; max-width: 100%; max-height: 300px; object-fit: contain; border-radius: 10px; }
 .ss-sentence { max-width: 980px; margin: 0 auto 22px; font-size: clamp(24px, 4.2vw, 38px); line-height: 1.55; }
 .ss-hl { color: var(--ss-accent); background: var(--ss-hl); border-radius: 6px; padding: 0 2px; }
 .ss-definition { max-width: 980px; margin: 0 auto; padding: 16px 18px; border-left: 4px solid var(--ss-line); border-radius: 4px 12px 12px 4px; background: var(--ss-panel); text-align: left; font-size: 19px; }

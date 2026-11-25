@@ -9,7 +9,17 @@ import {
 } from "../src/features/player/posterModel.ts";
 import { suggestedEpisode } from "../src/features/player/libraryModel.ts";
 import { episodeLabel, matchSubtitlePaths } from "../src/features/player/localMedia.ts";
-import { parseSubtitleFile, cueAt, nextCue, sceneForCue, clipInterval } from "../src/features/player/model.ts";
+import {
+    parseSubtitleFile,
+    cueAt,
+    nextCue,
+    sceneForCue,
+    clipInterval,
+    replayOrPreviousCue,
+    syncOffsetToCue,
+    filterCuesByRegex,
+    autoPauseResumeDelayMs,
+} from "../src/features/player/model.ts";
 
 test("subtitle parsing sorts cues, ignores bad intervals and keeps ASS dialogue commas", () => {
     const srt =
@@ -47,6 +57,18 @@ test("line navigation jumps to the neighboring cue even mid-line, and skips cues
     assert.equal(nextCue(cues, 5.5, 1, 1, 7), undefined);
     assert.equal(nextCue(cues, 4, 1, 1, 7)?.id, 2);
     assert.equal(nextCue(cues, 4, -1, 3, 7), undefined);
+
+    const rapid = [
+        { id: 0, start: 2, end: 4, text: "a" },
+        { id: 1, start: 2, end: 4.5, text: "overlap" },
+        { id: 2, start: 5, end: 7, text: "b" },
+        { id: 3, start: 8, end: 10, text: "c" },
+    ];
+    // Rapid forward step skips overlapping same-start cue and handles frame rounding before cue start
+    assert.equal(nextCue(rapid, 1.98, 1, 0, 20)?.id, 2);
+    assert.equal(nextCue(rapid, 2, 1, 0, 20, 2)?.id, 3);
+    assert.equal(nextCue(rapid, 8, -1, 0, 20, 2)?.start, 2);
+    assert.equal(nextCue(rapid, 2, -1, 0, 20, 1), undefined);
 });
 
 test("dropped subtitle packs select Japanese first and never match the next episode number", () => {
@@ -171,7 +193,7 @@ const bundle = await build({
         },
     ],
 });
-const { addPlayerNote } = await import(
+const { addPlayerNote, updateLastPlayerNote } = await import(
     "data:text/javascript;base64," + Buffer.from(bundle.outputFiles[0].text).toString("base64")
 );
 const settings = {
@@ -183,7 +205,7 @@ const settings = {
 };
 const scene = { source: "episode.mp4", start: 12, end: 14, duration: 30 };
 
-test("scene export stores original video on a Basic card and discards only its temporary file", async () => {
+test("scene export stores lightweight video without duplicate screenshot and uses picture field when available", async () => {
     globalThis.window = { __TAURI_INTERNALS__: {} };
     const calls = [];
     globalThis.playerInvoke = async (cmd, args) => {
@@ -197,17 +219,62 @@ test("scene export stores original video on a Basic card and discards only its t
         if (args.action === "addNote") return 123;
         throw Error(cmd);
     };
-    assert.equal((await addPlayerNote(settings, { word: "言葉", meaning: "слово" }, scene)).result, 123);
+    assert.equal((await addPlayerNote(settings, { word: "言葉", meaning: "слово" }, scene, true)).result, 123);
     assert.deepEqual(calls[0][1], { sourcePath: "episode.mp4", start: 11.5, end: 14.5, preferVideo: true });
-    const note = calls.find(([, a]) => a.action === "addNote")[1].params.note;
+    assert.equal(calls.some(([cmd]) => cmd === "player_scene_frame"), false);
+    const note = calls.find(([, a]) => a?.action === "addNote")[1].params.note;
     assert.match(note.fields.Back, /^слово <video src="stored\.webm" controls playsinline /);
     assert.doesNotMatch(note.fields.Back, /\[sound:/);
-    assert.deepEqual(note.picture[0].fields, ["Back"]);
-    assert.equal(note.picture[0].data, "frame-base64");
+    assert.equal(note.picture, undefined);
     assert.deepEqual(calls.at(-1), ["discard_player_clip", { filename: "scene.webm" }]);
+
     calls.length = 0;
-    assert.equal((await addPlayerNote(settings, { word: "言葉" }, scene, false, true)).result, 123);
-    assert.deepEqual(calls[0][1], { sourcePath: "episode.mp4", start: 12, end: 14, preferVideo: true });
+    globalThis.playerInvoke = async (cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === "extract_player_clip")
+            return { filename: "scene.webm", path: "clips/scene.webm", media_type: "video" };
+        if (cmd === "discard_player_clip") return;
+        if (args.action === "modelFieldNames") return ["Expression", "ExpressionAudio", "DefinitionPicture"];
+        if (args.action === "storeMediaFile") return "stored.webm";
+        if (args.action === "addNote") return 125;
+        throw Error(cmd);
+    };
+    const setsunaSettings = {
+        ...settings,
+        ankiModel: "Setsuna card",
+        ankiFieldWord: "Expression",
+        ankiFieldAudio: "ExpressionAudio",
+        ankiFieldScreenshot: "DefinitionPicture",
+        playerVideoQuality: "high",
+    };
+    assert.equal((await addPlayerNote(setsunaSettings, { word: "弁当" }, scene, true)).result, 125);
+    assert.equal(calls[0][1].videoQuality, "high");
+    const picNote = calls.find(([, a]) => a?.action === "addNote")[1].params.note;
+    assert.match(picNote.fields.DefinitionPicture, /^<video src="stored\.webm"/);
+    assert.equal(picNote.fields.ExpressionAudio, undefined);
+    assert.equal(picNote.picture, undefined);
+
+    calls.length = 0;
+    globalThis.playerInvoke = async (cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === "extract_player_clip")
+            return { filename: "scene.mp3", path: "clips/scene.mp3", media_type: "audio" };
+        if (cmd === "player_scene_frame") return "frame-base64";
+        if (cmd === "discard_player_clip") return;
+        if (args.action === "modelFieldNames") return ["Front", "Back"];
+        if (args.action === "storeMediaFile") return "stored.mp3";
+        if (args.action === "addNote") return 124;
+        throw Error(cmd);
+    };
+    assert.equal(
+        (await addPlayerNote({ ...settings, playerCardFormat: "audio" }, { word: "言葉" }, scene, true, true)).result,
+        124,
+    );
+    assert.deepEqual(calls[0][1], { sourcePath: "episode.mp4", start: 12, end: 14, preferVideo: false });
+    assert.equal(calls.some(([cmd]) => cmd === "player_scene_frame"), true);
+    const audioNote = calls.find(([, a]) => a?.action === "addNote")[1].params.note;
+    assert.match(audioNote.fields.Back, /^\[sound:stored\.mp3\]$/);
+    assert.equal(audioNote.picture[0].data, "frame-base64");
 });
 
 test("encoder failure never creates a silent substitute card", async () => {
@@ -219,4 +286,62 @@ test("encoder failure never creates a silent substitute card", async () => {
     };
     assert.match((await addPlayerNote(settings, { word: "雪" }, scene)).error, /encoder missing/);
     assert.equal(calls, 1);
+});
+
+test("asbplayer immersion helpers: padding, replay/prev cue, 1-key sync, regex filter, and auto-resume delay", () => {
+    assert.deepEqual(clipInterval(scene, 0.2, 1.0), { start: 11.8, end: 15 });
+
+    const cues = [
+        { id: 1, start: 2, end: 5, text: "[music]" },
+        { id: 2, start: 6, end: 10, text: "こんにちは（笑）" },
+        { id: 3, start: 14, end: 18, text: "元気？" },
+    ];
+    const cleaned = filterCuesByRegex(cues, String.raw`\[[^\]]*\]|（[^）]*）`);
+    assert.deepEqual(
+        cleaned.map((c) => c.text),
+        ["こんにちは", "元気？"],
+    );
+
+    assert.equal(replayOrPreviousCue(cleaned, 8.2, 0, 30).replayed, true);
+    assert.equal(replayOrPreviousCue(cleaned, 8.2, 0, 30).cue?.id, 2);
+    assert.equal(replayOrPreviousCue(cleaned, 6.2, 0, 30).replayed, false);
+    assert.equal(replayOrPreviousCue(cleaned, 14.3, 0, 30).cue?.id, 2);
+
+    assert.deepEqual(syncOffsetToCue(cleaned, 11.5, 0, -1, 30), { cue: cleaned[0], offset: -5.5 });
+    assert.deepEqual(syncOffsetToCue(cleaned, 11.5, 0, 1, 30), { cue: cleaned[1], offset: 2.5 });
+
+    assert.equal(autoPauseResumeDelayMs(cleaned[0], "manual"), null);
+    assert.equal(autoPauseResumeDelayMs(cleaned[0], "fixed", 2.5), 2500);
+    assert.equal(autoPauseResumeDelayMs(cleaned[0], "dynamic", 2.5, 160), 5 * 160 + 600);
+});
+
+test("updateLastPlayerNote attaches clip and screenshot to the most recent Anki note", async () => {
+    globalThis.window = { __TAURI_INTERNALS__: {} };
+    const calls = [];
+    globalThis.playerInvoke = async (cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === "extract_player_clip")
+            return { filename: "clip.mp3", path: "clips/clip.mp3", media_type: "audio" };
+        if (cmd === "player_scene_frame") return "img-b64";
+        if (cmd === "discard_player_clip") return;
+        if (args.action === "findNotes") return [101, 205];
+        if (args.action === "notesInfo")
+            return [{ fields: { Expression: { value: "言葉" }, Sentence: { value: "" }, Audio: { value: "" }, Back: { value: "" } } }];
+        if (args.action === "storeMediaFile") return args.params.filename;
+        if (args.action === "updateNoteFields") return null;
+        throw Error(cmd);
+    };
+    const res = await updateLastPlayerNote(
+        { ...settings, ankiFieldAudio: "Audio", ankiFieldSentence: "Sentence", ankiFieldScreenshot: "Back" },
+        { sentence: "いい言葉だね" },
+        scene,
+        true,
+    );
+    assert.equal(res.result, 205);
+    const update = calls.find(([, a]) => a?.action === "updateNoteFields")[1].params.note;
+    assert.equal(update.id, 205);
+    assert.equal(update.fields.Sentence, "いい言葉だね");
+    assert.match(update.fields.Audio, /^\[sound:/);
+    assert.match(update.fields.Back, /<img src="setsuna_screen_/);
+    assert.deepEqual(calls.at(-1), ["discard_player_clip", { filename: "clip.mp3" }]);
 });

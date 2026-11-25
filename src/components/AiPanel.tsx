@@ -718,6 +718,15 @@ export default function AiPanel({ open, settings, request, activeTabId, activeTa
                     )}
                 </header>
 
+                <div className="aip-test-banner">
+                    <span className="aip-test-pill">{en ? "TEST" : "ТЕСТ"}</span>
+                    <span>
+                        {en
+                            ? "Experimental LLM test — may not make it into the final release"
+                            : "Тестовая функция (LLM) — может не войти в финальный релиз"}
+                    </span>
+                </div>
+
                 {pickedChatKey && view === "tab" && (
                     <button type="button" className="aip-back" onClick={() => setPickedChatKey(null)}>
                         ← {en ? `Back to the current tab: ${activeTabName}` : `К текущей вкладке: ${activeTabName}`}

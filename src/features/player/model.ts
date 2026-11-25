@@ -159,10 +159,16 @@ export function sceneForCue(source: string, cue: Cue, offset: number, duration: 
 
 export const scenePaddingSeconds = 0.5;
 
-export function clipInterval(scene: PlayerScene) {
+export function clipInterval(
+    scene: PlayerScene,
+    padStart = scenePaddingSeconds,
+    padEnd = scenePaddingSeconds,
+) {
+    const before = Math.max(0, Number.isFinite(padStart) ? padStart : scenePaddingSeconds);
+    const after = Math.max(0, Number.isFinite(padEnd) ? padEnd : scenePaddingSeconds);
     return {
-        start: Math.max(0, scene.start - scenePaddingSeconds),
-        end: Math.min(scene.duration, scene.end + scenePaddingSeconds),
+        start: Math.max(0, scene.start - before),
+        end: Math.min(scene.duration, scene.end + after),
     };
 }
 
@@ -183,17 +189,117 @@ function previousCueIndex(cues: Cue[], time: number) {
     return -1;
 }
 
-export function nextCue(cues: Cue[], time: number, direction: -1 | 1, offset: number, duration: number) {
-    const active = cueAt(cues, time);
-    const activeIndex = active ? cues.indexOf(active) : -1;
+export function nextCue(
+    cues: Cue[],
+    time: number,
+    direction: -1 | 1,
+    offset: number,
+    duration: number,
+    anchorIndex?: number,
+) {
+    let baseIndex =
+        anchorIndex !== undefined && anchorIndex >= 0 && anchorIndex < cues.length ? anchorIndex : -1;
+    if (baseIndex < 0) {
+        const active = cueAt(cues, time);
+        if (active) {
+            baseIndex = cues.indexOf(active);
+        } else if (direction > 0) {
+            // Frame-timebase rounding can place currentTime just shy of target.start right after a seek.
+            baseIndex = cues.findIndex((c) => Math.abs(c.start - time) <= 0.05);
+        }
+    }
+    if (baseIndex >= 0) {
+        const baseStart = cues[baseIndex].start;
+        for (let i = baseIndex + direction; i >= 0 && i < cues.length; i += direction) {
+            const cue = cues[i];
+            if (Math.abs(cue.start - baseStart) < 0.05) continue;
+            if (cue.end > offset && cue.start < duration + offset) return cue;
+        }
+        return undefined;
+    }
     const first =
-        activeIndex >= 0
-            ? activeIndex + direction
-            : direction > 0
-              ? cues.findIndex((cue) => cue.start > time)
-              : previousCueIndex(cues, time);
+        direction > 0 ? cues.findIndex((cue) => cue.start > time) : previousCueIndex(cues, time);
     for (let i = first; i >= 0 && i < cues.length; i += direction) {
         const cue = cues[i];
         if (cue.end > offset && cue.start < duration + offset) return cue;
     }
+}
+
+/** Replays the active line if well past its start, otherwise jumps to the previous cue. */
+export function replayOrPreviousCue(
+    cues: Cue[],
+    clock: number,
+    offset: number,
+    duration: number,
+    restartThreshold = 0.6,
+): { cue?: Cue; replayed: boolean } {
+    const active = cueAt(cues, clock);
+    if (
+        active &&
+        clock - active.start > restartThreshold &&
+        active.end > offset &&
+        active.start < duration + offset
+    ) {
+        return { cue: active, replayed: true };
+    }
+    return { cue: nextCue(cues, clock, -1, offset, duration), replayed: false };
+}
+
+/** Snaps subtitle offset so the target previous or next cue starts right at `mediaTime`. */
+export function syncOffsetToCue(
+    cues: Cue[],
+    mediaTime: number,
+    offset: number,
+    direction: -1 | 1,
+    duration: number,
+): { cue: Cue; offset: number } | undefined {
+    const clock = mediaTime + offset;
+    let target: Cue | undefined;
+    if (direction === -1) {
+        const active = cueAt(cues, clock);
+        target = active && clock - active.start > 0.15 ? active : nextCue(cues, clock, -1, offset, duration);
+    } else {
+        target =
+            cues.find((c) => c.start > clock + 0.05 && c.end > offset && c.start < duration + offset) ||
+            cues.find((c) => c.start > clock);
+    }
+    if (!target) return undefined;
+    return { cue: target, offset: Number((target.start - mediaTime).toFixed(2)) };
+}
+
+/** Removes regex-matched stage directions / sound effects and drops cues that become empty. */
+export function filterCuesByRegex(cues: Cue[], pattern?: string): Cue[] {
+    if (!pattern || !pattern.trim()) return cues;
+    let regex: RegExp;
+    try {
+        regex = new RegExp(pattern, "gu");
+    } catch {
+        return cues;
+    }
+    const cleaned: Cue[] = [];
+    for (const cue of cues) {
+        const text = cue.text
+            .replace(regex, "")
+            .replace(/[ \t]{2,}/g, " ")
+            .replace(/\n{2,}/g, "\n")
+            .trim();
+        if (text) cleaned.push(text === cue.text ? cue : { ...cue, text });
+    }
+    return cleaned;
+}
+
+/** Delay in milliseconds before auto-resuming from subtitle auto-pause, or null for manual resume. */
+export function autoPauseResumeDelayMs(
+    cue: Cue,
+    mode: "manual" | "fixed" | "dynamic",
+    fixedSec = 2.5,
+    msPerChar = 160,
+): number | null {
+    if (mode === "manual") return null;
+    if (mode === "fixed") {
+        return Math.max(400, Math.round((Number.isFinite(fixedSec) ? fixedSec : 2.5) * 1000));
+    }
+    const chars = cue.text.replace(/\s+/g, "").length;
+    const perChar = Number.isFinite(msPerChar) ? msPerChar : 160;
+    return Math.max(1200, Math.min(12000, Math.round(chars * perChar + 600)));
 }

@@ -1,4 +1,4 @@
-import type { EpubBookmark, Tab, TabStats } from "../../utils/constants";
+import type { EpubBookmark, EpubManualStatus, Tab, TabStats } from "../../utils/constants";
 import type { BookFileExt, EpubBookNote, EpubHighlight, EpubLanguage, EpubOrientationSetting, EpubReadingPoint } from "./epubModel";
 
 export const EPUB_SYNC_FILENAME = "setsuna_epub_sync.json";
@@ -12,7 +12,7 @@ export interface EpubSyncBookEntry {
     seriesPosition?: number | null;
     tags?: string[];
     shelves?: string[];
-    manualStatus?: "unread" | "reading" | "completed";
+    manualStatus?: EpubManualStatus;
     coverBlurred?: boolean;
     language?: EpubLanguage;
     defaultVertical?: boolean;
@@ -32,6 +32,10 @@ export interface EpubSyncBookEntry {
     stats?: TabStats;
     driveFileId?: string;
     fileExt?: BookFileExt | "cbz" | "zip" | "mokuro" | "manga-dir";
+    format?: "book" | "manga";
+    hasMokuro?: boolean;
+    fileRevision?: number;
+    coverThumb?: string;
 }
 
 export interface EpubSyncManifest {
@@ -52,7 +56,7 @@ export function getBookSyncKey(title: string): string {
     return title.normalize("NFKC").replace(/\s+/g, "").toLowerCase();
 }
 
-export function inferFileExtFromPath(path?: string): BookFileExt {
+export function inferFileExtFromPath(path?: string): BookFileExt | "cbz" | "zip" {
     const lower = (path || "").trim().toLowerCase();
     if (lower.endsWith(".fb2.zip")) return "fb2.zip";
     if (lower.endsWith(".fb2")) return "fb2";
@@ -67,6 +71,8 @@ export function inferFileExtFromPath(path?: string): BookFileExt {
     if (lower.endsWith(".azw3")) return "azw3";
     if (lower.endsWith(".prc")) return "prc";
     if (lower.endsWith(".pdf")) return "pdf";
+    if (lower.endsWith(".cbz")) return "cbz";
+    if (lower.endsWith(".zip")) return "zip";
     return "epub";
 }
 
@@ -81,6 +87,11 @@ export function tabToSyncEntry(tab: Tab): EpubSyncBookEntry | null {
         tab.epub.lastOpenedAt || 0,
         tab.epub.readingPoint?.savedAt || 0,
     );
+    const rawThumb = tab.epub.coverThumb;
+    const coverThumb =
+        typeof rawThumb === "string" && rawThumb.startsWith("data:image/") && rawThumb.length <= 45_000
+            ? rawThumb
+            : undefined;
 
     return {
         bookKey,
@@ -110,6 +121,10 @@ export function tabToSyncEntry(tab: Tab): EpubSyncBookEntry | null {
         stats: tab.stats,
         driveFileId: tab.epub.driveFileId,
         fileExt: tab.epub.fileExt || inferFileExtFromPath(tab.epub.path),
+        format: tab.epub.format,
+        hasMokuro: tab.epub.hasMokuro,
+        fileRevision: tab.epub.fileRevision,
+        coverThumb,
     };
 }
 
@@ -177,6 +192,23 @@ export function mergeEpubBookEntries(
         return (rp.savedAt || 0) >= (lp.savedAt || 0) ? rp : lp;
     })();
 
+    const localRev = local.fileRevision || 0;
+    const remoteRev = remote.fileRevision || 0;
+    const resolvedFileRevision = Math.max(localRev, remoteRev) || undefined;
+    const resolvedDriveFileId =
+        localRev > remoteRev
+            ? local.driveFileId
+            : remoteRev > localRev
+                ? remote.driveFileId || local.driveFileId
+                : local.driveFileId || remote.driveFileId;
+    const resolvedFileExt =
+        localRev > remoteRev
+            ? local.fileExt || remote.fileExt || "epub"
+            : remoteRev > localRev
+                ? remote.fileExt || local.fileExt || "epub"
+                : local.fileExt || remote.fileExt || "epub";
+    const resolvedCoverThumb = metaSource.coverThumb || local.coverThumb || remote.coverThumb;
+
     const merged: EpubSyncBookEntry = {
         bookKey: local.bookKey,
         title: local.title || remote.title,
@@ -205,8 +237,12 @@ export function mergeEpubBookEntries(
         highlights: mergedHighlights,
         notes: mergedNotes,
         stats: mergedStats,
-        driveFileId: local.driveFileId || remote.driveFileId,
-        fileExt: local.fileExt || remote.fileExt || "epub",
+        driveFileId: resolvedDriveFileId,
+        fileExt: resolvedFileExt,
+        format: local.format || remote.format,
+        hasMokuro: Boolean(local.hasMokuro || remote.hasMokuro),
+        fileRevision: resolvedFileRevision,
+        coverThumb: resolvedCoverThumb,
     };
 
     const sameEntry = (a: EpubSyncBookEntry, b: EpubSyncBookEntry) => (
@@ -219,6 +255,11 @@ export function mergeEpubBookEntries(
         && (a.manualStatus || "") === (b.manualStatus || "")
         && Boolean(a.coverBlurred) === Boolean(b.coverBlurred)
         && (a.driveFileId || "") === (b.driveFileId || "")
+        && (a.fileExt || "") === (b.fileExt || "")
+        && (a.format || "") === (b.format || "")
+        && Boolean(a.hasMokuro) === Boolean(b.hasMokuro)
+        && (a.fileRevision || 0) === (b.fileRevision || 0)
+        && (a.coverThumb || "") === (b.coverThumb || "")
         && (a.bookmarks?.length || 0) === (b.bookmarks?.length || 0)
         && (a.highlights?.length || 0) === (b.highlights?.length || 0)
         && (a.notes?.length || 0) === (b.notes?.length || 0)
@@ -269,6 +310,11 @@ export function mergeManifestWithLocalTabs(
         if (rCh) remoteChanged = true;
         if (!lCh) return tab;
 
+        const remoteNewerFile =
+            Boolean(merged.driveFileId)
+            && (merged.fileRevision || 0) > (tab.epub?.fileRevision || 0)
+            && merged.driveFileId !== tab.epub?.driveFileId;
+
         localChanged = true;
         return {
             ...tab,
@@ -294,6 +340,11 @@ export function mergeManifestWithLocalTabs(
                 notes: merged.notes,
                 driveFileId: merged.driveFileId,
                 fileExt: merged.fileExt,
+                format: merged.format ?? tab.epub!.format,
+                hasMokuro: merged.hasMokuro ?? tab.epub!.hasMokuro,
+                fileRevision: merged.fileRevision ?? tab.epub!.fileRevision,
+                coverThumb: merged.coverThumb ?? tab.epub!.coverThumb,
+                cloudOnly: remoteNewerFile ? true : tab.epub!.cloudOnly,
                 totalChars: merged.totalChars ?? tab.epub!.totalChars,
                 chapterCount: tab.epub!.chapterCount || merged.chapterCount,
             },
@@ -343,6 +394,12 @@ export function mergeManifestWithLocalTabs(
                 notes: remoteEntry.notes || [],
                 driveFileId: remoteEntry.driveFileId,
                 fileExt: remoteEntry.fileExt || "epub",
+                format:
+                    remoteEntry.format
+                    || (remoteEntry.fileExt === "cbz" || remoteEntry.fileExt === "zip" ? "manga" : undefined),
+                hasMokuro: remoteEntry.hasMokuro,
+                fileRevision: remoteEntry.fileRevision,
+                coverThumb: remoteEntry.coverThumb,
                 cloudOnly: true,
                 lines: [],
             },
@@ -384,6 +441,10 @@ export function buildEpubSyncFingerprint(tabs: readonly Tab[]): string {
             e.readingPoint?.savedAt || 0,
             e.stats?.chars || 0,
             e.driveFileId || "",
+            e.format || "",
+            e.hasMokuro ? 1 : 0,
+            e.fileRevision || 0,
+            e.coverThumb ? e.coverThumb.length : 0,
         ].join("|"));
     }
     return parts.sort().join(";");

@@ -100,7 +100,7 @@ export const discordModePhrase = (mode: Tab["mode"] | undefined, settings: AppSe
     const isEn = (settings.appLanguage || "ru") === "en";
     const custom = settings.discordCustomTextStatus?.trim();
     if (mode === "epub") return isEn ? "Reading a book" : "Читает книгу";
-    if (mode === "player") return isEn ? "Watching anime" : "Смотрит аниме";
+    if (mode === "player") return isEn ? "Watching video" : "Смотрит видео";
     if (custom) return custom;
     return isEn ? "Reading a visual novel" : "Читает визуальную новеллу";
 };

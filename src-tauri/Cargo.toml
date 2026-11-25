@@ -1,6 +1,6 @@
 [package]
 name = "Setsuna"
-version = "0.5.1"
+version = "0.6.0"
 description = "Desktop app for reading Japanese text"
 authors = ["Seri418"]
 edition = "2021"

@@ -2,7 +2,7 @@ import { readWebText, type WebTrack } from "./webMedia";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { fileName, isJapaneseSubtitlePath, subtitleExtensions } from "./localMedia";
+import { fileName, subtitleExtensions } from "./localMedia";
 import { decodeSubtitleBytes, parseSubtitleFile, type Cue } from "./model";
 
 type Track = { index: number; tags?: { title?: string; language?: string } };
@@ -88,19 +88,6 @@ export function SubtitleTracks({
                     const autoPick = !webTracks.length && !primaryFile && !chosen.current[0];
                     const primary = autoPick ? japanese || list[0] : undefined;
                     if (primary) void load(0, String(primary.index), list);
-                    if (
-                        !translationFile &&
-                        !chosen.current[1] &&
-                        (primaryFile
-                            ? isJapaneseSubtitlePath(primaryFile)
-                            : Boolean(primary && primary === japanese))
-                    ) {
-                        const preferred = en ? /^(en|eng)$/i : /^(ru|rus)$/i;
-                        const translation =
-                            list.find((track) => preferred.test(track.tags?.language || "")) ||
-                            list.find((track) => /^(en|eng|ru|rus)$/i.test(track.tags?.language || ""));
-                        if (translation) void load(1, String(translation.index), list);
-                    }
                 })
                 .catch(() => {
                     /* External subtitle files also work without ffprobe. */
@@ -129,7 +116,7 @@ export function SubtitleTracks({
                     {label}
                     <select value="current" onChange={(e) => void load(i, e.target.value)}>
                         <option hidden value="current">
-                            {names[i] || text("Choose track…", "Выбрать дорожку…")}
+                            {names[i] || (i === 1 ? text("Off", "Выключено") : text("Choose track…", "Выбрать дорожку…"))}
                         </option>
                         <option value="file">{text("Open file…", "Из файла…")}</option>
                         {webTracks.map((track, index) => (

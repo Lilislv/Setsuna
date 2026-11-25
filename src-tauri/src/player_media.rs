@@ -138,6 +138,7 @@ pub async fn extract_player_clip(
     end: f64,
     prefer_video: bool,
     audio_track: Option<u32>,
+    video_quality: Option<String>,
 ) -> Result<PlayerClipResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let encoder = find_ffmpeg_binary(&app).unwrap_or_else(|| PathBuf::from(ffmpeg_filename()));
@@ -150,10 +151,22 @@ pub async fn extract_player_clip(
             end,
             prefer_video,
             audio_track,
+            video_quality.as_deref(),
         )
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn video_quality_profile(
+    quality: Option<&str>,
+) -> (u32, Option<u32>, &'static str, &'static str, &'static str, &'static str) {
+    match quality {
+        Some("tiny") => (480, Some(18), "40", "260k", "1", "32k"),
+        Some("compact") => (640, Some(24), "36", "450k", "1", "48k"),
+        Some("high") => (960, None, "29", "0", "2", "64k"),
+        _ => (720, None, "33", "0", "1", "48k"),
+    }
 }
 
 fn media_input(source: &str) -> Result<&'static str, String> {
@@ -174,6 +187,7 @@ fn cut_clip(
     end: f64,
     prefer_video: bool,
     audio_track: Option<u32>,
+    video_quality: Option<&str>,
 ) -> Result<PlayerClipResult, String> {
     let protocols = media_input(&source_path)?;
     if !start.is_finite() || !end.is_finite() || end <= start || start < 0.0 {
@@ -223,14 +237,19 @@ fn cut_clip(
     if let Some(track) = audio_track {
         command.args(["-map", &format!("0:a:{track}")]);
     }
-    command.args(["-sn", "-dn", "-ac", "2"]);
+    command.args(["-sn", "-dn"]);
     if prefer_video {
-        // An unlabeled filter output always supplies the video. When no audio track
-        // was selected, FFmpeg can still automatically select the default audio.
-        command.args([
-            "-filter_complex",
-            "[0:V:0]scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p",
-        ]);
+        let (scale, fps_cap, crf, bitrate, audio_channels, audio_bitrate) =
+            video_quality_profile(video_quality);
+        let filter = match fps_cap {
+            Some(fps) => format!(
+                "[0:V:0]scale=w='min({scale},iw)':h='min({scale},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps={fps},format=yuv420p"
+            ),
+            None => format!(
+                "[0:V:0]scale=w='min({scale},iw)':h='min({scale},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p"
+            ),
+        };
+        command.args(["-filter_complex", &filter]);
         // Qt WebEngine in Anki can decode WebM even on systems without licensed MP4 codecs.
         command.args([
             "-c:v",
@@ -242,17 +261,22 @@ fn cut_clip(
             "-row-mt",
             "1",
             "-crf",
-            "33",
+            crf,
             "-b:v",
-            "0",
+            bitrate,
+            "-ac",
+            audio_channels,
             "-c:a",
             "libopus",
             "-b:a",
-            "96k",
+            audio_bitrate,
+            "-vbr",
+            "on",
         ]);
     } else {
         command
             .arg("-vn")
+            .args(["-ac", "2"])
             .arg("-codec:a")
             .arg("libmp3lame")
             .arg("-q:a")
@@ -756,6 +780,7 @@ mod tests {
             8.25,
             true,
             None,
+            None,
         )
         .unwrap();
         let meta = probe(Path::new(&clip.path));
@@ -794,6 +819,7 @@ mod tests {
             2.0,
             true,
             Some(0),
+            Some("compact"),
         )
         .unwrap();
         assert_eq!(
@@ -808,6 +834,7 @@ mod tests {
             2.0,
             true,
             Some(2),
+            None,
         )
         .is_err());
         assert!(cut_clip(
@@ -817,6 +844,7 @@ mod tests {
             20.0,
             21.0,
             true,
+            None,
             None,
         )
         .is_err());

@@ -10,6 +10,7 @@ mod tab_lines;
 mod epub_audio;
 mod epub_import;
 mod manga_import;
+mod manga_catalog;
 mod manga_ocr_server;
 mod lookup_normalization;
 mod japanese_deinflector;
@@ -1279,6 +1280,10 @@ pub fn run() {
             manga_import::manga_mokuro_status,
             manga_import::manga_run_mokuro,
             manga_import::manga_export_mobile_cbz,
+            manga_import::manga_convert_to_cbz,
+            manga_catalog::manga_search_catalog,
+            manga_catalog::manga_fetch_series_volumes,
+            manga_catalog::manga_fetch_cover_data_uri,
             manga_ocr_server::manga_ocr_server_status,
             manga_ocr_server::manga_ocr_server_start,
             manga_ocr_server::manga_ocr_server_stop,

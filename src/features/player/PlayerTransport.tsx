@@ -354,7 +354,7 @@ export function PlayerTransport({
                         onClick={onToggleTranscript}
                         title={en ? "Subtitle panel (T)" : "Панель субтитров (T)"}
                     >
-                        <IconTextTab /> <span>{en ? "Transcript" : "Реплики"}</span>
+                        <IconTextTab />
                     </button>
                     <button
                         type="button"

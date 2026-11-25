@@ -29,6 +29,8 @@ export interface EpubBookmark {
     excerpt: string;
     createdAt: number;
 }
+export type EpubManualStatus = 'unread' | 'reading' | 'planned' | 'on-hold' | 'completed' | 'dropped';
+
 export interface EpubBookData {
     title: string;
     author?: string;
@@ -36,7 +38,7 @@ export interface EpubBookData {
     seriesPosition?: number | null;
     tags?: string[];
     shelves?: string[];
-    manualStatus?: 'unread' | 'reading' | 'completed';
+    manualStatus?: EpubManualStatus;
     coverBlurred?: boolean;
     totalChars?: number;
     addedAt?: number;
@@ -57,6 +59,8 @@ export interface EpubBookData {
     format?: 'book' | 'manga';
     fileExt?: BookFileExt | 'cbz' | 'zip' | 'mokuro' | 'manga-dir';
     hasMokuro?: boolean;
+    fileRevision?: number;
+    coverThumb?: string;
     cloudOnly?: boolean;
     syncUpdatedAt?: number;
     lastOpenedAt?: number;
@@ -217,14 +221,32 @@ export const DEFAULT_SETTINGS: AppSettings = {
     epubEinkMode: false,
     epubImageMaxWidth: 720,
     playerRewindSeconds: 2,
+    playerArrowSeekMode: 'seconds',
     playerSubtitleStep: 0.1,
     playerMiningReplayOnMine: true,
     playerCardFormat: "video",
+    playerVideoQuality: 'balanced',
     playerMiningUseClipForAnki: true,
+    playerPauseOnHover: false,
+    playerSubsVisibility: 'always',
+    playerBlurTranslation: false,
+    playerAutoPauseResumeMode: 'manual',
+    playerAutoPauseFixedSec: 2.5,
+    playerAutoPauseCharMs: 160,
+    playerSkipMinGap: 1.5,
+    playerSubtitleRegexFilter: '',
+    playerClipPadStart: 0.5,
+    playerClipPadEnd: 0.5,
+    playerSubFontSize: 26,
+    playerSubBottomOffset: 22,
+    playerSubBgOpacity: 76,
     playerKeyPlayPause: 'Space',
     playerKeyBack: 'ArrowLeft',
     playerKeyForward: 'ArrowRight',
     playerKeyMine: 'm',
+    playerKeyUpdateLast: 'u',
+    playerKeyReplayCue: 'r',
+    playerKeyCopySub: 'c',
     playerKeyOffsetMinus: '[',
     playerKeyOffsetPlus: ']',
     discordEnabled: false,

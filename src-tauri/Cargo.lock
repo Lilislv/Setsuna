@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Setsuna"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "atspi",
  "base64 0.22.1",

@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -142,9 +143,88 @@ struct ParsedMokuro {
     pages: Vec<ParsedMokuroPage>,
 }
 
+#[derive(Clone)]
 enum MangaSource {
     Folder(PathBuf),
     Archive(PathBuf),
+}
+
+#[derive(Clone)]
+enum CachedMangaEntries {
+    Folder(Vec<PathBuf>),
+    Archive(PathBuf, Vec<String>),
+}
+
+impl CachedMangaEntries {
+    fn len(&self) -> usize {
+        match self {
+            CachedMangaEntries::Folder(v) => v.len(),
+            CachedMangaEntries::Archive(_, v) => v.len(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CachedMangaVolume {
+    key: String,
+    entries: CachedMangaEntries,
+    mokuro: Option<Arc<ParsedMokuro>>,
+}
+
+static MANGA_PAGE_CACHE: OnceLock<Mutex<Option<CachedMangaVolume>>> = OnceLock::new();
+
+fn manga_page_cache() -> &'static Mutex<Option<CachedMangaVolume>> {
+    MANGA_PAGE_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn invalidate_manga_page_cache() {
+    if let Ok(mut guard) = manga_page_cache().lock() {
+        *guard = None;
+    }
+}
+
+fn read_cached_page_bytes(
+    entries: &CachedMangaEntries,
+    page_index: usize,
+) -> Result<(String, String, Vec<u8>), String> {
+    match entries {
+        CachedMangaEntries::Folder(images) => {
+            let img_path = images
+                .get(page_index)
+                .ok_or_else(|| format!("Page {page_index} out of range"))?;
+            let meta = fs::metadata(img_path).map_err(|e| e.to_string())?;
+            if meta.len() > MAX_MANGA_IMAGE_BYTES {
+                return Err("Manga page image exceeds 24 MB limit.".to_string());
+            }
+            let bytes = fs::read(img_path).map_err(|e| format!("Failed to read page: {e}"))?;
+            let name = img_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("page.jpg")
+                .to_string();
+            let ext = path_ext_lower(img_path);
+            Ok((name, ext, bytes))
+        }
+        CachedMangaEntries::Archive(archive_path, names) => {
+            let entry_name = names
+                .get(page_index)
+                .ok_or_else(|| format!("Page {page_index} out of range"))?;
+            let file = File::open(archive_path).map_err(|e| e.to_string())?;
+            let mut zip = ZipArchive::new(file).map_err(|e| e.to_string())?;
+            let mut entry = zip.by_name(entry_name).map_err(|e| e.to_string())?;
+            if entry.size() > MAX_MANGA_IMAGE_BYTES {
+                return Err("Manga page image exceeds 24 MB limit.".to_string());
+            }
+            let mut bytes = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            let ext = Path::new(entry_name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("jpg")
+                .to_ascii_lowercase();
+            Ok((entry_name.clone(), ext, bytes))
+        }
+    }
 }
 
 fn is_image_ext(ext: &str) -> bool {
@@ -646,6 +726,157 @@ fn count_blocks_chars(blocks: &[MokuroBlockOut]) -> usize {
         .count()
 }
 
+fn is_junk_manga_name(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return true;
+    }
+    if lower.starts_with("setsuna-mokuro-")
+        || matches!(
+            lower.as_str(),
+            "books"
+                | "manga"
+                | "manga-extracted"
+                | "manga-mokuro"
+                | "volume"
+                | "temp"
+                | "tmp"
+                | "dlraw"
+                | "rawkuma"
+                | "klmanga"
+                | "nyaa"
+        )
+    {
+        return true;
+    }
+    if let Some(rest) = lower.strip_prefix("book_").or_else(|| lower.strip_prefix("book ")) {
+        if rest.len() >= 4 && rest.bytes().all(|b| b.is_ascii_digit()) {
+            return true;
+        }
+    }
+    lower.len() >= 16 && lower.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn strip_leading_domain_tag(mut s: &str) -> &str {
+    for sep in ['_', ' ', '-'] {
+        if let Some(pos) = s.find(sep) {
+            let prefix = &s[..pos];
+            let lower = prefix.to_ascii_lowercase();
+            let has_tld = [".net", ".org", ".com", ".to", ".moe", ".cc", ".io", ".ru", ".jp", ".me", ".xyz"]
+                .iter()
+                .any(|tld| lower.ends_with(tld));
+            if has_tld && !s[pos + sep.len_utf8()..].trim().is_empty() {
+                s = s[pos + sep.len_utf8()..].trim_start_matches(['_', ' ', '-', '.']);
+                return s;
+            }
+        }
+    }
+    s
+}
+
+fn strip_enclosing_tag<'a>(s: &'a str, open: char, close: char, at_start: bool) -> Option<&'a str> {
+    if at_start {
+        if !s.starts_with(open) {
+            return None;
+        }
+        let end = s.find(close)?;
+        let inner = &s[open.len_utf8()..end];
+        let rest = s[end + close.len_utf8()..].trim_start_matches(['_', ' ', '-']);
+        if rest.trim().is_empty() || inner.is_empty() {
+            return None;
+        }
+        Some(rest)
+    } else {
+        if !s.ends_with(close) {
+            return None;
+        }
+        let start = s.rfind(open)?;
+        let rest = s[..start].trim_end_matches(['_', ' ', '-']);
+        if rest.trim().is_empty() {
+            return None;
+        }
+        Some(rest)
+    }
+}
+
+fn clean_manga_label(raw: &str) -> String {
+    let mut s = raw.trim().replace('_', " ");
+    for _ in 0..4 {
+        let stripped = strip_leading_domain_tag(s.trim()).to_string();
+        if stripped != s {
+            s = stripped;
+            continue;
+        }
+        let trimmed = s.trim();
+        let next = strip_enclosing_tag(trimmed, '[', ']', true)
+            .or_else(|| strip_enclosing_tag(trimmed, '【', '】', true))
+            .or_else(|| strip_enclosing_tag(trimmed, '(', ')', false))
+            .or_else(|| strip_enclosing_tag(trimmed, '[', ']', false));
+        if let Some(after) = next {
+            s = after.to_string();
+        } else {
+            break;
+        }
+    }
+
+    // Strip trailing ` - 8-hex` hash added by `manga_extract_archive`
+    let trimmed = s.trim();
+    if let Some(pos) = trimmed.rfind('-') {
+        let suffix = &trimmed[pos + 1..];
+        if suffix.len() == 8 && suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let head = trimmed[..pos].trim();
+            if !head.is_empty() {
+                s = head.to_string();
+            }
+        }
+    }
+
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_pack_volume_range(value: &str) -> String {
+    let tokens: Vec<&str> = value.split_whitespace().collect();
+    if tokens.len() <= 1 {
+        return value.trim().to_string();
+    }
+    let mut end = tokens.len();
+    while end > 1 {
+        let last = tokens[end - 1];
+        let lower = last.to_ascii_lowercase();
+        let is_range = (lower.contains('-') || lower.contains('~') || lower.contains('～'))
+            && lower.chars().any(|c| c.is_ascii_digit())
+            && lower
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, 'v' | 'o' | 'l' | 'p' | '.' | '-' | '~' | '～' | '第' | '巻'));
+        if is_range {
+            end -= 1;
+            if end > 1 && matches!(tokens[end - 1].to_ascii_lowercase().trim_end_matches('.'), "vol" | "v" | "part" | "том") {
+                end -= 1;
+            }
+            continue;
+        }
+        break;
+    }
+    tokens[..end].join(" ")
+}
+
+fn is_bare_volume_token(value: &str) -> bool {
+    let cleaned = value.trim().to_ascii_lowercase();
+    if cleaned.is_empty() {
+        return false;
+    }
+    let stripped = cleaned
+        .replace("volume", "")
+        .replace("vol.", "")
+        .replace("vol", "")
+        .replace("part", "")
+        .replace("chap", "")
+        .replace("chapter", "")
+        .replace("том", "")
+        .replace(['v', 'c', 'h', '#', '.', '_', '-', ' ', '第', '巻', '話'], "");
+    !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit())
+}
+
 fn infer_title_and_series(
     source: &MangaSource,
     mokuro: Option<&ParsedMokuro>,
@@ -653,40 +884,58 @@ fn infer_title_and_series(
     let raw_path = match source {
         MangaSource::Folder(p) | MangaSource::Archive(p) => p,
     };
-    let file_name = raw_path
-        .file_stem()
-        .or_else(|| raw_path.file_name())
-        .and_then(|s| s.to_str())
-        .unwrap_or("Manga")
-        .trim()
-        .to_string();
+    let raw_file_name = match source {
+        MangaSource::Folder(p) => p.file_name(),
+        MangaSource::Archive(p) => p.file_stem().or_else(|| p.file_name()),
+    }
+    .and_then(|s| s.to_str())
+    .unwrap_or("Manga")
+    .trim();
+    let clean_file_name = (!is_junk_manga_name(raw_file_name))
+        .then(|| clean_manga_label(raw_file_name))
+        .filter(|s| !s.is_empty() && !is_junk_manga_name(s));
 
-    let mokuro_title = mokuro.and_then(|m| m.title.clone());
-    let mokuro_vol = mokuro.and_then(|m| m.volume.clone());
+    let mokuro_title = mokuro
+        .and_then(|m| m.title.as_deref())
+        .filter(|s| !is_junk_manga_name(s))
+        .map(clean_manga_label)
+        .filter(|s| !s.is_empty() && !is_junk_manga_name(s));
 
-    let display_title = match (&mokuro_title, &mokuro_vol) {
-        (Some(t), Some(v)) if !t.eq_ignore_ascii_case(v) && !v.contains(t.as_str()) => {
-            format!("{t} — {v}")
-        }
-        (_, Some(v)) => v.clone(),
-        (Some(t), None) => t.clone(),
-        (None, None) => file_name.clone(),
+    let mokuro_vol = mokuro
+        .and_then(|m| m.volume.as_deref())
+        .filter(|s| !is_junk_manga_name(s))
+        .map(clean_manga_label)
+        .filter(|s| !s.is_empty() && !is_junk_manga_name(s));
+
+    let parent_series = raw_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map(|s| s.trim())
+        .filter(|s| !is_junk_manga_name(s))
+        .map(clean_manga_label)
+        .map(|s| strip_pack_volume_range(&s))
+        .filter(|s| !s.is_empty() && !is_junk_manga_name(s));
+
+    let clean_series = mokuro_title
+        .as_deref()
+        .map(strip_pack_volume_range)
+        .filter(|s| !s.is_empty() && !is_junk_manga_name(s))
+        .or(parent_series);
+
+    let vol_candidate = mokuro_vol.clone().or_else(|| clean_file_name.clone());
+    let display_title = match (&vol_candidate, &clean_series) {
+        (Some(v), Some(s)) if is_bare_volume_token(v) => format!("{s} {v}"),
+        (Some(v), _) => v.clone(),
+        (None, Some(s)) => s.clone(),
+        (None, None) => "Manga".to_string(),
     };
 
-    let series = mokuro_title.or_else(|| {
-        raw_path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("books"))
-    });
-
     // Simple trailing volume number extraction (e.g. "Vol. 03", "v2", "第12巻", " 01")
-    let vol_src = mokuro_vol.as_deref().unwrap_or(&file_name);
+    let vol_src = vol_candidate.as_deref().unwrap_or(raw_file_name);
     let series_pos = extract_volume_number(vol_src);
 
-    (display_title, mokuro_vol, series, series_pos)
+    (display_title, mokuro_vol, clean_series, series_pos)
 }
 
 fn extract_volume_number(text: &str) -> Option<f64> {
@@ -774,6 +1023,7 @@ fn probe_bytes_dimensions(bytes: &[u8]) -> (u32, u32) {
 
 #[tauri::command]
 pub fn manga_open(app: AppHandle, path: String) -> Result<MangaMeta, String> {
+    invalidate_manga_page_cache();
     let raw = PathBuf::from(path.trim());
     let (source, explicit_mokuro) = resolve_manga_source(&raw)?;
     let mokuro = find_mokuro_for_source(&app, &source, explicit_mokuro.as_deref());
@@ -823,9 +1073,15 @@ pub fn manga_open(app: AppHandle, path: String) -> Result<MangaMeta, String> {
     let (title, volume, series, series_position) =
         infer_title_and_series(&source, mokuro.as_ref());
 
-    let cover = read_page_image_bytes(&source, 0)
-        .ok()
-        .map(|(_, ext, bytes)| encode_data_uri(&bytes, &ext));
+    let cover = match &source {
+        MangaSource::Archive(p) => read_embedded_custom_cover(p),
+        MangaSource::Folder(_) => None,
+    }
+    .or_else(|| {
+        read_page_image_bytes(&source, 0)
+            .ok()
+            .map(|(_, ext, bytes)| encode_data_uri(&bytes, &ext))
+    });
 
     let source_kind = match source {
         MangaSource::Folder(_) => "folder".to_string(),
@@ -851,6 +1107,11 @@ pub fn manga_open(app: AppHandle, path: String) -> Result<MangaMeta, String> {
 pub fn manga_cover(_app: AppHandle, path: String) -> Result<Option<String>, String> {
     let raw = PathBuf::from(path.trim());
     let (source, _) = resolve_manga_source(&raw)?;
+    if let MangaSource::Archive(ref p) = source {
+        if let Some(cov) = read_embedded_custom_cover(p) {
+            return Ok(Some(cov));
+        }
+    }
     match read_page_image_bytes(&source, 0) {
         Ok((_, ext, bytes)) => Ok(Some(encode_data_uri(&bytes, &ext))),
         Err(_) => Ok(None),
@@ -858,43 +1119,69 @@ pub fn manga_cover(_app: AppHandle, path: String) -> Result<Option<String>, Stri
 }
 
 #[tauri::command]
-pub fn manga_page(app: AppHandle, path: String, page_index: usize) -> Result<MangaPagePayload, String> {
-    let raw = PathBuf::from(path.trim());
-    let (source, explicit_mokuro) = resolve_manga_source(&raw)?;
-    let mokuro = find_mokuro_for_source(&app, &source, explicit_mokuro.as_deref());
+pub async fn manga_page(app: AppHandle, path: String, page_index: usize) -> Result<MangaPagePayload, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = path.trim().to_string();
+        let cached_opt = manga_page_cache()
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().filter(|c| c.key == key).cloned());
 
-    let total_images = match &source {
-        MangaSource::Folder(dir) => list_folder_images(dir)?.len(),
-        MangaSource::Archive(archive) => list_archive_entries(archive)?.0.len(),
-    };
+        let volume = if let Some(cached) = cached_opt {
+            cached
+        } else {
+            let raw = PathBuf::from(&key);
+            let (source, explicit_mokuro) = resolve_manga_source(&raw)?;
+            let mokuro = find_mokuro_for_source(&app, &source, explicit_mokuro.as_deref()).map(Arc::new);
+            let entries = match &source {
+                MangaSource::Folder(dir) => CachedMangaEntries::Folder(list_folder_images(dir)?),
+                MangaSource::Archive(archive) => {
+                    CachedMangaEntries::Archive(archive.clone(), list_archive_entries(archive)?.0)
+                }
+            };
+            let built = CachedMangaVolume {
+                key: key.clone(),
+                entries,
+                mokuro,
+            };
+            if let Ok(mut guard) = manga_page_cache().lock() {
+                *guard = Some(built.clone());
+            }
+            built
+        };
 
-    let (name, ext, bytes) = read_page_image_bytes(&source, page_index)?;
-    let matched = mokuro
-        .as_ref()
-        .and_then(|m| match_mokuro_page(m, &name, page_index, total_images));
+        let total_images = volume.entries.len();
+        let (name, ext, bytes) = read_cached_page_bytes(&volume.entries, page_index)?;
+        let matched = volume
+            .mokuro
+            .as_deref()
+            .and_then(|m| match_mokuro_page(m, &name, page_index, total_images));
 
-    let (mut width, mut height, blocks) = if let Some(mp) = matched {
-        (mp.width, mp.height, mp.blocks.clone())
-    } else {
-        (0, 0, Vec::new())
-    };
+        let (mut width, mut height, blocks) = if let Some(mp) = matched {
+            (mp.width, mp.height, mp.blocks.clone())
+        } else {
+            (0, 0, Vec::new())
+        };
 
-    if width == 0 || height == 0 {
-        let (w, h) = probe_bytes_dimensions(&bytes);
-        width = w;
-        height = h;
-    }
+        if width == 0 || height == 0 {
+            let (w, h) = probe_bytes_dimensions(&bytes);
+            width = w;
+            height = h;
+        }
 
-    let image_src = encode_data_uri(&bytes, &ext);
+        let image_src = encode_data_uri(&bytes, &ext);
 
-    Ok(MangaPagePayload {
-        index: page_index,
-        name,
-        image_src,
-        width,
-        height,
-        blocks,
+        Ok(MangaPagePayload {
+            index: page_index,
+            name,
+            image_src,
+            width,
+            height,
+            blocks,
+        })
     })
+    .await
+    .map_err(|e| format!("Manga page worker failed: {e}"))?
 }
 
 /// Store a `.cbz` / `.zip` manga archive (and any sibling `.mokuro`) into app data so Android
@@ -976,6 +1263,7 @@ pub fn manga_attach_mokuro(
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::copy(&mpath, &sidecar).map_err(|e| format!("Failed to save .mokuro overlay: {e}"))?;
+    invalidate_manga_page_cache();
     manga_open(app, target_key.to_string_lossy().to_string())
 }
 
@@ -1110,19 +1398,13 @@ pub fn manga_scan_folder(app: AppHandle, dir: String) -> Result<Vec<MangaFolderE
         if direct_images >= 2 {
             let src = MangaSource::Folder(current.to_path_buf());
             let has_mokuro = find_mokuro_for_source(app, &src, None).is_some();
-            let subfolder_series = if current == root {
-                current
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .map(|s| s.to_string())
-            } else {
-                current
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .map(|s| s.to_string())
-            };
+            let subfolder_series = current
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .filter(|s| !is_junk_manga_name(s))
+                .map(|s| strip_pack_volume_range(&clean_manga_label(s)))
+                .filter(|s| !s.is_empty() && !is_junk_manga_name(s));
             results.push(MangaFolderEntry {
                 path: current.to_string_lossy().to_string(),
                 subfolder_series,
@@ -1149,7 +1431,9 @@ pub fn manga_scan_folder(app: AppHandle, dir: String) -> Result<Vec<MangaFolderE
                         .parent()
                         .and_then(|p| p.file_name())
                         .and_then(|n| n.to_str())
-                        .map(|s| s.to_string());
+                        .filter(|s| !is_junk_manga_name(s))
+                        .map(|s| strip_pack_volume_range(&clean_manga_label(s)))
+                        .filter(|s| !s.is_empty() && !is_junk_manga_name(s));
                     results.push(MangaFolderEntry {
                         path: arc.to_string_lossy().to_string(),
                         subfolder_series,
@@ -1528,12 +1812,23 @@ pub async fn manga_run_mokuro(app: AppHandle, path: String) -> Result<MangaMeta,
                         manga_hash(archive_path)
                     ));
                     let _ = fs::remove_dir_all(&tmp_root);
-                    let vol_dir = tmp_root.join(
-                        archive_path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("volume"),
-                    );
+                    let raw_vol = archive_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("volume");
+                    let clean_vol = (!is_junk_manga_name(raw_vol))
+                        .then(|| clean_manga_label(raw_vol))
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "volume".to_string());
+                    let parent_label = archive_path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .filter(|s| !is_junk_manga_name(s))
+                        .map(|s| strip_pack_volume_range(&clean_manga_label(s)))
+                        .filter(|s| !s.is_empty() && !is_junk_manga_name(s))
+                        .unwrap_or_else(|| strip_pack_volume_range(&clean_vol));
+                    let vol_dir = tmp_root.join(parent_label).join(&clean_vol);
                     fs::create_dir_all(&vol_dir).map_err(|e| e.to_string())?;
                     let file = File::open(archive_path).map_err(|e| e.to_string())?;
                     let mut zip = ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -1642,6 +1937,7 @@ pub async fn manga_run_mokuro(app: AppHandle, path: String) -> Result<MangaMeta,
                 let _ = fs::remove_dir_all(tmp);
             }
 
+            invalidate_manga_page_cache();
             let meta = manga_open(app_clone.clone(), original_path_str.clone())?;
             let _ = app_clone.emit(
                 "manga_mokuro_progress",
@@ -1720,42 +2016,99 @@ fn serialize_mokuro_with_overrides(
         }));
     }
 
+    let safe_title = mokuro
+        .title
+        .as_deref()
+        .filter(|s| !is_junk_manga_name(s))
+        .unwrap_or(source_title);
+    let safe_volume = mokuro
+        .volume
+        .as_deref()
+        .filter(|s| !is_junk_manga_name(s))
+        .or(volume)
+        .unwrap_or(source_title);
     let root = serde_json::json!({
         "version": "0.2.0",
-        "title": mokuro.title.as_deref().unwrap_or(source_title),
-        "volume": mokuro.volume.as_deref().or(volume).unwrap_or(source_title),
+        "title": safe_title,
+        "volume": safe_volume,
         "pages": pages_json,
     });
     serde_json::to_vec(&root).map_err(|e| format!("Failed to serialize .mokuro JSON: {e}"))
 }
 
-/// Package a desktop manga volume (image folder or archive + `.mokuro` overlay with edits)
-/// into a single portable `.cbz` archive ready to open on Android Setsuna with zero OCR load.
-#[tauri::command]
-pub async fn manga_export_mobile_cbz(
-    app: AppHandle,
-    path: String,
-    output_path: String,
-) -> Result<MangaExportResult, String> {
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let raw = PathBuf::from(path.trim());
-        let (source, explicit_mokuro) = resolve_manga_source(&raw)?;
-        let mokuro = find_mokuro_for_source(&app_clone, &source, explicit_mokuro.as_deref());
-        let key_path = match &source {
-            MangaSource::Folder(p) | MangaSource::Archive(p) => p.clone(),
-        };
-        let overrides = load_overrides_map(&app_clone, &key_path).unwrap_or_default();
-        let (title, volume, _, _) = infer_title_and_series(&source, mokuro.as_ref());
+const MAX_CUSTOM_COVER_BYTES: usize = 8 * 1024 * 1024;
 
-        let out_path = PathBuf::from(output_path.trim());
-        if let Some(parent) = out_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).map_err(|e| format!("Failed to create output folder: {e}"))?;
+fn decode_cover_data_uri(data_uri: &str) -> Option<(String, Vec<u8>)> {
+    let trimmed = data_uri.trim();
+    let lower_prefix_end = trimmed.find(";base64,")?;
+    let header = trimmed[..lower_prefix_end].to_ascii_lowercase();
+    let ext = match header.as_str() {
+        "data:image/jpeg" | "data:image/jpg" => "jpg",
+        "data:image/png" => "png",
+        "data:image/webp" => "webp",
+        _ => return None,
+    };
+    let b64 = trimmed[lower_prefix_end + ";base64,".len()..].trim();
+    let bytes = general_purpose::STANDARD.decode(b64).ok()?;
+    if bytes.is_empty() || bytes.len() > MAX_CUSTOM_COVER_BYTES {
+        return None;
+    }
+    Some((ext.to_string(), bytes))
+}
+
+fn read_embedded_custom_cover_bytes(archive_path: &Path) -> Option<(String, Vec<u8>)> {
+    let file = File::open(archive_path).ok()?;
+    let mut zip = ZipArchive::new(file).ok()?;
+    for ext in ["jpg", "png", "webp"] {
+        let entry_name = format!(".setsuna-cover.{ext}");
+        if let Ok(mut entry) = zip.by_name(&entry_name) {
+            if entry.size() > 0 && entry.size() <= MAX_CUSTOM_COVER_BYTES as u64 {
+                let mut buf = Vec::with_capacity(entry.size() as usize);
+                if entry.read_to_end(&mut buf).is_ok() && !buf.is_empty() {
+                    return Some((ext.to_string(), buf));
+                }
             }
         }
+    }
+    None
+}
 
-        let out_file = File::create(&out_path)
+fn read_embedded_custom_cover(archive_path: &Path) -> Option<String> {
+    let (ext, bytes) = read_embedded_custom_cover_bytes(archive_path)?;
+    Some(encode_data_uri(&bytes, &ext))
+}
+
+fn pack_manga_to_cbz(
+    app: &AppHandle,
+    path: &str,
+    out_path: &Path,
+    cover_data_uri: Option<&str>,
+) -> Result<MangaExportResult, String> {
+    let raw = PathBuf::from(path.trim());
+    let (source, explicit_mokuro) = resolve_manga_source(&raw)?;
+    let mokuro = find_mokuro_for_source(app, &source, explicit_mokuro.as_deref());
+    let key_path = match &source {
+        MangaSource::Folder(p) | MangaSource::Archive(p) => p.clone(),
+    };
+    let overrides = load_overrides_map(app, &key_path).unwrap_or_default();
+    let (title, volume, _, _) = infer_title_and_series(&source, mokuro.as_ref());
+
+    let embedded_cover = cover_data_uri
+        .and_then(decode_cover_data_uri)
+        .or_else(|| match &source {
+            MangaSource::Archive(p) => read_embedded_custom_cover_bytes(p),
+            MangaSource::Folder(_) => None,
+        });
+
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create output folder: {e}"))?;
+        }
+    }
+
+    let tmp_path = out_path.with_extension("cbz.tmp");
+    let build_res = (|| -> Result<(usize, bool), String> {
+        let out_file = File::create(&tmp_path)
             .map_err(|e| format!("Failed to create CBZ file: {e}"))?;
         let mut zip_writer = ZipWriter::new(out_file);
         let stored_opts = FileOptions::default().compression_method(CompressionMethod::Stored);
@@ -1850,19 +2203,86 @@ pub async fn manga_export_mobile_cbz(
                 .map_err(|e| format!("Failed to write .mokuro bytes: {e}"))?;
         }
 
+        if let Some((cov_ext, cov_bytes)) = embedded_cover {
+            let cov_name = format!(".setsuna-cover.{cov_ext}");
+            zip_writer
+                .start_file(&cov_name, stored_opts)
+                .map_err(|e| format!("Failed to write cover into CBZ: {e}"))?;
+            zip_writer
+                .write_all(&cov_bytes)
+                .map_err(|e| format!("Failed to write cover bytes: {e}"))?;
+        }
+
         let mut finished = zip_writer
             .finish()
             .map_err(|e| format!("Failed to finalize CBZ archive: {e}"))?;
         let _ = finished.flush();
-        let bytes = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+        Ok((written_page_names.len(), has_mokuro))
+    })();
 
-        Ok(MangaExportResult {
-            output_path: out_path.to_string_lossy().to_string(),
-            page_count: written_page_names.len(),
-            has_mokuro,
-            bytes,
-        })
+    let (page_count, has_mokuro) = match build_res {
+        Ok(res) => res,
+        Err(err) => {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+    };
+
+    if out_path.exists() {
+        let _ = fs::remove_file(out_path);
+    }
+    fs::rename(&tmp_path, out_path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("Failed to finalize CBZ archive: {e}")
+    })?;
+
+    let bytes = fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
+    Ok(MangaExportResult {
+        output_path: out_path.to_string_lossy().to_string(),
+        page_count,
+        has_mokuro,
+        bytes,
+    })
+}
+
+/// Package a desktop manga volume (image folder or archive + `.mokuro` overlay with edits)
+/// into a single portable `.cbz` archive ready to open on Android Setsuna with zero OCR load.
+#[tauri::command]
+pub async fn manga_export_mobile_cbz(
+    app: AppHandle,
+    path: String,
+    output_path: String,
+) -> Result<MangaExportResult, String> {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let out_path = PathBuf::from(output_path.trim());
+        pack_manga_to_cbz(&app_clone, &path, &out_path, None)
     })
     .await
     .map_err(|e| format!("CBZ export worker failed: {e}"))?
+}
+
+/// Convert a manga volume in place into `app_data_dir/books/book_<tab_id>.cbz` with embedded
+/// `.mokuro` OCR (plus edits) and custom cover so PC switches to CBZ and Drive sync pushes it to Android.
+#[tauri::command]
+pub async fn manga_convert_to_cbz(
+    app: AppHandle,
+    path: String,
+    tab_id: u64,
+    cover_data_uri: Option<String>,
+) -> Result<MangaExportResult, String> {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let books_dir = app_clone
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("books");
+        let target = books_dir.join(format!("book_{tab_id}.cbz"));
+        let res = pack_manga_to_cbz(&app_clone, &path, &target, cover_data_uri.as_deref())?;
+        invalidate_manga_page_cache();
+        Ok(res)
+    })
+    .await
+    .map_err(|e| format!("CBZ convert worker failed: {e}"))?
 }

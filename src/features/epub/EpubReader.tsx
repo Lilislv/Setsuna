@@ -19,6 +19,7 @@ import { IconBookTab, IconClose, IconImport, IconSearch } from "../../components
 import FontPicker from "../../components/FontPicker";
 import { getDay, sumDayForTabs, useDailyStatsVersion } from "../../utils/dailyStats";
 import { setMobileVolumePagingEnabled } from "../../utils/mobileFiles";
+import { MOBILE_BACK_PRIORITY, useMobileBackHandler } from "../../utils/mobileBack";
 import { searchEpubBook } from "./epubApi";
 import EpubAudioBar, { type AudiobookActiveMedia } from "./EpubAudioBar";
 import EpubGalleryModal from "./EpubGalleryModal";
@@ -657,6 +658,54 @@ export default function EpubReader({
         setSelectionPill(null);
         setSettingReadingPoint(false);
     }, [closeOverlaySignal]);
+
+    useMobileBackHandler(
+        isMobile
+            && (Boolean(quoteModalText)
+                || Boolean(selectionPill)
+                || settingReadingPoint
+                || galleryOpen
+                || audioBarOpen
+                || appearanceOpen
+                || searchOpen
+                || tocOpen),
+        MOBILE_BACK_PRIORITY.READER_OVERLAY,
+        () => {
+            if (quoteModalText) {
+                setQuoteModalText(null);
+                return;
+            }
+            if (selectionPill) {
+                setSelectionPill(null);
+                return;
+            }
+            if (settingReadingPoint) {
+                setSettingReadingPoint(false);
+                return;
+            }
+            if (galleryOpen) {
+                setGalleryOpen(false);
+                return;
+            }
+            if (audioBarOpen) {
+                setAudioBarOpen(false);
+                return;
+            }
+            if (appearanceOpen) {
+                setAppearanceOpen(false);
+                return;
+            }
+            if (searchOpen) {
+                setSearchOpen(false);
+                return;
+            }
+            if (tocOpen) {
+                setTocOpen(false);
+                return;
+            }
+            return false;
+        },
+    );
 
     const handleStageMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
         if (isMobile) return;

@@ -189,6 +189,12 @@
     font-weight: 600;
 }
 
+.home-mode-status-beta {
+    background: color-mix(in srgb, var(--mode-accent) 16%, transparent);
+    color: var(--mode-accent);
+    font-weight: 600;
+}
+
 .home-mode-icon {
     width: 58px;
     height: 58px;

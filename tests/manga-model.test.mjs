@@ -3,14 +3,25 @@ import assert from "node:assert/strict";
 import {
     applyBlockTextOverrides,
     buildSpreadPairs,
+    cleanMangaSeries,
+    cleanMangaTitle,
     computeBubbleCropRect,
+    computeBubbleLineHeight,
     computeFittedBubbleFontPx,
     countMangaBlocksChars,
+    DEFAULT_MANGA_PREFS,
+    detectBubbleParagraphGaps,
+    extractVolumeNumberFromBook,
+    extractVolumeNumberFromText,
     findSpreadIndexForPage,
+    formatVolumeTitleWithSeries,
+    inferBookCatalogQuery,
     isMangaFileExtension,
     isMangaTabData,
     joinMokuroLines,
+    needsMangaTitleCleanup,
     normalizeOcrServerUrl,
+    prepareBubbleDisplayLines,
     resolveMobileOcrChain,
 } from "../src/features/manga/mangaModel.ts";
 
@@ -108,4 +119,146 @@ test("resolveMobileOcrChain routes across PC Wi-Fi, offline ONNX, and ML Kit", (
         resolveMobileOcrChain({ mobileEngine: "mlkit", remoteUrl: "192.168.0.15:47123" }, true),
         ["mlkit"],
     );
+});
+
+test("cleanMangaTitle and cleanMangaSeries strip site prefixes, pack ranges, and mokuro hashes", () => {
+    assert.equal(needsMangaTitleCleanup("DLraw.net_Houseki no Kuni vol 01-09 — Houseki no Kuni 01"), true);
+    assert.equal(needsMangaTitleCleanup("setsuna-mokuro-45edeb3ef1f72dea0c9a"), true);
+    assert.equal(needsMangaTitleCleanup("book_1795545399615"), true);
+    assert.equal(needsMangaTitleCleanup("book 1795545399615"), true);
+    assert.equal(needsMangaTitleCleanup("宝石の国 第01巻"), false);
+    assert.equal(DEFAULT_MANGA_PREFS.bgTheme, "dark");
+
+    assert.equal(
+        cleanMangaTitle("DLraw.net_Houseki no Kuni vol 01-09 — Houseki_no_Kuni_v01"),
+        "Houseki no Kuni v01",
+    );
+    assert.equal(
+        cleanMangaTitle("DLraw.net_Houseki no Kuni vol 01-09 — 01"),
+        "Houseki no Kuni 01",
+    );
+    assert.equal(
+        cleanMangaTitle("setsuna-mokuro-45edeb3ef1f72dea0c9a — Houseki no Kuni 02"),
+        "Houseki no Kuni 02",
+    );
+    assert.equal(
+        cleanMangaTitle("setsuna-mokuro-45edeb3ef1f72dea0c9a", "D:/Manga/[DLraw] Houseki_no_Kuni_03.cbz"),
+        "Houseki no Kuni 03",
+    );
+    assert.equal(
+        cleanMangaTitle("DLraw", "D:/Manga/DLraw.net_Houseki no Kuni v02"),
+        "Houseki no Kuni v02",
+    );
+    assert.equal(cleanMangaSeries("DLraw.net_Houseki no Kuni vol 01-09"), "Houseki no Kuni");
+    assert.equal(cleanMangaSeries("setsuna-mokuro-45edeb3ef1f72dea0c9a"), undefined);
+});
+
+test("inferBookCatalogQuery and formatVolumeTitleWithSeries derive queries and rename volumes", () => {
+    assert.equal(
+        inferBookCatalogQuery({
+            title: "Houseki no Kuni v03",
+            series: "DLraw.net_Houseki no Kuni vol 01-09",
+            path: "D:/Manga/Houseki_no_Kuni_03.cbz",
+        }),
+        "Houseki no Kuni",
+    );
+    assert.equal(
+        inferBookCatalogQuery({
+            title: "setsuna-mokuro-deadbeef12345678",
+            path: "C:/Manga/[Raw] Yotsubato!_v04.cbz",
+        }),
+        "Yotsubato!",
+    );
+    assert.equal(formatVolumeTitleWithSeries("宝石の国", "Houseki no Kuni v01", 1), "宝石の国 01");
+    assert.equal(formatVolumeTitleWithSeries("宝石の国", "Houseki no Kuni 12", null), "宝石の国 12");
+    assert.equal(formatVolumeTitleWithSeries("よつばと!", "Oneshot", null), "よつばと!");
+    assert.equal(
+        formatVolumeTitleWithSeries("宝石の国", "book_1795545399615", null, "D:/Manga/DLraw.net_Houseki no Kuni v02"),
+        "宝石の国 02",
+    );
+    assert.equal(extractVolumeNumberFromText("DLraw.net_Houseki no Kuni v02"), 2);
+    assert.equal(extractVolumeNumberFromText("宝石の国（０３）"), 3);
+    assert.equal(extractVolumeNumberFromText("宝石の国2"), 2);
+    assert.equal(extractVolumeNumberFromText("book_1795545399615"), null);
+    assert.equal(inferBookCatalogQuery({ title: "宝石の国2" }), "宝石の国");
+    assert.equal(inferBookCatalogQuery({ title: "宝石の国(9)" }), "宝石の国");
+    assert.equal(inferBookCatalogQuery({ title: "宝石の国(02) 特装版" }), "宝石の国");
+    assert.equal(inferBookCatalogQuery({ title: "宝石の国（１３）" }), "宝石の国");
+    assert.equal(
+        extractVolumeNumberFromBook({ title: "Houseki no Kuni", path: "D:/Manga/DLraw.net_Houseki no Kuni v02" }),
+        2,
+    );
+});
+
+test("prepareBubbleDisplayLines preserves line breaks and exact joinMokuroLines offsets", () => {
+    const jp = prepareBubbleDisplayLines(["遠い未来、", "僕らは「宝石」になった。", "  ", "果てなき戦い。"]);
+    assert.deepEqual(
+        jp.map((l) => ({ text: l.text, offset: l.offset, appendSpace: l.appendSpace })),
+        [
+            { text: "遠い未来、", offset: 0, appendSpace: false },
+            { text: "僕らは「宝石」になった。", offset: 5, appendSpace: false },
+            { text: "果てなき戦い。", offset: 17, appendSpace: false },
+        ],
+    );
+    assert.equal(
+        jp.map((l) => l.text + (l.appendSpace ? " " : "")).join(""),
+        joinMokuroLines(["遠い未来、", "僕らは「宝石」になった。", "  ", "果てなき戦い。"]),
+    );
+
+    const en = prepareBubbleDisplayLines(["What are", "you doing?"]);
+    assert.deepEqual(
+        en.map((l) => ({ text: l.text, offset: l.offset, appendSpace: l.appendSpace })),
+        [
+            { text: "What are", offset: 0, appendSpace: true },
+            { text: "you doing?", offset: 9, appendSpace: false },
+        ],
+    );
+    assert.equal(en.map((l) => l.text + (l.appendSpace ? " " : "")).join(""), "What are you doing?");
+});
+
+test("computeFittedBubbleFontPx wraps long single-line text in large boxes and computes line height & paragraph gaps", () => {
+    const longSingleLine = {
+        box: [100, 100, 760, 420],
+        vertical: false,
+        fontSize: 28,
+        lines: ["遠い未来、僕らは「宝石」になった。粉々になっても再生する不死のカラダを持つ宝石28人と、彼らを装飾品にしようと襲いかかる月人との果てなき戦い。"],
+    };
+    const fs = computeFittedBubbleFontPx(longSingleLine);
+    assert.ok(fs > 12 && fs <= 28, `expected readable wrapped font > 12, got ${fs}`);
+
+    const multiLineBlurb = {
+        box: [100, 100, 760, 460],
+        vertical: false,
+        fontSize: 24,
+        lines: [
+            "遠い未来、僕らは「宝石」になった――。",
+            "粉々になっても再生する不死のカラダを持つ宝石28人と、",
+            "彼らを装飾品にしようと襲いかかる月人との果てなき戦い。",
+            "強くてもろくて美しい、",
+            "宝石たちの新感覚アクション・バトル・ファンタジー。",
+        ],
+        linesCoords: [
+            [[100, 105], [700, 105], [700, 135], [100, 135]],
+            [[100, 185], [700, 185], [700, 210], [100, 210]],
+            [[100, 230], [700, 230], [700, 255], [100, 255]],
+            [[100, 275], [700, 275], [700, 300], [100, 300]],
+            [[100, 320], [700, 320], [700, 345], [100, 345]],
+        ],
+    };
+    const blurbFs = computeFittedBubbleFontPx(multiLineBlurb);
+    const lh = computeBubbleLineHeight(multiLineBlurb, blurbFs);
+    assert.ok(lh >= 1.4 && lh <= 1.75, `expected expanded line height for spacious blurb, got ${lh}`);
+    assert.deepEqual(detectBubbleParagraphGaps(multiLineBlurb), [false, true, false, false, false]);
+
+    const evenLines = {
+        vertical: false,
+        lines: ["a", "b", "c"],
+        linesCoords: [
+            [[0, 10], [10, 10], [10, 20], [0, 20]],
+            [[0, 40], [10, 40], [10, 50], [0, 50]],
+            [[0, 70], [10, 70], [10, 80], [0, 80]],
+        ],
+    };
+    assert.deepEqual(detectBubbleParagraphGaps(evenLines), [false, false, false]);
+    assert.deepEqual(detectBubbleParagraphGaps({ vertical: false, lines: ["a", "b", "c"] }), [false, false, false]);
 });

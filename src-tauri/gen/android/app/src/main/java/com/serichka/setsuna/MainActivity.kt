@@ -8,13 +8,14 @@ import android.provider.OpenableColumns
 import android.os.Bundle
 import android.view.KeyEvent
 import android.webkit.WebView
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
 import java.io.File
 import java.io.FileOutputStream
 
 class MainActivity : TauriActivity() {
-  override val handleBackNavigation: Boolean = true
+  override val handleBackNavigation: Boolean = false
 
   private var setsunaWebView: WebView? = null
   @Volatile var volumePagingEnabled: Boolean = false
@@ -36,6 +37,27 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    val backCallback = object : OnBackPressedCallback(true) {
+      override fun handleOnBackPressed() {
+        val webView = setsunaWebView
+        if (webView == null) {
+          isEnabled = false
+          onBackPressedDispatcher.onBackPressed()
+          isEnabled = true
+          return
+        }
+        webView.evaluateJavascript(
+          "(function(){ try { return window.__setsunaHandleAndroidBack ? window.__setsunaHandleAndroidBack() : false; } catch(e) { return false; } })()"
+        ) { result ->
+          if (result != "true") {
+            isEnabled = false
+            onBackPressedDispatcher.onBackPressed()
+            isEnabled = true
+          }
+        }
+      }
+    }
+    onBackPressedDispatcher.addCallback(this, backCallback)
     ContextCompat.registerReceiver(this, captureReceiver, IntentFilter(TextCaptureService.ACTION_TEXT), ContextCompat.RECEIVER_NOT_EXPORTED)
     receiveIncomingText(intent)
     ContextCompat.registerReceiver(this, overlayReceiver, IntentFilter(TextOverlayService.ACTION_DISMISSED), ContextCompat.RECEIVER_NOT_EXPORTED)

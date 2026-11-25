@@ -566,6 +566,16 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
                     </div>
                 </div>
                 {dictionaryUpdateMessage && <div style={{ color: "var(--text-muted)", fontSize: "12px", marginBottom: "10px" }}>{dictionaryUpdateMessage}</div>}
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 11px", marginBottom: "10px", borderRadius: "6px", background: "rgba(245, 158, 11, 0.09)", border: "1px solid rgba(245, 158, 11, 0.24)", color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.4 }}>
+                    <span style={{ fontSize: "10px", fontWeight: 700, padding: "2px 6px", borderRadius: "999px", background: "rgba(245, 158, 11, 0.18)", color: "#f59e0b", flexShrink: 0 }}>
+                        {settings.appLanguage === "en" ? "ALPHA" : "АЛЬФА"}
+                    </span>
+                    <span>
+                        {settings.appLanguage === "en"
+                            ? "English as a target learning language is in early alpha. Setsuna currently focuses on Japanese; English parsing and dictionaries are experimental."
+                            : "Поддержка английского как целевого языка изучения — ранняя альфа. Основной фокус сейчас на японском; английский разбор и словари работают в тестовом режиме."}
+                    </span>
+                </div>
                 {selectedDicts.length > 0 && isSelectionMode && <div style={{ marginBottom: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}><button onClick={() => setShareDialog({ tab: "share", selection: selectedDicts })} style={{ background: "rgba(79,166,255,0.12)", color: "var(--accent-blue)", border: "1px solid rgba(79,166,255,0.35)", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>{settings.appLanguage === "en" ? `Share (${selectedDicts.length})` : `Поделиться (${selectedDicts.length})`}</button><button onClick={handleDeleteSelected} className="dict-row-danger-button">{t.deleteSelectedButton(selectedDicts.length)}</button></div>}
                 <div style={{ background: "var(--bg-main)", border: "1px solid var(--border-main)", borderRadius: "6px", padding: "10px" }}>
                     {(!settings.dictionaries || settings.dictionaries.length === 0) ? (

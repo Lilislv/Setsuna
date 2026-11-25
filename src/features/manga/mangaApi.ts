@@ -100,6 +100,18 @@ export const exportMangaMobileCbz = async (
     return invoke<MangaExportResult>("manga_export_mobile_cbz", { path, outputPath });
 };
 
+export const convertMangaToCbz = async (
+    path: string,
+    tabId: number,
+    coverDataUri?: string | null,
+): Promise<MangaExportResult> => {
+    return invoke<MangaExportResult>("manga_convert_to_cbz", {
+        path,
+        tabId,
+        coverDataUri: coverDataUri || null,
+    });
+};
+
 export const getMangaOcrServerStatus = async (): Promise<MangaOcrServerStatus> => {
     return invoke<MangaOcrServerStatus>("manga_ocr_server_status");
 };
@@ -134,4 +146,50 @@ export const recognizeMangaCropRemote = async (
     imageBase64: string,
 ): Promise<MangaOcrResult> => {
     return invoke<MangaOcrResult>("manga_ocr_remote_recognize", { url, token, imageBase64 });
+};
+
+export interface MangaCatalogCandidate {
+    id: string;
+    title: string;
+    nativeTitle?: string | null;
+    author?: string | null;
+    year?: number | null;
+    format: string;
+    source: string;
+    imageUrl: string;
+    pageUrl: string;
+    volume?: string | null;
+    volumeNumber?: number | null;
+}
+
+export interface MangaCatalogSearch {
+    candidates: MangaCatalogCandidate[];
+    unavailable: string[];
+}
+
+export interface CatalogVolumeCover {
+    volume: string;
+    volumeNumber?: number | null;
+    title?: string | null;
+    imageUrl: string;
+    source: string;
+}
+
+export const searchMangaCatalog = async (query: string): Promise<MangaCatalogSearch> => {
+    return invoke<MangaCatalogSearch>("manga_search_catalog", { query });
+};
+
+export const fetchCatalogSeriesVolumes = async (params: {
+    title: string;
+    nativeTitle?: string | null;
+    anilistId?: string | null;
+    malId?: string | null;
+    format?: string | null;
+    targetVolume?: string | null;
+}): Promise<CatalogVolumeCover[]> => {
+    return invoke<CatalogVolumeCover[]>("manga_fetch_series_volumes", params);
+};
+
+export const fetchCatalogCoverDataUri = async (url: string): Promise<string> => {
+    return invoke<string>("manga_fetch_cover_data_uri", { url });
 };

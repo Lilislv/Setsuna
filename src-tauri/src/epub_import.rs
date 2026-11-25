@@ -2956,7 +2956,7 @@ fn prune_epub_files(dir: &Path, keep: &[i64]) -> Result<usize, String> {
             let ext = path.extension().and_then(|ext| ext.to_str()).map(|s| s.to_ascii_lowercase());
             if !matches!(
                 ext.as_deref(),
-                Some("epub" | "txt" | "htmlz" | "fb2" | "html" | "htm" | "xhtml" | "md" | "markdown" | "docx" | "mobi" | "azw3" | "prc" | "pdf")
+                Some("epub" | "txt" | "htmlz" | "fb2" | "html" | "htm" | "xhtml" | "md" | "markdown" | "docx" | "mobi" | "azw3" | "prc" | "pdf" | "cbz" | "zip")
             ) {
                 continue;
             }
@@ -2982,7 +2982,7 @@ fn epub_books_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 fn epub_drive_http_client() -> Result<reqwest::Client, String> {
     crate::http_client::builder()
         .connect_timeout(std::time::Duration::from_secs(20))
-        .read_timeout(std::time::Duration::from_secs(60))
+        .read_timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
@@ -3000,8 +3000,8 @@ pub async fn epub_drive_upload(
     if size == 0 {
         return Err("Book file is empty".to_string());
     }
-    if size > 60 * 1024 * 1024 {
-        return Err("Book file exceeds 60 MB sync limit".to_string());
+    if size > 250 * 1024 * 1024 {
+        return Err("Book file exceeds 250 MB sync limit".to_string());
     }
     let client = epub_drive_http_client()?;
     let url = format!(
@@ -3047,6 +3047,8 @@ pub async fn epub_drive_download(
         "azw3" => "azw3",
         "prc" => "prc",
         "pdf" => "pdf",
+        "cbz" => "cbz",
+        "zip" => "zip",
         _ => "epub",
     };
     let dir = epub_books_dir(&app)?;

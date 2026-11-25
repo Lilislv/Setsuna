@@ -61,6 +61,16 @@ function episodeCount(count: number, en: boolean) {
     return en ? String(count) + (count === 1 ? " episode" : " episodes") : "Серий: " + count;
 }
 
+function showProgressPct(info: { watched: number; count: number; item: { time: number; duration?: number } }) {
+    const dur = info.item.duration ?? 0;
+    const frac = dur > 0
+        ? Math.min(1, info.item.time / dur)
+        : info.item.time > 0
+            ? 0.35
+            : 0;
+    return Math.min(100, Math.max(0, Math.round(((info.watched + frac) / Math.max(1, info.count)) * 100)));
+}
+
 export function PlayerLibrary({
     library,
     en,
@@ -155,13 +165,20 @@ export function PlayerLibrary({
                 naturalOrder(showTitle(a.show), showTitle(b.show)),
         );
     const current = panel && shows.find((show) => show.id === panel.path);
+    const heroContinue = items
+        .filter(
+            ({ info }) =>
+                info.lastPlayedAt > 0 && (info.item.time > 0 || (info.watched > 0 && info.watched < info.count)),
+        )
+        .sort((a, b) => b.info.lastPlayedAt - a.info.lastPlayedAt)[0];
 
     return (
         <div className="sp-library">
             <div className="sp-library-inner">
                 <header className="sp-library-header">
                     <div className="sp-library-title">
-                        <h1>{en ? "Video library" : "Видеотека"}</h1>
+                        <h1>{en ? "Video Player" : "Видео-плеер"}</h1>
+                        <span className="sp-beta-pill">{en ? "Beta" : "Бета"}</span>
                         {shows.length > 0 && (
                             <span title={en ? "Titles in library" : "Тайтлов в видеотеке"}>{shows.length}</span>
                         )}
@@ -304,24 +321,92 @@ export function PlayerLibrary({
                 {!!shows.length && !visible.length && (
                     <p className="sp-library-empty-filter">{en ? "No matching titles." : "Тайтлы не найдены."}</p>
                 )}
-                <section className="sp-library-grid" aria-label={en ? "Titles" : "Тайтлы"}>
-                    {visible.map(({ show, info }) => (
-                        <article className="sp-library-card" key={show.id}>
-                            <button
-                                className="sp-library-cover"
-                                onClick={() => setPanel({ kind: "info", path: show.id })}
-                                aria-label={showTitle(show)}
-                            >
-                                <PosterArt poster={show.poster} label={showTitle(show)} />
-                                {(info.watched > 0 || info.item.time > 0) && (
-                                    <span
-                                        className="sp-library-card-progress"
-                                        title={en ? "Watch progress" : "Прогресс просмотра"}
+                {filter === "all" && !needle && heroContinue && (() => {
+                    const { show, info } = heroContinue;
+                    const activeEp = show.directory.episodes[info.index];
+                    const pct = showProgressPct(info);
+                    const resumeTitle = showTitle(show);
+                    return (
+                        <section className="sp-continue-hero" aria-label={en ? "Continue watching" : "Продолжить просмотр"}>
+                            <div className="sp-continue-backdrop" aria-hidden="true">
+                                <PosterArt poster={show.poster} label="" />
+                            </div>
+                            <div className="sp-continue-poster">
+                                <PosterArt poster={show.poster} label={resumeTitle} />
+                            </div>
+                            <div className="sp-continue-info">
+                                <span className="sp-continue-eyebrow">
+                                    {en ? "Continue watching" : "Продолжить просмотр"}
+                                </span>
+                                <h2>{resumeTitle}</h2>
+                                <p className="sp-continue-meta">
+                                    {activeEp ? episodeLabel(activeEp.path, info.index, en) : episodeCount(info.count, en)}
+                                    {info.item.time > 0 && ` · ${formatClock(info.item.time)}`}
+                                    {info.item.duration ? ` / ${formatClock(info.item.duration)}` : ""}
+                                </p>
+                                <div className="sp-continue-progress">
+                                    <div className="sp-continue-track">
+                                        <span style={{ width: `${pct}%` }} />
+                                    </div>
+                                    <span>{info.watched} / {info.count}</span>
+                                </div>
+                                <div className="sp-continue-actions">
+                                    <button
+                                        type="button"
+                                        className="sp-library-primary"
+                                        disabled={opening}
+                                        onClick={() => openEpisode(show.root, show.directory, info.index)}
                                     >
-                                        {info.watched === info.count ? "✓" : info.watched + " / " + info.count}
-                                    </span>
-                                )}
-                            </button>
+                                        ▶ {info.item.time > 0 ? (en ? "Continue" : "Продолжить") : (en ? "Watch" : "Смотреть")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setPanel({ kind: "info", path: show.id })}
+                                    >
+                                        {en ? "Episodes" : "Серии"}
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+                    );
+                })()}
+                <section className="sp-library-grid" aria-label={en ? "Titles" : "Тайтлы"}>
+                    {visible.map(({ show, info }) => {
+                        const pct = showProgressPct(info);
+                        return (
+                        <article className="sp-library-card" key={show.id}>
+                            <div className="sp-library-cover-wrap">
+                                <button
+                                    className="sp-library-cover"
+                                    onClick={() => setPanel({ kind: "info", path: show.id })}
+                                    aria-label={showTitle(show)}
+                                >
+                                    <PosterArt poster={show.poster} label={showTitle(show)} />
+                                    {(info.watched > 0 || info.item.time > 0) && (
+                                        <span
+                                            className="sp-library-card-progress"
+                                            title={en ? "Watch progress" : "Прогресс просмотра"}
+                                        >
+                                            {info.watched === info.count ? "✓" : info.watched + " / " + info.count}
+                                        </span>
+                                    )}
+                                    {pct > 0 && (
+                                        <span className="sp-cover-bar" aria-hidden="true">
+                                            <span style={{ width: `${pct}%` }} />
+                                        </span>
+                                    )}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="sp-cover-play"
+                                    disabled={opening}
+                                    title={info.item.time > 0 ? (en ? "Continue" : "Продолжить") : (en ? "Watch" : "Смотреть")}
+                                    aria-label={info.item.time > 0 ? (en ? "Continue" : "Продолжить") : (en ? "Watch" : "Смотреть")}
+                                    onClick={() => openEpisode(show.root, show.directory, info.index)}
+                                >
+                                    ▶
+                                </button>
+                            </div>
                             <div className="sp-library-card-body">
                                 <button
                                     className="sp-library-card-title"
@@ -359,7 +444,8 @@ export function PlayerLibrary({
                                 )}
                             </div>
                         </article>
-                    ))}
+                        );
+                    })}
                 </section>
             </div>
             {current && panel.kind === "poster" && (
@@ -431,12 +517,20 @@ function ShowDetails({
                     <ul className="sp-library-episodes">
                         {show.directory.episodes.map((episode,index) => {
                             const state = episodeProgress(progress[episode.path]);
+                            const epPct = state.duration && state.duration > 0 && state.time > 0 && !state.completed
+                                ? Math.min(100, Math.max(4, Math.round((state.time / state.duration) * 100)))
+                                : 0;
                             return <li key={episode.path}>
                                 <button title={fileName(episode.path)} disabled={opening} data-current={info.index === index} onClick={() => onPlay(index)}>
                                     <span>{episodeLabel(episode.path,index,en)}</span>
                                     {state.completed ? <span aria-label={en ? "Watched" : "Просмотрено"}>✓</span>
                                         : state.time > 0 && <time>{formatClock(state.time)}</time>}
                                 </button>
+                                {epPct > 0 && (
+                                    <div className="sp-ep-progress" aria-hidden="true">
+                                        <span style={{ width: `${epPct}%` }} />
+                                    </div>
+                                )}
                             </li>;
                         })}
                     </ul>

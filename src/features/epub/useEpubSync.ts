@@ -8,6 +8,8 @@ import {
     uploadAppDataJson,
 } from "../../utils/gdrive";
 import { downloadEpubFromDrive, openEpubBook, uploadEpubToDrive } from "./epubApi";
+import { openMangaVolume } from "../manga/mangaApi";
+import { isMangaTabData } from "../manga/mangaModel";
 import { setMemoryCover } from "./epubCoverCache";
 import {
     buildEpubSyncFingerprint,
@@ -140,8 +142,8 @@ export function useEpubSync({
                         || !tab.epub?.path
                         || tab.epub.cloudOnly
                         || tab.epub.driveFileId
-                        || tab.epub.format === "manga"
                         || tab.epub.fileExt === "manga-dir"
+                        || !/\.[a-z0-9]{2,7}$/i.test(tab.epub.path)
                     ) {
                         continue;
                     }
@@ -216,8 +218,37 @@ export function useEpubSync({
                 setStatus("disconnected");
                 return false;
             }
-            const ext = tab.epub.fileExt || "epub";
+            const ext = tab.epub.fileExt || (tab.epub.format === "manga" ? "cbz" : "epub");
+            const isManga = isMangaTabData(tab.epub) || ext === "cbz" || ext === "zip";
             const storedPath = await downloadEpubFromDrive(accessToken, tab.epub.driveFileId, tab.id, ext);
+            if (isManga) {
+                const meta = await openMangaVolume(storedPath);
+                const coverToCache = meta.cover || tab.epub.coverThumb || null;
+                if (coverToCache) {
+                    setMemoryCover(storedPath, coverToCache);
+                }
+                setTabs((prev) => prev.map((t) => (
+                    t.id === tab.id && t.epub
+                        ? {
+                              ...t,
+                              name: t.epub.title || meta.title || t.name,
+                              epub: {
+                                  ...t.epub,
+                                  path: storedPath,
+                                  cloudOnly: false,
+                                  format: "manga",
+                                  fileExt: ext === "zip" ? "zip" : "cbz",
+                                  hasMokuro: meta.hasMokuro,
+                                  chapterCount: meta.pageCount,
+                                  totalChars: meta.totalChars || t.epub.totalChars,
+                                  series: t.epub.series || meta.series || undefined,
+                                  seriesPosition: t.epub.seriesPosition ?? meta.seriesPosition ?? null,
+                              },
+                          }
+                        : t
+                )));
+                return true;
+            }
             const meta = await openEpubBook(storedPath);
             if (meta.cover) {
                 setMemoryCover(storedPath, meta.cover);

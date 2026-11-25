@@ -22,6 +22,7 @@ type ModeItem = {
     action: () => void;
     icon: ReactNode;
     disabled?: boolean;
+    isBeta?: boolean;
 };
 
 export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, onAnki, onSettings, wsConnected }: HomeScreenProps) {
@@ -43,25 +44,31 @@ export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, o
         },
         {
             id: "epub",
-            title: isEn ? "EPUB Reader" : "EPUB-ридер",
-            category: YATSU_READER_AVAILABLE ? (isEn ? "Yatsu Reader · Setsuna dictionaries" : "Yatsu Reader · словари Setsuna") : (isEn ? "Books and light novels" : "Книги и ранобэ"),
-            status: YATSU_READER_AVAILABLE ? (isEn ? "Preview" : "Первая версия") : EPUB_READER_AVAILABLE
-                ? (isEn ? "Workspace" : "Рабочее пространство")
-                : (isEn ? "Coming soon" : "Скоро"),
+            title: isEn ? "Reader" : "Читалка",
+            category: YATSU_READER_AVAILABLE
+                ? (isEn ? "Yatsu Reader · Setsuna dictionaries" : "Yatsu Reader · словари Setsuna")
+                : (isEn ? "Books, manga & light novels" : "Книги, манга и ранобэ"),
+            status: YATSU_READER_AVAILABLE
+                ? (isEn ? "Preview" : "Первая версия")
+                : EPUB_READER_AVAILABLE
+                    ? (isEn ? "Beta" : "Бета")
+                    : (isEn ? "Coming soon" : "Скоро"),
             action: onEpub,
             icon: <IconBookTab />,
             disabled: !EPUB_READER_AVAILABLE,
+            isBeta: !YATSU_READER_AVAILABLE && EPUB_READER_AVAILABLE,
         },
         {
             id: "player",
-            title: isEn ? "Anime Player" : "Аниме-плеер",
+            title: isEn ? "Video Player" : "Видео-плеер",
             category: isEn ? "Video and subtitles" : "Видео и субтитры",
             status: ANIME_PLAYER_AVAILABLE
-                ? (isEn ? "Workspace" : "Рабочее пространство")
+                ? (isEn ? "Beta" : "Бета")
                 : (isEn ? "Coming soon" : "Скоро"),
             action: onPlayer,
             icon: <IconPlayerTab />,
             disabled: !ANIME_PLAYER_AVAILABLE,
+            isBeta: ANIME_PLAYER_AVAILABLE,
         },
     ];
 
@@ -100,7 +107,7 @@ export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, o
                         >
                             <span className="home-mode-topline">
                                 <span className="home-mode-number">0{index + 1}</span>
-                                <span className={`home-mode-status ${item.disabled ? "home-mode-status-soon" : ""}`}>
+                                <span className={`home-mode-status${item.disabled ? " home-mode-status-soon" : item.isBeta ? " home-mode-status-beta" : ""}`}>
                                     {item.id === "text" && wsConnected ? <IconWifi connected /> : null}
                                     {item.status}
                                 </span>

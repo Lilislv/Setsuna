@@ -80,6 +80,7 @@ mod dictionary_import;
 mod epub_audio;
 mod epub_import;
 mod manga_import;
+mod manga_catalog;
 mod manga_ocr_server;
 #[cfg(target_os = "windows")]
 mod global_lookup;
@@ -6095,6 +6096,7 @@ fn main() {
             manga_import::manga_mokuro_status,
             manga_import::manga_run_mokuro,
             manga_import::manga_export_mobile_cbz,
+            manga_import::manga_convert_to_cbz,
             manga_ocr_server::manga_ocr_server_status,
             manga_ocr_server::manga_ocr_server_start,
             manga_ocr_server::manga_ocr_server_stop,
@@ -6149,6 +6151,9 @@ fn main() {
             player_library::player_forget_library_folder,
             player_library::player_read_local_subtitle,
             player_posters::player_search_posters,
+            manga_catalog::manga_search_catalog,
+            manga_catalog::manga_fetch_series_volumes,
+            manga_catalog::manga_fetch_cover_data_uri,
             dictionary_engine::delete_dictionary,
             dictionary_engine::delete_dictionaries,
             dictionary_engine::clear_database,
