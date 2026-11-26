@@ -4170,3 +4170,240 @@ mark.epub-hl-rose { background: rgba(239, 111, 142, 0.3); }
         max-height: calc(100dvh - 24px);
     }
 }
+
+/* Telegram-style elastic overscroll / pull-to-switch-chapter transitions */
+@keyframes epub-scroll-enter-next {
+    from {
+        opacity: 0;
+        transform: translate3d(0, 30px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes epub-scroll-enter-prev {
+    from {
+        opacity: 0;
+        transform: translate3d(0, -30px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+.epub-content-flow.is-scroll-enter-next {
+    animation: epub-scroll-enter-next 360ms cubic-bezier(0.18, 0.9, 0.24, 1) both;
+}
+
+.epub-content-flow.is-scroll-enter-prev {
+    animation: epub-scroll-enter-prev 360ms cubic-bezier(0.18, 0.9, 0.24, 1) both;
+}
+
+.epub-reader-surface[data-epub-orientation="vertical"] .epub-content-flow.is-scroll-enter-next {
+    animation: epub-page-in-prev 340ms cubic-bezier(0.18, 0.9, 0.24, 1) both;
+}
+
+.epub-reader-surface[data-epub-orientation="vertical"] .epub-content-flow.is-scroll-enter-prev {
+    animation: epub-page-in-next 340ms cubic-bezier(0.18, 0.9, 0.24, 1) both;
+}
+
+.epub-reader-surface[data-epub-mode="scroll"] .epub-content-flow {
+    transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+}
+
+.epub-reader-surface[data-epub-eink="true"] .epub-content-flow,
+.epub-reader-surface[data-epub-eink="true"] .epub-content-flow.is-scroll-enter-next,
+.epub-reader-surface[data-epub-eink="true"] .epub-content-flow.is-scroll-enter-prev {
+    animation: none !important;
+    transition: none !important;
+}
+
+.epub-overscroll-pill {
+    position: absolute;
+    z-index: 48;
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    max-width: min(360px, calc(100vw - 32px));
+    padding: 8px 15px 8px 10px;
+    border-radius: 999px;
+    background: var(--epub-glass-strong, rgba(22, 25, 32, 0.92));
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    border: 1px solid var(--epub-glass-border, rgba(255, 255, 255, 0.14));
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    color: var(--text-main);
+    pointer-events: none;
+    transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.epub-overscroll-pill.is-bottom {
+    bottom: 66px;
+}
+
+.epub-overscroll-pill.is-top {
+    top: 66px;
+}
+
+.epub-overscroll-pill.is-left {
+    left: 18px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.epub-overscroll-pill.is-right {
+    left: auto;
+    right: 18px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.epub-overscroll-pill.is-armed {
+    border-color: color-mix(in srgb, var(--accent-blue) 68%, transparent);
+    background: color-mix(in srgb, var(--accent-blue) 22%, var(--epub-glass-strong, rgba(22, 25, 32, 0.94)));
+    box-shadow: 0 12px 34px color-mix(in srgb, var(--accent-blue) 28%, rgba(0, 0, 0, 0.45));
+}
+
+.epub-overscroll-pill.is-armed.is-bottom,
+.epub-overscroll-pill.is-armed.is-top {
+    transform: translateX(-50%) scale(1.04);
+}
+
+.epub-overscroll-pill.is-armed.is-left,
+.epub-overscroll-pill.is-armed.is-right {
+    transform: translateY(-50%) scale(1.04);
+}
+
+.epub-overscroll-ring-wrap {
+    position: relative;
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.epub-overscroll-ring {
+    width: 34px;
+    height: 34px;
+    transform: rotate(-90deg);
+}
+
+.epub-overscroll-ring-bg {
+    fill: none;
+    stroke: color-mix(in srgb, var(--text-main) 14%, transparent);
+    stroke-width: 2.6;
+}
+
+.epub-overscroll-ring-fill {
+    fill: none;
+    stroke: var(--accent-blue, #4c8bf5);
+    stroke-width: 2.8;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 60ms linear;
+}
+
+.epub-overscroll-arrow {
+    position: absolute;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    transition: transform 240ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.epub-overscroll-arrow.is-prev {
+    transform: rotate(180deg);
+}
+
+.epub-overscroll-arrow.is-flipped {
+    transform: rotate(180deg);
+}
+
+.epub-overscroll-arrow.is-prev.is-flipped {
+    transform: rotate(0deg);
+}
+
+.epub-overscroll-arrow.is-vertical.is-prev {
+    transform: rotate(180deg);
+}
+
+.epub-overscroll-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 1px;
+}
+
+.epub-overscroll-action {
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.78;
+    white-space: nowrap;
+}
+
+.epub-overscroll-target {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.epub-scroll-chapter-footer {
+    margin: 36px auto 18px;
+    display: flex;
+    justify-content: center;
+}
+
+.epub-reader-surface[data-epub-orientation="vertical"] .epub-scroll-chapter-footer {
+    margin: auto 18px auto 32px;
+    writing-mode: horizontal-tb;
+    align-self: center;
+}
+
+.epub-scroll-chapter-next-btn {
+    appearance: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 22px;
+    border-radius: 16px;
+    border: 1px solid var(--epub-glass-border, rgba(255, 255, 255, 0.14));
+    background: color-mix(in srgb, var(--epub-fg) 5%, transparent);
+    color: var(--epub-fg);
+    cursor: pointer;
+    max-width: min(440px, 86vw);
+    transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.epub-scroll-chapter-next-btn:hover {
+    background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    border-color: color-mix(in srgb, var(--accent-blue) 45%, transparent);
+    transform: translateY(-1px);
+}
+
+.epub-scroll-chapter-hint {
+    font-size: 11.5px;
+    opacity: 0.65;
+}
+
+.epub-scroll-chapter-target {
+    font-size: 14px;
+    font-weight: 600;
+    text-align: center;
+    word-break: break-word;
+}
+
+.epub-scroll-chapter-end-badge {
+    font-size: 12.5px;
+    opacity: 0.55;
+    padding: 8px 14px;
+}

@@ -52,6 +52,15 @@ import {
     loadEpubGoals,
     type EpubReadingGoals,
 } from "./epubTracker";
+import {
+    advanceWheelOverscroll,
+    computeTouchPullState,
+    detectScrollEdges,
+    IDLE_OVERSCROLL_STATE,
+    type OverscrollState,
+    type ScrollChapterDirection,
+    type ScrollEdgeFlags,
+} from "./epubScrollBoundary";
 
 type LookupMatch = { start: number; length: number };
 type LookupTokenHandler = (
@@ -324,6 +333,18 @@ export default function EpubReader({
     const [currentPageIdx, setCurrentPageIdx] = useState(0);
     const [verticalPageInfo, setVerticalPageInfo] = useState({ current: 1, total: 1 });
     const [surfaceSize, setSurfaceSize] = useState({ width: 800, height: 600 });
+    const [overscrollState, setOverscrollState] = useState<OverscrollState>(IDLE_OVERSCROLL_STATE);
+    const overscrollStateRef = useRef<OverscrollState>(IDLE_OVERSCROLL_STATE);
+    overscrollStateRef.current = overscrollState;
+    const scrollChapterTransitionDirRef = useRef<ScrollChapterDirection | 0>(0);
+    const overscrollDecayTimerRef = useRef<number | null>(null);
+    const chapterBoundaryCooldownUntilRef = useRef(0);
+    const touchPullStartRef = useRef<{
+        x: number;
+        y: number;
+        edges: ScrollEdgeFlags;
+        armedVibrated: boolean;
+    } | null>(null);
 
     const bookPath = tab.epub?.path || "";
     const bookmarks = useMemo(() => tab.epub?.bookmarks || [], [tab.epub?.bookmarks]);
@@ -345,11 +366,14 @@ export default function EpubReader({
         if (topHideTimerRef.current !== null) window.clearTimeout(topHideTimerRef.current);
         if (bottomHideTimerRef.current !== null) window.clearTimeout(bottomHideTimerRef.current);
         if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+        if (overscrollDecayTimerRef.current !== null) window.clearTimeout(overscrollDecayTimerRef.current);
     }, []);
 
-    // Reset per-chapter revealed image overrides when switching chapters
+    // Reset per-chapter revealed image overrides and overscroll indicator when switching chapters
     useEffect(() => {
         setRevealedImages({});
+        setOverscrollState(IDLE_OVERSCROLL_STATE);
+        touchPullStartRef.current = null;
     }, [tab.id, chapter?.index]);
 
     // Debounced full-book search
@@ -458,6 +482,49 @@ export default function EpubReader({
     const hasRealToc = Boolean(bookMeta?.toc && bookMeta.toc.length > 0);
     const displayChapterCount = hasRealToc ? tocItems.length : chapterCount;
     const displayChapterIndex = hasRealToc ? Math.max(0, activeTocIdx) : chapterIndex;
+    const canGoPrevChapter = chapterIndex > 0;
+    const canGoNextChapter = chapterIndex + 1 < chapterCount;
+    const prevChapterLabel = useMemo(() => {
+        if (!canGoPrevChapter) return "";
+        const targetIdx = chapterIndex - 1;
+        const chTitle = chapters[targetIdx]?.title?.trim();
+        if (chTitle) return chTitle;
+        const tocMatch = tocItems.find((item) => item.chapterIndex === targetIdx)?.title;
+        return tocMatch || t("epub.chapterOf", { current: targetIdx + 1, total: chapterCount });
+    }, [canGoPrevChapter, chapterIndex, chapters, tocItems, chapterCount, t]);
+    const nextChapterLabel = useMemo(() => {
+        if (!canGoNextChapter) return "";
+        const targetIdx = chapterIndex + 1;
+        const chTitle = chapters[targetIdx]?.title?.trim();
+        if (chTitle) return chTitle;
+        const tocMatch = tocItems.find((item) => item.chapterIndex === targetIdx)?.title;
+        return tocMatch || t("epub.chapterOf", { current: targetIdx + 1, total: chapterCount });
+    }, [canGoNextChapter, chapterIndex, chapters, tocItems, chapterCount, t]);
+
+    const triggerScrollChapterSwitch = useCallback((direction: ScrollChapterDirection) => {
+        if (!chapter || loading) return;
+        const now = Date.now();
+        if (now < chapterBoundaryCooldownUntilRef.current) return;
+        const nextIdx = chapter.index + direction;
+        if (nextIdx < 0 || nextIdx >= chapterCount) return;
+
+        chapterBoundaryCooldownUntilRef.current = now + 700;
+        if (overscrollDecayTimerRef.current !== null) {
+            window.clearTimeout(overscrollDecayTimerRef.current);
+            overscrollDecayTimerRef.current = null;
+        }
+        setOverscrollState(IDLE_OVERSCROLL_STATE);
+        touchPullStartRef.current = null;
+        scrollChapterTransitionDirRef.current = direction;
+        pageTurnDirRef.current = direction;
+        pendingStartAtEndRef.current = direction === -1;
+        if (isMobile && typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+            try {
+                navigator.vibrate(14);
+            } catch {}
+        }
+        callbacksRef.current.onSelectChapter(nextIdx);
+    }, [chapter, loading, chapterCount, isMobile]);
 
     const currentBookCharPos = useMemo(() => {
         let before = 0;
@@ -808,14 +875,22 @@ export default function EpubReader({
                 if (isVertical) {
                     const max = Math.max(0, el.scrollWidth - el.clientWidth);
                     if (Math.abs(el.scrollLeft) >= max - 1) {
-                        setAutoscrollActive(false);
+                        if (canGoNextChapter) {
+                            triggerScrollChapterSwitch(1);
+                        } else {
+                            setAutoscrollActive(false);
+                        }
                         return;
                     }
                     el.scrollLeft -= px;
                 } else {
                     const max = Math.max(0, el.scrollHeight - el.clientHeight);
                     if (el.scrollTop >= max - 1) {
-                        setAutoscrollActive(false);
+                        if (canGoNextChapter) {
+                            triggerScrollChapterSwitch(1);
+                        } else {
+                            setAutoscrollActive(false);
+                        }
                         return;
                     }
                     el.scrollTop += px;
@@ -826,7 +901,7 @@ export default function EpubReader({
         };
         rafId = requestAnimationFrame(tick);
         return () => cancelAnimationFrame(rafId);
-    }, [autoscrollActive, isPaged, isVertical, autoscrollSpeed, chapter, loading, lookupActive, escMenuOpen, tocOpen, appearanceOpen, searchOpen, galleryOpen, quoteModalText]);
+    }, [autoscrollActive, isPaged, isVertical, autoscrollSpeed, chapter, loading, lookupActive, escMenuOpen, tocOpen, appearanceOpen, searchOpen, galleryOpen, quoteModalText, canGoNextChapter, triggerScrollChapterSwitch]);
 
     // Reset autoscroll if user switches to paged mode
     useEffect(() => {
@@ -1550,7 +1625,67 @@ export default function EpubReader({
     useEffect(() => {
         const el = surfaceRef.current;
         if (!el) return;
+
+        const scheduleOverscrollReset = () => {
+            if (overscrollDecayTimerRef.current !== null) {
+                window.clearTimeout(overscrollDecayTimerRef.current);
+            }
+            overscrollDecayTimerRef.current = window.setTimeout(() => {
+                overscrollDecayTimerRef.current = null;
+                setOverscrollState(IDLE_OVERSCROLL_STATE);
+            }, 420);
+        };
+
         const onWheel = (event: WheelEvent) => {
+            if (!isPaged) {
+                const edges = detectScrollEdges({
+                    isVertical,
+                    scrollTop: el.scrollTop,
+                    scrollHeight: el.scrollHeight,
+                    clientHeight: el.clientHeight,
+                    scrollLeft: el.scrollLeft,
+                    scrollWidth: el.scrollWidth,
+                    clientWidth: el.clientWidth,
+                });
+                const rawDelta = isVertical
+                    ? (Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : -event.deltaX)
+                    : event.deltaY;
+
+                const pushingEnd = rawDelta > 0 && edges.atEnd && canGoNextChapter;
+                const pushingStart = rawDelta < 0 && edges.atStart && canGoPrevChapter;
+
+                if (pushingEnd || pushingStart) {
+                    event.preventDefault();
+                    if (Date.now() < chapterBoundaryCooldownUntilRef.current) {
+                        return;
+                    }
+                    const res = advanceWheelOverscroll(
+                        overscrollStateRef.current,
+                        rawDelta,
+                        edges,
+                        canGoPrevChapter,
+                        canGoNextChapter,
+                    );
+                    if (res.trigger !== 0) {
+                        triggerScrollChapterSwitch(res.trigger);
+                    } else {
+                        setOverscrollState(res.state);
+                        scheduleOverscrollReset();
+                    }
+                    return;
+                }
+
+                if (overscrollStateRef.current.direction !== 0) {
+                    setOverscrollState(IDLE_OVERSCROLL_STATE);
+                }
+
+                if (isVertical && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+                    event.preventDefault();
+                    el.scrollLeft -= event.deltaY;
+                }
+                return;
+            }
+
             if (isVertical) {
                 if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
                     event.preventDefault();
@@ -1575,7 +1710,111 @@ export default function EpubReader({
         };
         el.addEventListener("wheel", onWheel, { passive: false });
         return () => el.removeEventListener("wheel", onWheel);
-    }, [isVertical, isHorizontalPaged, turnPage, chapter?.index, loading]);
+    }, [isPaged, isVertical, isHorizontalPaged, turnPage, chapter?.index, loading, canGoPrevChapter, canGoNextChapter, triggerScrollChapterSwitch]);
+
+    // Android & touch elastic pull-to-switch-chapter in scroll mode (prevents Android WebView overscroll glow hijack)
+    useEffect(() => {
+        const el = surfaceRef.current;
+        if (!el || isPaged) return;
+
+        const readEdges = (): ScrollEdgeFlags => detectScrollEdges({
+            isVertical,
+            scrollTop: el.scrollTop,
+            scrollHeight: el.scrollHeight,
+            clientHeight: el.clientHeight,
+            scrollLeft: el.scrollLeft,
+            scrollWidth: el.scrollWidth,
+            clientWidth: el.clientWidth,
+        });
+
+        const onTouchStart = (event: TouchEvent) => {
+            if (event.touches.length !== 1 || tocOpen || appearanceOpen || searchOpen || galleryOpen || Boolean(quoteModalText)) {
+                touchPullStartRef.current = null;
+                return;
+            }
+            const tTouch = event.touches[0];
+            touchPullStartRef.current = {
+                x: tTouch.clientX,
+                y: tTouch.clientY,
+                edges: readEdges(),
+                armedVibrated: false,
+            };
+        };
+
+        const onTouchMove = (event: TouchEvent) => {
+            const start = touchPullStartRef.current;
+            if (!start || event.touches.length !== 1) return;
+            if (Date.now() < chapterBoundaryCooldownUntilRef.current) return;
+
+            const tTouch = event.touches[0];
+            const dx = tTouch.clientX - start.x;
+            const dy = tTouch.clientY - start.y;
+            const primaryDelta = isVertical ? dx : dy;
+            const crossDelta = isVertical ? dy : dx;
+
+            if (Math.abs(primaryDelta) <= Math.abs(crossDelta) * 1.15) {
+                return;
+            }
+
+            // Re-check live edges in case the user scrolled into the boundary during this same drag
+            const liveEdges = readEdges();
+            const mergedEdges: ScrollEdgeFlags = {
+                atStart: liveEdges.atStart && (start.edges.atStart || Math.abs(primaryDelta) > 28),
+                atEnd: liveEdges.atEnd && (start.edges.atEnd || Math.abs(primaryDelta) > 28),
+                fitsInViewport: liveEdges.fitsInViewport,
+            };
+
+            const res = computeTouchPullState(
+                primaryDelta,
+                isVertical,
+                mergedEdges,
+                canGoPrevChapter,
+                canGoNextChapter,
+            );
+
+            if (res.state.direction !== 0) {
+                event.preventDefault();
+                if (res.state.armed && !start.armedVibrated) {
+                    start.armedVibrated = true;
+                    if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+                        try {
+                            navigator.vibrate(8);
+                        } catch {}
+                    }
+                }
+                if (res.autoTrigger !== 0) {
+                    lastSwipeTurnAtRef.current = Date.now();
+                    triggerScrollChapterSwitch(res.autoTrigger);
+                    return;
+                }
+                setOverscrollState(res.state);
+            } else if (overscrollStateRef.current.direction !== 0) {
+                setOverscrollState(IDLE_OVERSCROLL_STATE);
+            }
+        };
+
+        const onTouchEndOrCancel = () => {
+            touchPullStartRef.current = null;
+            const current = overscrollStateRef.current;
+            if (current.armed && current.direction !== 0) {
+                lastSwipeTurnAtRef.current = Date.now();
+                triggerScrollChapterSwitch(current.direction);
+            } else if (current.direction !== 0) {
+                setOverscrollState(IDLE_OVERSCROLL_STATE);
+            }
+        };
+
+        el.addEventListener("touchstart", onTouchStart, { passive: true });
+        el.addEventListener("touchmove", onTouchMove, { passive: false });
+        el.addEventListener("touchend", onTouchEndOrCancel, { passive: true });
+        el.addEventListener("touchcancel", onTouchEndOrCancel, { passive: true });
+        return () => {
+            el.removeEventListener("touchstart", onTouchStart);
+            el.removeEventListener("touchmove", onTouchMove);
+            el.removeEventListener("touchend", onTouchEndOrCancel);
+            el.removeEventListener("touchcancel", onTouchEndOrCancel);
+        };
+    }, [isPaged, isVertical, canGoPrevChapter, canGoNextChapter, tocOpen, appearanceOpen, searchOpen, galleryOpen, quoteModalText, triggerScrollChapterSwitch]);
 
     // Ctrl+F opens in-book search; arrows / PageUp / PageDown / Space turn pages
     useEffect(() => {
@@ -2025,6 +2264,53 @@ export default function EpubReader({
             ? `${spreadStartIdx + 1}–${spreadStartIdx + 2}`
             : String(spreadStartIdx + 1))
         : String(verticalPageInfo.current);
+
+    const scrollRubberTransform = useMemo(() => {
+        if (isPaged || overscrollState.rubberPx <= 0 || overscrollState.direction === 0) {
+            return undefined;
+        }
+        if (isVertical) {
+            const dx = overscrollState.direction === 1 ? overscrollState.rubberPx : -overscrollState.rubberPx;
+            return `translate3d(${dx}px, 0, 0)`;
+        }
+        const dy = overscrollState.direction === 1 ? -overscrollState.rubberPx : overscrollState.rubberPx;
+        return `translate3d(0, ${dy}px, 0)`;
+    }, [isPaged, isVertical, overscrollState.rubberPx, overscrollState.direction]);
+
+    const scrollEnterAnimClass = !isPaged && scrollChapterTransitionDirRef.current === 1
+        ? " is-scroll-enter-next"
+        : !isPaged && scrollChapterTransitionDirRef.current === -1
+            ? " is-scroll-enter-prev"
+            : "";
+
+    const renderScrollChapterFooter = () => {
+        if (isPaged || !chapter || loading) return null;
+        if (!canGoNextChapter && !canGoPrevChapter) return null;
+        return (
+            <div className="epub-scroll-chapter-footer" onClick={(e) => e.stopPropagation()}>
+                {canGoNextChapter ? (
+                    <button
+                        type="button"
+                        className="epub-scroll-chapter-next-btn"
+                        onClick={() => triggerScrollChapterSwitch(1)}
+                    >
+                        <span className="epub-scroll-chapter-hint">
+                            {isMobile
+                                ? (language === "en" ? "Pull up for next section" : "Потяните вверх или нажмите")
+                                : (language === "en" ? "Keep scrolling for next section" : "Прокрутите вниз или нажмите")}
+                        </span>
+                        <span className="epub-scroll-chapter-target">
+                            → {nextChapterLabel}
+                        </span>
+                    </button>
+                ) : (
+                    <span className="epub-scroll-chapter-end-badge">
+                        {language === "en" ? "End of book" : "Конец книги"}
+                    </span>
+                )}
+            </div>
+        );
+    };
 
     return (
         <div className="epub-reader-shell" data-epub-eink={einkMode ? "true" : undefined}>
@@ -2754,32 +3040,40 @@ export default function EpubReader({
                     >
                         {useVirtualizedScroll ? (
                             <div
-                                className="epub-content-flow"
+                                key={`vscroll:${chapter?.index ?? 0}`}
+                                className={`epub-content-flow${scrollEnterAnimClass}`}
                                 style={{
-                                    position: "relative",
-                                    height: `${rowVirtualizer.getTotalSize()}px`,
+                                    transform: scrollRubberTransform,
                                 }}
                             >
-                                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                                    const p = paragraphs[virtualRow.index];
-                                    if (!p) return null;
-                                    return (
-                                        <div
-                                            key={p.index}
-                                            data-index={virtualRow.index}
-                                            ref={rowVirtualizer.measureElement}
-                                            style={{
-                                                position: "absolute",
-                                                top: 0,
-                                                left: 0,
-                                                width: "100%",
-                                                transform: `translateY(${virtualRow.start}px)`,
-                                            }}
-                                        >
-                                            {renderParagraph(p)}
-                                        </div>
-                                    );
-                                })}
+                                <div
+                                    style={{
+                                        position: "relative",
+                                        height: `${rowVirtualizer.getTotalSize()}px`,
+                                    }}
+                                >
+                                    {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                                        const p = paragraphs[virtualRow.index];
+                                        if (!p) return null;
+                                        return (
+                                            <div
+                                                key={p.index}
+                                                data-index={virtualRow.index}
+                                                ref={rowVirtualizer.measureElement}
+                                                style={{
+                                                    position: "absolute",
+                                                    top: 0,
+                                                    left: 0,
+                                                    width: "100%",
+                                                    transform: `translateY(${virtualRow.start}px)`,
+                                                }}
+                                            >
+                                                {renderParagraph(p)}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                                {renderScrollChapterFooter()}
                             </div>
                         ) : useTwoPageSpread ? (
                             <div
@@ -2797,11 +3091,59 @@ export default function EpubReader({
                         ) : (
                             <div
                                 key={isDiscretePaged ? `${chapter?.index ?? 0}:${spreadStartIdx}:${resolvedOrientation}` : `scroll:${chapter?.index ?? 0}`}
-                                className={`epub-content-flow${isDiscretePaged ? (pageTurnDirRef.current === 1 ? " is-turn-next" : pageTurnDirRef.current === -1 ? " is-turn-prev" : "") : ""}`}
+                                className={`epub-content-flow${isDiscretePaged ? (pageTurnDirRef.current === 1 ? " is-turn-next" : pageTurnDirRef.current === -1 ? " is-turn-prev" : "") : scrollEnterAnimClass}`}
+                                style={!isDiscretePaged ? { transform: scrollRubberTransform } : undefined}
                             >
                                 {visibleParagraphs.map((p) => renderParagraph(p))}
+                                {!isDiscretePaged && renderScrollChapterFooter()}
                             </div>
                         )}
+                    </div>
+                )}
+
+                {!isPaged && overscrollState.direction !== 0 && (
+                    <div
+                        className={[
+                            "epub-overscroll-pill",
+                            isVertical
+                                ? (overscrollState.direction === 1 ? "is-left" : "is-right")
+                                : (overscrollState.direction === 1 ? "is-bottom" : "is-top"),
+                            overscrollState.armed ? "is-armed" : "",
+                        ].filter(Boolean).join(" ")}
+                        aria-live="polite"
+                    >
+                        <span className="epub-overscroll-ring-wrap" aria-hidden="true">
+                            <svg className="epub-overscroll-ring" viewBox="0 0 36 36">
+                                <circle className="epub-overscroll-ring-bg" cx="18" cy="18" r="14" />
+                                <circle
+                                    className="epub-overscroll-ring-fill"
+                                    cx="18"
+                                    cy="18"
+                                    r="14"
+                                    strokeDasharray={87.96}
+                                    strokeDashoffset={87.96 * (1 - Math.min(1, overscrollState.progress))}
+                                />
+                            </svg>
+                            <span
+                                className={`epub-overscroll-arrow${isVertical ? " is-vertical" : ""}${overscrollState.direction === -1 ? " is-prev" : ""}${overscrollState.armed ? " is-flipped" : ""}`}
+                            >
+                                {isVertical ? "←" : "↓"}
+                            </span>
+                        </span>
+                        <span className="epub-overscroll-text">
+                            <span className="epub-overscroll-action">
+                                {overscrollState.armed
+                                    ? (overscrollState.source === "touch"
+                                        ? (language === "en" ? "Release to switch" : "Отпустите для перехода")
+                                        : (language === "en" ? "Switching…" : "Переход…"))
+                                    : (overscrollState.direction === 1
+                                        ? (language === "en" ? "Next section" : "Следующий раздел")
+                                        : (language === "en" ? "Previous section" : "Предыдущий раздел"))}
+                            </span>
+                            <span className="epub-overscroll-target">
+                                {overscrollState.direction === 1 ? nextChapterLabel : prevChapterLabel}
+                            </span>
+                        </span>
                     </div>
                 )}
 

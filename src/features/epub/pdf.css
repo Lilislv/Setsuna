@@ -16,13 +16,32 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 68px 20px 76px;
+    padding: 68px 20px 78px;
     box-sizing: border-box;
     -webkit-overflow-scrolling: touch;
 }
 
 .pdf-reader-shell.is-mobile .pdf-viewport-scroll {
-    padding: 60px 8px 72px;
+    padding: 58px 8px 72px;
+}
+
+.pdf-single-wrap {
+    display: flex;
+    justify-content: center;
+}
+
+.pdf-spread-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 16px;
+}
+
+.pdf-scroll-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
 }
 
 .pdf-page-stage {
@@ -34,8 +53,23 @@
     overflow: hidden;
 }
 
-.pdf-page-stage.is-night-invert .pdf-page-canvas {
-    filter: invert(0.88) hue-rotate(180deg) contrast(0.95);
+/* Color themes applied smoothly to PDF page canvases */
+.pdf-reader-shell.pdf-color-sepia .pdf-page-canvas {
+    filter: sepia(0.32) brightness(0.95) contrast(0.96);
+}
+
+.pdf-reader-shell.pdf-color-dark .pdf-page-canvas {
+    filter: invert(0.88) hue-rotate(180deg) contrast(0.94);
+}
+
+.pdf-reader-shell.pdf-color-eink .pdf-page-canvas {
+    filter: grayscale(1) contrast(1.22) brightness(1.04);
+}
+
+.pdf-reader-shell.pdf-color-eink .pdf-page-stage {
+    box-shadow: none;
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: 0;
 }
 
 .pdf-page-canvas {
@@ -76,9 +110,24 @@
     color: var(--epub-fg, var(--text-primary));
 }
 
+.pdf-reflow-surface.is-vertical {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    height: 100%;
+    max-height: calc(100vh - 150px);
+    overflow-x: auto;
+    overflow-y: hidden;
+    align-self: stretch;
+}
+
 .pdf-reflow-line {
     margin-bottom: 0.7em;
     word-break: break-word;
+}
+
+.pdf-reflow-surface.is-vertical .pdf-reflow-line {
+    margin-bottom: 0;
+    margin-left: 0.75em;
 }
 
 .pdf-status-card {
@@ -105,11 +154,21 @@
     cursor: pointer;
 }
 
+.pdf-nav-capsule {
+    max-width: min(680px, calc(100vw - 24px));
+}
+
+.pdf-scrubber {
+    width: clamp(90px, 18vw, 190px);
+    accent-color: var(--accent-blue, #4c8bf5);
+    cursor: pointer;
+}
+
 .pdf-page-jump {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 0 6px;
+    padding: 0 4px;
 }
 
 .pdf-page-input {
@@ -136,6 +195,10 @@
     white-space: nowrap;
 }
 
+.pdf-appearance-popover {
+    z-index: 65;
+}
+
 .pdf-drawer-backdrop {
     position: absolute;
     inset: 0;
@@ -147,7 +210,7 @@
 }
 
 .pdf-drawer {
-    width: min(360px, 88vw);
+    width: min(390px, 90vw);
     height: 100%;
     background: var(--bg-panel, #191a22);
     color: var(--text-primary, #f0f2f6);
@@ -161,7 +224,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 16px;
+    gap: 8px;
+    padding: 12px 14px;
     border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
 }
 
@@ -171,7 +235,7 @@
     padding: 10px 10px 24px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
 }
 
 .pdf-drawer-empty {
@@ -213,6 +277,55 @@
     font-size: 12px;
     opacity: 0.65;
     font-variant-numeric: tabular-nums;
+}
+
+.pdf-thumb-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 4px;
+}
+
+.pdf-thumb-tile {
+    appearance: none;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+    border-radius: 10px;
+    padding: 6px;
+    background: rgba(255, 255, 255, 0.03);
+    color: inherit;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+}
+
+.pdf-thumb-tile.is-active {
+    border-color: var(--accent-blue, #4c8bf5);
+    background: color-mix(in srgb, var(--accent-blue, #4c8bf5) 16%, transparent);
+}
+
+.pdf-thumb-frame {
+    width: 100%;
+    aspect-ratio: 1 / 1.41;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.pdf-thumb-canvas {
+    max-width: 100%;
+    max-height: 100%;
+    display: block;
+}
+
+.pdf-thumb-num {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.8;
 }
 
 .pdf-search-form {

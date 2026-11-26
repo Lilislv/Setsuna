@@ -5,6 +5,23 @@
 
 ---
 
+## 2026-11-26 — Telegram-Style Scroll Chapter Switching, Full-Featured PDF Reader & Android/Reader Tests (`feature/reader-scroll-pdf-polish`)
+
+- **Telegram-style elastic overscroll chapter switching in EPUB scroll mode (`src/features/epub/epubScrollBoundary.ts`, `src/features/epub/EpubReader.tsx`, `src/features/epub/epub.css`):**
+  - Pure boundary state machine (`detectScrollEdges`, `computeRubberBandPx`, `advanceWheelOverscroll`, `computeTouchPullState`) supporting both `horizontal-tb` vertical scroll and `vertical-rl` RTL scroll on Desktop & Android.
+  - **Automatic & smooth:** Desktop wheel/trackpad overscroll fills a Telegram-style SVG progress ring (`WHEEL_TRIGGER_PX = 260`) and switches chapters automatically with a 700ms cooldown; Android touch pull applies damped rubber-band stretch (`<= 46px`), flips the arrow & vibrates at `88px` (release-to-switch), and auto-triggers at `136px` without lifting the finger; continuous autoscroll now advances smoothly across chapter boundaries instead of stopping at chapter end; subtle clickable chapter-end footer added for both normal & virtualized scroll.
+  - Added spring slide-in enter animations (`epub-scroll-enter-next` / `epub-scroll-enter-prev`, disabled in `data-epub-eink="true"`).
+- **Full-featured PDF reader upgrade (`src/features/epub/pdfModel.ts`, `src/features/epub/PdfReader.tsx`, `src/features/epub/pdf.css`, `src/features/epub/EpubWorkspace.tsx`):**
+  - **Layouts & Reflow:** Page / Spread (2-up desktop) / Continuous Scroll (`IntersectionObserver` lazy canvas lifecycle to stay light on Android RAM) + Text/Reflow toggle (`TokenizedLine`) with horizontal and `vertical-rl` support; automatic vertical Japanese PDF column detection (`groupPdfTextItemsIntoLines` right-to-left column ordering).
+  - **`Aa` Appearance & Gestures:** Fit Width / Fit Page / custom zoom (`Ctrl+Wheel` + Android 2-finger pinch-to-zoom via `computePinchScale`), 90° page rotation, 4 PDF color themes (`original`, `sepia`, `dark`, `eink`), `ResizeObserver` refit, auto-hiding LiquidGlass chrome, Zen Mode (`Z`), Android hardware volume-key paging, and complete `useMobileBackHandler` overlay stack.
+  - **4-Tab Drawer & Annotations:** Outline/ToC, lazy Page Thumbnails grid, Bookmarks (`B`, synced via Drive), Notes (synced via Drive), Reading Point (`⌖` / `O` / `R`), floating selection pill (`Lookup` / `Copy` / `+ Note`), interactive bottom page scrubber, and daily stats integration.
+- **Tests & Beta Diagnostics Review (`tests/epub-reader-mobile.test.mjs`, analyzed `setsuna-diagnostics.log`):**
+  - Added unit tests covering EPUB scroll-edge detection (horizontal-tb + vertical-rl), wheel & Android touch pull state machines, vertical JP PDF column grouping, fit/pinch math, and Android Back stack peeling for PDF overlays.
+  - Reviewed tester's Windows `setsuna-diagnostics.log`: EPUB reading itself was healthy (`12–33 MB` JS heap, 0 errors); the real issue (`dictionary.db` growing `0 -> 1.48 GB -> 3.24 GB` with silent lookups after interrupted dictionary import) was already resolved on `dev` in `fbc9463` (`repair_dictionary_database`, `hoverScan.ts` 4s timeout, `Lookuper.tsx` Shift+click guard).
+- **Verification:** `npm.cmd run build` (0 TS errors), `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (**86 / 86 pass**), and `cargo check --no-default-features --manifest-path src-tauri/Cargo.toml` all green.
+
+---
+
 ## 2026-11-24 — Multi-Format Reader Support: FB2/FB2.ZIP, HTML, Markdown, Aozora TXT, DOCX, MOBI/AZW3 & PDF Reader (`feature/book-formats`)
 
 - **Isolated Rust format parsers (`src-tauri/src/book_formats/`, wired cleanly via `src-tauri/src/epub_import.rs`):**

@@ -808,12 +808,25 @@ export default function EpubWorkspace({
                         onProgressChange={(pageIdx, offset, progress) =>
                             onProgressChange(activeBookTab.id, pageIdx, offset, progress)
                         }
+                        onChangeBookBookmarks={(bookmarks) =>
+                            onChangeBookBookmarks?.(activeBookTab.id, bookmarks)
+                        }
+                        onChangeBookNotes={(notes) =>
+                            onChangeBookNotes?.(activeBookTab.id, notes)
+                        }
+                        onChangeReadingPoint={(point) =>
+                            onChangeReadingPoint?.(activeBookTab.id, point)
+                        }
                         onRecordReadingStats={(deltaChars, deltaSeconds) =>
                             onRecordReadingStats?.(activeBookTab.id, deltaChars, deltaSeconds)
                         }
+                        onOpenStats={() => setStatsOpen(true)}
+                        onUpdateSettings={onUpdateSettings}
                         onLookupToken={onLookupToken}
                         onOverlayStateChange={setReaderOverlayOpen}
                         closeOverlaySignal={closeOverlaySignal}
+                        immersive={isMobile && mobileImmersive}
+                        onToggleImmersive={() => setMobileImmersive((prev) => !prev)}
                     />
                 </Suspense>
             ) : viewMode === "reader" && activeBookTab ? (
