@@ -386,9 +386,10 @@
 
     .home-mode-status {
         grid-area: status;
-        max-width: 112px;
+        max-width: 132px;
         display: block;
-        font-size: 11.5px;
+        font-size: 11px;
+        padding-inline: 8px;
     }
 
     .home-mode-icon {
@@ -431,4 +432,46 @@
     .home-menu-header,
     .home-mode,
     .home-menu-footer { animation: none; opacity: 1; }
+}
+
+/* "?" next to each mode: opens its introduction (src/features/onboarding). */
+.home-mode-slot {
+    position: relative;
+    min-width: 0;
+    display: grid;
+}
+
+.home-mode-slot .home-mode-open {
+    right: 64px;
+}
+
+.home-mode-help {
+    position: absolute;
+    right: 20px;
+    bottom: 22px;
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 150ms ease, border-color 150ms ease, translate var(--dur-base) var(--ease-spring);
+    animation: motion-enter var(--dur-slow) var(--ease-spring-soft) backwards;
+}
+
+.home-mode-slot:hover .home-mode-help {
+    translate: 0 -4px;
+}
+
+.home-mode-help:hover,
+.home-mode-help:focus-visible {
+    color: var(--text-main);
+    border-color: var(--accent-blue);
+    outline: none;
 }

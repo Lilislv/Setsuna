@@ -239,6 +239,7 @@ const StatsPanel = memo(function StatsPanel({
             return (
                 <>
                     <div
+                        data-coach="stats"
                         ref={drag.panelRef}
                         {...drag.handlers}
                         onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button')) drag.reset(); }}
@@ -278,6 +279,7 @@ const StatsPanel = memo(function StatsPanel({
         return (
             <>
                 <div
+                    data-coach="stats"
                     ref={drag.panelRef}
                     {...drag.handlers}
                     onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest('button')) drag.reset(); }}
@@ -330,7 +332,7 @@ const StatsPanel = memo(function StatsPanel({
 
     return (
         <>
-            <div style={{
+            <div data-coach="stats" style={{
                 position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '30px',
                 padding: '10px 20px', backgroundColor: 'var(--bg-main)', borderTop: '1px solid var(--border-main)',
                 fontSize: '13px', userSelect: 'none', transition: '0.3s'

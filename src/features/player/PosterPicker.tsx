@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { IconClose, IconPlayerTab, IconSearch } from "../../components/Icons";
 import { rankPosters, type Poster, type PosterSearch, type TitleHint } from "./posterModel";
 import { createLocalPoster, deleteLocalPoster, isLocalPoster, readLocalPoster } from "./localPoster";
+import TourHelpButton from "../onboarding/TourHelpButton";
 
 let tmdbToken = "";
 
@@ -13,12 +14,14 @@ export function LibraryDialog({
     onClose,
     children,
     wide = false,
+    showHelp = true,
 }: {
     title: string;
     en: boolean;
     onClose: () => void;
     children: ReactNode;
     wide?: boolean;
+    showHelp?: boolean;
 }) {
     const dialog = useRef<HTMLDialogElement>(null);
     useEffect(() => {
@@ -26,11 +29,26 @@ export function LibraryDialog({
         element?.showModal();
         return () => element?.close();
     }, []);
+    const handleBackdropMouseDown = (event: React.MouseEvent<HTMLDialogElement>) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.clientX === 0 && event.clientY === 0) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) return;
+        if (
+            event.clientX < rect.left ||
+            event.clientX > rect.right ||
+            event.clientY < rect.top ||
+            event.clientY > rect.bottom
+        ) {
+            onClose();
+        }
+    };
     return (
         <dialog
             ref={dialog}
             className={wide ? "sp-library-dialog is-wide" : "sp-library-dialog"}
             aria-label={title}
+            onMouseDown={handleBackdropMouseDown}
             onCancel={(event) => {
                 event.preventDefault();
                 onClose();
@@ -38,9 +56,14 @@ export function LibraryDialog({
         >
             <header className="sp-dialog-head">
                 <h2>{title}</h2>
-                <button aria-label={en ? "Close" : "Закрыть"} onClick={onClose}>
-                    <IconClose />
-                </button>
+                <div className="sp-dialog-head-actions">
+                    {showHelp && (
+                        <TourHelpButton surface="mode:player" language={en ? "en" : "ru"} className="sp-dialog-help" />
+                    )}
+                    <button aria-label={en ? "Close" : "Закрыть"} onClick={onClose}>
+                        <IconClose />
+                    </button>
+                </div>
             </header>
             {children}
         </dialog>

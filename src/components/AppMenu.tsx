@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { IconBookTab, IconClear, IconExport, IconHome, IconImport, IconPin, IconSearch, IconSettings } from './Icons';
 import './AppMenu.css';
+import CoachTour from '../features/onboarding/CoachTour';
+import TourHelpButton from '../features/onboarding/TourHelpButton';
+import { menuTips } from '../features/onboarding/surfaceTips';
+import EscActionGrid from './EscActionGrid';
 
 export interface AppMenuSource {
     id: string;
@@ -101,6 +105,7 @@ export default function AppMenu({
             onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
             role="presentation"
         >
+            <CoachTour steps={menuTips(english ? 'en' : 'ru')} language={english ? 'en' : 'ru'} active={visible && open} delayMs={500} surface="menu" />
             <div ref={panelRef} tabIndex={-1} className="app-menu" role="dialog" aria-modal="true" aria-labelledby="app-menu-title">
                 <header className="app-menu-heading">
                     <div className="app-menu-heading-text">
@@ -108,9 +113,12 @@ export default function AppMenu({
                         <h1 id="app-menu-title">{title}</h1>
                         {subtitle && <p className="app-menu-subtitle">{subtitle}</p>}
                     </div>
+                    <div className="app-menu-heading-actions">
+                    <TourHelpButton surface="menu" language={english ? 'en' : 'ru'} className="app-menu-close app-menu-help" />
                     <button type="button" className="app-menu-close" onClick={onClose} aria-label={L('Close menu', 'Закрыть меню')}>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
                     </button>
+                    </div>
                 </header>
 
                 <div className="app-menu-body">
@@ -135,7 +143,7 @@ export default function AppMenu({
                                                 {archiveCount > 0 && <span>{archiveCount}</span>}
                                             </button>
                                         )}
-                                        <button type="button" className="app-menu-icon-button" onClick={onAddTab} title={L('New tab', 'Новая вкладка')} aria-label={L('New tab', 'Новая вкладка')}>+</button>
+                                        <button type="button" className="app-menu-icon-button" data-coach="menu-add" onClick={onAddTab} title={L('New tab', 'Новая вкладка')} aria-label={L('New tab', 'Новая вкладка')}>+</button>
                                     </>
                                 )}
                             </div>
@@ -171,20 +179,17 @@ export default function AppMenu({
                             ))}
                         </div>
 
-                        <div className="app-menu-section-head" style={{ marginTop: 22 }}>
-                            <span className="app-menu-section-label">{L('Actions', 'Действия')}</span>
-                        </div>
-                        <div className="app-menu-grid">
-                            {tiles.map((tile, index) => (
-                                <button key={tile.id} type="button" className="app-menu-tile" style={{ ['--i' as any]: index }} onClick={() => run(tile.onSelect)}>
-                                    <span className="app-menu-tile-icon">{tile.icon}</span>
-                                    <span className="app-menu-tile-text">
-                                        <strong>{tile.label}</strong>
-                                        {tile.hint && <small>{tile.hint}</small>}
-                                    </span>
-                                </button>
-                            ))}
-                        </div>
+                        <EscActionGrid
+                            menuId="texthooker"
+                            headerMarginTop={22}
+                            english={english}
+                            menuOpen={open}
+                            onRun={run}
+                            tiles={tiles.map((tile) => ({
+                                ...tile,
+                                coachId: `menu-${tile.id}`,
+                            }))}
+                        />
                     </section>
                 </div>
 

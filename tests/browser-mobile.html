@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Setsuna mobile harness</title>
+<style>html, body, #root { margin: 0; width: 100%; height: 100%; background: #151719; color: #d8dadd; }</style>
+<script>
+// Browser-only harness: a minimal stand-in for the Tauri bridge so the real app
+// renders in a phone-sized browser tab (open with an Android user agent).
+// Every command resolves to `window.__mockInvoke[cmd]` or null.
+(function () {
+    let nextId = 1;
+    const callbacks = {};
+    window.__mockInvoke = window.__mockInvoke || {};
+    window.__invokeLog = [];
+    window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main", windowLabel: "main" } },
+        transformCallback(cb, once) {
+            const id = nextId++;
+            callbacks[id] = (...args) => { if (once) delete callbacks[id]; return cb && cb(...args); };
+            window[`_${id}`] = callbacks[id];
+            return id;
+        },
+        unregisterCallback(id) { delete callbacks[id]; },
+        convertFileSrc(path) { return path; },
+        async invoke(cmd, args) {
+            window.__invokeLog.push(cmd);
+            if (cmd.startsWith("plugin:event|")) return nextId++;
+            const mock = window.__mockInvoke[cmd];
+            if (typeof mock === "function") return mock(args);
+            if (mock !== undefined) return mock;
+            return null;
+        },
+    };
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+    // A background browser tab pauses CSS animations on their first frame; ?noanim skips them.
+    if (/[?&]noanim/.test(location.search)) {
+        document.write('<style>*,*::before,*::after{animation:none!important;transition:none!important}</style>');
+    }
+    // Opens a phone settings page by its row title: await __open('Словари').
+    window.__open = async (name) => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const back = [...document.querySelectorAll('button')].find((b) => /Настройки|Settings/.test(b.textContent) && b.getBoundingClientRect().top < 120);
+        if (back && !document.querySelector('.m-list-row')) { back.click(); await wait(300); }
+        if (!document.querySelector('.m-list-row')) {
+            document.querySelector('[aria-label="Открыть настройки"], [aria-label="Open settings"]')?.click();
+            await wait(500);
+            [...document.querySelectorAll('button')].find((b) => /^(Понятно|Got it)$/.test(b.textContent.trim()))?.click();
+            await wait(300);
+        }
+        [...document.querySelectorAll('.m-list-row')].find((r) => r.textContent.includes(name))?.click();
+        await wait(500);
+        return Boolean(document.querySelector('.m-subpage'));
+    };
+    // ?drive: answer Google's token / Drive / quota calls (made through the Tauri
+    // HTTP plugin) so the connected Drive page renders.
+    if (/[?&]drive/.test(location.search)) {
+        const bodies = {};
+        const answer = (url) => {
+            if (url.includes("oauth2.googleapis.com/token")) return { access_token: "mock", expires_in: 3600, scope: "https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file" };
+            if (url.includes("/drive/v3/about")) return { storageQuota: { limit: String(15 * 2 ** 30), usage: String(4 * 2 ** 30) } };
+            if (url.includes("/drive/v3/files")) {
+                if (/name\+?%3D\+?%27dictionary|dictionary\.db/.test(decodeURIComponent(url)) || url.includes("dictionary")) {
+                    return { files: [{ id: "dict", name: "dictionary.db", size: String(Math.round(3.02 * 2 ** 30)), modifiedTime: "2026-11-20T18:42:00Z" }] };
+                }
+                return { files: [
+                    { id: "dict", name: "dictionary.db", size: String(Math.round(3.02 * 2 ** 30)), modifiedTime: "2026-11-20T18:42:00Z" },
+                    { id: "b1", name: "setsuna-backup.json", size: "102400", modifiedTime: "2026-11-10T17:29:29Z" },
+                ] };
+            }
+            return {};
+        };
+        let rid = 1000;
+        Object.assign(window.__mockInvoke, {
+            "plugin:http|fetch": ({ clientConfig }) => { const id = ++rid; bodies[id] = clientConfig.url; return id; },
+            "plugin:http|fetch_send": ({ rid: id }) => ({ status: 200, statusText: "OK", url: bodies[id], headers: [["content-type", "application/json"]], rid: id }),
+            "plugin:http|fetch_read_body": ({ rid: id }) => {
+                if (bodies[id] === null) return [1];
+                const bytes = Array.from(new TextEncoder().encode(JSON.stringify(answer(bodies[id]))));
+                bodies[id] = null;
+                return [...bytes, 0];
+            },
+        });
+    }
+    // ?folders: a fake Android file bridge with one picked anime folder.
+    if (/[?&]folders/.test(location.search)) {
+        const ok = (value) => JSON.stringify({ ok: true, value });
+        const tree = "content://com.android.externalstorage.documents/tree/primary%3AAnime";
+        const ep = (show, n) => ({ name: `[Sub] ${show} - ${String(n).padStart(2, "0")} [1080p].mkv`, uri: `${tree}/document/${show}-${n}`, size: 4e8 });
+        const sub = (show, n) => ({ name: `[Sub] ${show} - ${String(n).padStart(2, "0")} [1080p].ja.srt`, uri: `${tree}/document/${show}-${n}-srt`, size: 3e4 });
+        window.SetsunaMobileFiles = {
+            selectVideoFolder() {
+                setTimeout(() => window.dispatchEvent(new CustomEvent("setsuna-mobile-video-folder", { detail: tree })), 200);
+                return ok({ opened: true });
+            },
+            scanVideoFolder: () => ok({
+                name: "Anime",
+                directories: [
+                    { relative: "Frieren", episodes: [1, 2, 3, 4].map((n) => ep("Sousou no Frieren", n)), subtitles: [1, 2, 3, 4].map((n) => sub("Sousou no Frieren", n)) },
+                    { relative: "Bocchi the Rock", episodes: [1, 2, 3].map((n) => ep("Bocchi the Rock!", n)), subtitles: [] },
+                ],
+            }),
+            forgetVideoFolder: () => ok({ forgotten: true }),
+            videoFolders: () => ok([tree]),
+            mediaUrl: () => ok("http://127.0.0.1:1/m/token?u=x"),
+            readDocumentBase64: () => ok(btoa(String.fromCharCode(...new TextEncoder().encode("1\n00:00:01,000 --> 00:00:03,000\nテストです\n")))),
+        };
+    }
+    // A saved workspace for the next load: sessionStorage.mockWorkspace = JSON string.
+    try {
+        const workspace = sessionStorage.getItem("mockWorkspace");
+        if (workspace) window.__mockInvoke.load_workspace_state = workspace;
+    } catch { /* no session storage */ }
+    let flowPaused = true;
+    Object.assign(window.__mockInvoke, {
+        set_flow_timer_state: ({ paused }) => { flowPaused = Boolean(paused); return null; },
+        get_flow_timer_state: () => flowPaused,
+        get_dictionary_storage_info: { path: "/data/dictionary.db", size: 9.5 * 2 ** 20, availableBytes: 12 * 2 ** 30 },
+        discover_websocket_sources: [
+            { name: "Agent / Textractor", url: "ws://192.168.0.40:9003", host: "192.168.0.40", port: 9003, path: "", isLocal: false },
+            { name: "LunaTranslator", url: "ws://192.168.0.41:2333/api/text/origin", host: "192.168.0.41", port: 2333, path: "/api/text/origin", isLocal: false },
+            { name: "Agent / Textractor", url: "ws://192.168.0.52:6677", host: "192.168.0.52", port: 6677, path: "", isLocal: false },
+        ],
+        get_dictionaries: [],
+        list_dictionaries: [],
+        get_app_version: "0.6.0",
+        get_mobile_storage_info: { freeBytes: 12e9, dictionaryBytes: 9.5e6 },
+    });
+})();
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

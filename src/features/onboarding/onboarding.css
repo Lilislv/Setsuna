@@ -1,0 +1,310 @@
+/* Contextual onboarding: glass mode introductions and button tips.
+   Same LiquidGlass language as the reader islands (see epub.css). */
+.onb-backdrop,
+.onb-coach-layer {
+    --onb-glass: color-mix(in srgb, var(--bg-panel) 72%, transparent);
+    --onb-glass-strong: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+    --onb-glass-border: color-mix(in srgb, var(--text-main) 14%, transparent);
+    --onb-specular: inset 0 1px 0 color-mix(in srgb, #ffffff 16%, transparent);
+}
+
+.onb-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 12000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: color-mix(in srgb, #000 42%, transparent);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    animation: onb-fade 220ms ease both;
+}
+
+.onb-intro {
+    --onb-accent: var(--accent-blue);
+    position: relative;
+    width: min(460px, 100%);
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    padding: 26px 26px 20px;
+    border-radius: 26px;
+    background:
+        radial-gradient(120% 80% at 0% 0%, color-mix(in srgb, var(--onb-accent) 22%, transparent) 0%, transparent 55%),
+        var(--onb-glass);
+    backdrop-filter: blur(30px) saturate(1.6);
+    -webkit-backdrop-filter: blur(30px) saturate(1.6);
+    border: 1px solid var(--onb-glass-border);
+    box-shadow: var(--onb-specular), 0 30px 80px -20px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.2);
+    color: var(--text-main);
+    animation: motion-pop-in var(--dur-base, 260ms) var(--ease-spring, ease) backwards;
+}
+.onb-intro-epub { --onb-accent: #67c587; }
+.onb-intro-player { --onb-accent: #e5a957; }
+
+.onb-intro-kicker {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--onb-accent);
+    font-weight: 600;
+}
+.onb-intro-title {
+    margin: 6px 0 10px;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+.onb-intro-lead {
+    margin: 0 0 16px;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text-main);
+    opacity: 0.88;
+}
+.onb-intro-points {
+    list-style: none;
+    margin: 0 0 20px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.onb-intro-points li {
+    display: flex;
+    gap: 10px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--text-muted);
+}
+.onb-intro-num {
+    flex: 0 0 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--onb-accent);
+    background: color-mix(in srgb, var(--onb-accent) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--onb-accent) 30%, transparent);
+}
+.onb-intro-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.onb-btn {
+    appearance: none;
+    border: 1px solid var(--onb-glass-border);
+    background: color-mix(in srgb, var(--text-main) 6%, transparent);
+    color: var(--text-main);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s;
+}
+.onb-btn:hover { background: color-mix(in srgb, var(--text-main) 12%, transparent); }
+.onb-btn.is-primary {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #fff;
+}
+.onb-btn.is-primary:hover { background: color-mix(in srgb, var(--accent-blue) 86%, #fff); }
+.onb-btn:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+
+/* Button tips (variant A): ring around the button, card with an arrow. */
+.onb-coach-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 12000;
+    pointer-events: none;
+}
+.onb-coach-ring {
+    position: fixed;
+    border-radius: 12px;
+    border: 1.5px solid var(--accent-blue);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+    transition: left 0.18s ease, top 0.18s ease, width 0.18s ease, height 0.18s ease;
+}
+.onb-coach-card {
+    position: fixed;
+    pointer-events: auto;
+    padding: 12px 14px 10px;
+    border-radius: 14px;
+    background: var(--onb-glass-strong);
+    backdrop-filter: blur(24px) saturate(1.5);
+    -webkit-backdrop-filter: blur(24px) saturate(1.5);
+    border: 1px solid var(--onb-glass-border);
+    box-shadow: var(--onb-specular), 0 18px 48px -12px rgba(0, 0, 0, 0.55);
+    color: var(--text-main);
+    animation: motion-pop-in var(--dur-base, 260ms) var(--ease-spring, ease) backwards;
+}
+.onb-coach-card::before {
+    content: "";
+    position: absolute;
+    left: calc(var(--arrow-left, 50%) - 7px);
+    top: -7px;
+    width: 12px;
+    height: 12px;
+    transform: rotate(45deg);
+    background: inherit;
+    border-left: 1px solid var(--onb-glass-border);
+    border-top: 1px solid var(--onb-glass-border);
+    backdrop-filter: none;
+}
+.onb-coach-card.is-above::before {
+    top: auto;
+    bottom: -7px;
+    transform: rotate(225deg);
+}
+.onb-coach-card.is-inside::before { display: none; }
+.onb-coach-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 5px;
+}
+.onb-coach-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    min-width: 0;
+}
+.onb-coach-body {
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--text-muted);
+}
+.onb-coach-more {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    margin-top: 6px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-blue);
+    cursor: pointer;
+}
+.onb-coach-more:hover { text-decoration: underline; }
+
+/* "More" window: same glass card as the mode introductions, room for longer text. */
+.onb-detail-backdrop { z-index: 12500; pointer-events: auto; }
+.onb-intro.onb-detail { width: min(560px, 100%); }
+.onb-detail-body {
+    font-size: 13.5px;
+    line-height: 1.65;
+    color: var(--text-main);
+    margin-bottom: 18px;
+}
+.onb-detail-body p { margin: 0 0 10px; opacity: 0.9; }
+.onb-detail-h {
+    margin: 16px 0 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--onb-accent);
+}
+.onb-detail-list {
+    margin: 0 0 10px;
+    padding-left: 18px;
+    color: var(--text-muted);
+}
+.onb-detail-list li { margin-bottom: 5px; }
+
+.onb-coach-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 12px;
+}
+.onb-coach-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+.onb-coach-actions .onb-btn {
+    padding: 5px 11px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.onb-coach-count {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* "?" that replays a screen's tips. Inside toolbars it takes the toolbar's own
+   button class; floating, it sits in the bottom-left corner, quiet until hovered. */
+.onb-help-btn {
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+.onb-help-btn.is-floating {
+    position: fixed;
+    left: 14px;
+    z-index: 50;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid color-mix(in srgb, var(--text-main) 16%, transparent);
+    background: color-mix(in srgb, var(--bg-panel) 70%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: var(--text-muted);
+    font-size: 13px;
+    opacity: 0.55;
+    transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+.onb-help-btn.is-floating:hover,
+.onb-help-btn.is-floating:focus-visible {
+    opacity: 1;
+    color: var(--text-main);
+    border-color: var(--accent-blue);
+    outline: none;
+}
+.reader-island-help { min-width: 30px; justify-content: center; }
+.app-menu-help { font-size: 15px; }
+
+/* While a tour runs, auto-hiding chrome stays visible so the tips can point at it. */
+body.onb-touring .epub-floating-top.is-hidden,
+body.onb-touring .sp-top-hud[data-idle="true"],
+body.onb-touring .sp-transport[data-idle="true"] {
+    opacity: 1 !important;
+    transform: none !important;
+}
+/* The bottom capsule is centred with translateX(-50%): keep that, drop only the slide. */
+body.onb-touring .epub-floating-bottom.is-hidden {
+    opacity: 1 !important;
+    transform: translateX(-50%) !important;
+}
+body.onb-touring .epub-floating-top.is-hidden .epub-glass-pill,
+body.onb-touring .epub-floating-bottom.is-hidden .epub-glass-pill,
+body.onb-touring .sp-top-hud[data-idle="true"],
+body.onb-touring .sp-transport[data-idle="true"] {
+    pointer-events: auto !important;
+}
+
+@keyframes onb-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .onb-backdrop, .onb-intro, .onb-coach-card { animation: none; }
+    .onb-coach-ring { transition: none; }
+}

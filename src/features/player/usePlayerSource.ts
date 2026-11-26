@@ -2,6 +2,7 @@ import { useEffect, type RefObject } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type Hls from "hls.js";
 import { isMobileMediaPath, mobileMediaUrl } from "./mobileMedia";
+import { androidMediaUrl, isAndroidFolderPath } from "./androidFolders";
 
 export function usePlayerSource(
     video: RefObject<HTMLVideoElement | null>,
@@ -33,7 +34,16 @@ export function usePlayerSource(
                 });
         } else {
             const isDirectUrl = /^(?:https?|blob):/i.test(source);
-            element.src = isMobileMediaPath(source) ? mobileMediaUrl(source) : isDirectUrl ? source : convertFileSrc(source);
+            if (isAndroidFolderPath(source)) {
+                // Local media server (other origin): CORS keeps frames readable for Anki screenshots.
+                element.crossOrigin = "anonymous";
+                const url = androidMediaUrl(source);
+                if (!url) onError("This episode is not available any more. Refresh the library.");
+                else element.src = url;
+            } else {
+                element.removeAttribute("crossorigin");
+                element.src = isMobileMediaPath(source) ? mobileMediaUrl(source) : isDirectUrl ? source : convertFileSrc(source);
+            }
         }
         return () => {
             closed = true;

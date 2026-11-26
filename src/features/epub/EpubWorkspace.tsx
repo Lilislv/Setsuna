@@ -5,6 +5,7 @@ import { getTranslator } from "../../utils/i18n";
 import "../../components/WorkspaceShell.css";
 import { IconBookTab, IconHome, IconImport, IconSettings } from "../../components/Icons";
 import "../../components/AppMenu.css";
+import EscActionGrid from "../../components/EscActionGrid";
 import EpubLibrary, { type EpubBookMetaPatch } from "./EpubLibrary";
 import EpubReader from "./EpubReader";
 import EpubStatsModal from "./EpubStatsModal";
@@ -29,6 +30,9 @@ import MangaReader from "../manga/MangaReader";
 import CatalogPickerModal from "../manga/CatalogPickerModal";
 import { loadMangaCover, openMangaVolume, type MangaExportResult } from "../manga/mangaApi";
 import { isMangaTabData, type MangaMeta } from "../manga/mangaModel";
+import CoachTour from "../onboarding/CoachTour";
+import TourHelpButton from "../onboarding/TourHelpButton";
+import { epubMenuTips } from "../onboarding/surfaceTips";
 import "./epub.css";
 
 const PdfReader = lazy(() => import("./PdfReader"));
@@ -265,7 +269,7 @@ export default function EpubWorkspace({
                 onCloseLookup?.();
                 return;
             }
-            if (escMenuBlocked || document.querySelector(".modal-overlay, .settings-window")) return;
+            if (escMenuBlocked || document.querySelector(".modal-overlay, .settings-window, .onb-coach-layer, .onb-backdrop")) return;
             event.preventDefault();
             setEscMenuOpen(true);
         };
@@ -622,6 +626,7 @@ export default function EpubWorkspace({
             }}
             role="presentation"
         >
+            <CoachTour steps={epubMenuTips(language)} language={language} active={escMenuVisible && escMenuOpen} delayMs={500} surface="epub-menu" />
             <div
                 ref={escMenuPanelRef}
                 tabIndex={-1}
@@ -637,20 +642,23 @@ export default function EpubWorkspace({
                         <h1 id="epub-esc-menu-title">{activeBookTitle}</h1>
                         {activeBookSubtitle && <p className="app-menu-subtitle">{activeBookSubtitle}</p>}
                     </div>
-                    <button
-                        type="button"
-                        className="app-menu-close"
-                        onClick={() => setEscMenuOpen(false)}
-                        aria-label={isEn ? "Close menu" : "Закрыть меню"}
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
-                            <path d="M6 6l12 12M18 6 6 18" />
-                        </svg>
-                    </button>
+                    <div className="app-menu-heading-actions">
+                        <TourHelpButton surface="epub-menu" language={language} className="app-menu-close app-menu-help" />
+                        <button
+                            type="button"
+                            className="app-menu-close"
+                            onClick={() => setEscMenuOpen(false)}
+                            aria-label={isEn ? "Close menu" : "Закрыть меню"}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+                                <path d="M6 6l12 12M18 6 6 18" />
+                            </svg>
+                        </button>
+                    </div>
                 </header>
 
                 <div className="app-menu-body">
-                    <section className="app-menu-column app-menu-tabs-column" aria-label={t("epub.library")}>
+                    <section className="app-menu-column app-menu-tabs-column" data-coach="epub-menu-books" aria-label={t("epub.library")}>
                         <div className="app-menu-section-head">
                             <span className="app-menu-section-label">
                                 {t("epub.library")} <span className="app-menu-count">{visibleBooks.length}</span>
@@ -658,6 +666,7 @@ export default function EpubWorkspace({
                             <div className="app-menu-section-actions">
                                 <button
                                     type="button"
+                                    data-coach="epub-menu-add"
                                     className="app-menu-icon-button"
                                     onClick={() => runEscMenuAction(onOpenFile)}
                                     title={t("epub.openFile")}
@@ -699,55 +708,44 @@ export default function EpubWorkspace({
                     </section>
 
                     <section className="app-menu-column">
-                        <div className="app-menu-section-head">
-                            <span className="app-menu-section-label">{isEn ? "Actions" : "Действия"}</span>
-                        </div>
-                        <div className="app-menu-grid">
-                            <button
-                                type="button"
-                                className="app-menu-tile"
-                                style={{ ["--i" as string]: 0 }}
-                                onClick={() => runEscMenuAction(() => setViewMode("library"))}
-                            >
-                                <span className="app-menu-tile-icon"><IconBookTab /></span>
-                                <span className="app-menu-tile-text">
-                                    <strong>{t("epub.library")}</strong>
-                                    <small>{t("epub.booksCount", { count: visibleBooks.length })}</small>
-                                </span>
-                            </button>
-
-                            <button
-                                type="button"
-                                className="app-menu-tile"
-                                style={{ ["--i" as string]: 1 }}
-                                onClick={() => runEscMenuAction(onOpenFile)}
-                            >
-                                <span className="app-menu-tile-icon"><IconImport /></span>
-                                <span className="app-menu-tile-text">
-                                    <strong>{t("epub.openFile")}</strong>
-                                    <small>.epub · .fb2 · .pdf · .docx · .mobi · .txt · .md · .cbz · .mokuro</small>
-                                </span>
-                            </button>
-
-                            <button
-                                type="button"
-                                className="app-menu-tile"
-                                style={{ ["--i" as string]: 2 }}
-                                onClick={() => runEscMenuAction(onSettings)}
-                            >
-                                <span className="app-menu-tile-icon"><IconSettings /></span>
-                                <span className="app-menu-tile-text">
-                                    <strong>{t("workspace.settings")}</strong>
-                                    <small>{t("epub.title")}</small>
-                                </span>
-                            </button>
-                        </div>
+                        <EscActionGrid
+                            menuId="epub"
+                            english={isEn}
+                            menuOpen={escMenuOpen}
+                            onRun={runEscMenuAction}
+                            tiles={[
+                                {
+                                    id: "library",
+                                    coachId: "epub-menu-library",
+                                    label: t("epub.library"),
+                                    hint: t("epub.booksCount", { count: visibleBooks.length }),
+                                    icon: <IconBookTab />,
+                                    onSelect: () => setViewMode("library"),
+                                },
+                                {
+                                    id: "open",
+                                    coachId: "epub-menu-open",
+                                    label: t("epub.openFile"),
+                                    hint: ".epub · .fb2 · .pdf · .docx · .mobi · .txt · .md · .cbz · .mokuro",
+                                    icon: <IconImport />,
+                                    onSelect: onOpenFile,
+                                },
+                                {
+                                    id: "settings",
+                                    coachId: "epub-menu-settings",
+                                    label: t("workspace.settings"),
+                                    hint: t("epub.title"),
+                                    icon: <IconSettings />,
+                                    onSelect: onSettings,
+                                },
+                            ]}
+                        />
                     </section>
                 </div>
 
                 <footer className="app-menu-footer">
                     <div className="app-menu-footer-actions">
-                        <button type="button" className="is-home" onClick={() => runEscMenuAction(onHome)}>
+                        <button type="button" data-coach="epub-menu-home" className="is-home" onClick={() => runEscMenuAction(onHome)}>
                             <IconHome /> {isEn ? "Home screen" : "Главный экран"}
                         </button>
                     </div>

@@ -5,6 +5,7 @@ import { isMobilePlatform } from "../../utils/platform";
 import { escapeCardText, clipInterval, type PlayerScene } from "./model";
 import { captureFrame, recordSceneClip, type RecordedClip } from "./mobileClip";
 import { isMobileMediaPath, mobileMediaUrl } from "./mobileMedia";
+import { androidMediaUrl, isAndroidFolderPath } from "./androidFolders";
 
 export const subtitleScenes = new WeakMap<Element, PlayerScene>();
 
@@ -21,7 +22,11 @@ function randomHex() {
 // Phone: no FFmpeg, so the scene is recorded in the WebView (same interval and
 // quality presets as desktop) and handed to Anki as base64.
 async function recordMobileScene(settings: AppSettings, scene: PlayerScene, withFrame: boolean, exactRange: boolean) {
-    const url = isMobileMediaPath(scene.source) ? mobileMediaUrl(scene.source) : /^blob:/.test(scene.source) ? scene.source : "";
+    const url = isMobileMediaPath(scene.source)
+        ? mobileMediaUrl(scene.source)
+        : isAndroidFolderPath(scene.source)
+          ? androidMediaUrl(scene.source)
+          : /^blob:/.test(scene.source) ? scene.source : "";
     if (!url) return { recorded: undefined, frame: undefined };
     const middle = (scene.start + scene.end) / 2;
     if (settings.playerMiningUseClipForAnki === false) {

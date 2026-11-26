@@ -1,13 +1,14 @@
-import { useMemo } from "react";
+import { useState, type ReactNode } from "react";
 import { IconHome, IconSettings } from "../../components/Icons";
 import { readProgress } from "./libraryModel";
 import { episodeLabel } from "./localMedia";
 import { formatClock } from "./model";
-import { recentMobileMedia } from "./mobileMedia";
+import { forgetRecentMobileMedia, recentMobileMedia } from "./mobileMedia";
 import { cleanReleaseTitle } from "./posterModel";
 
-// Phone home of the video player: same look as the desktop library, built around the
-// system file picker (Android gives no folder paths to scan).
+// Phone home of the video player: open single files with the system picker, or
+// add whole folders (Android folder picker) and get the same library as on the
+// desktop: titles, posters, episodes and where you stopped.
 export function MobilePlayerHome({
     en,
     current,
@@ -19,6 +20,9 @@ export function MobilePlayerHome({
     onDeck,
     onSettings,
     onHome,
+    onAddFolder,
+    addingFolder,
+    library,
 }: {
     en: boolean;
     current?: { title: string; episode: string };
@@ -30,9 +34,20 @@ export function MobilePlayerHome({
     onDeck?: () => void;
     onSettings?: () => void;
     onHome?: () => void;
+    /** Android: pick a folder for the library. */
+    onAddFolder?: () => void;
+    addingFolder?: boolean;
+    /** The library of added folders (rendered below), if any folder was added. */
+    library?: ReactNode;
 }) {
     const t = (english: string, russian: string) => (en ? english : russian);
-    const recent = useMemo(() => recentMobileMedia(readProgress()), []);
+    const [recent, setRecent] = useState(() => recentMobileMedia(readProgress()));
+    const [confirmClear, setConfirmClear] = useState(false);
+    const forget = (key?: string) => {
+        forgetRecentMobileMedia(key);
+        setRecent(recentMobileMedia(readProgress()));
+        setConfirmClear(false);
+    };
     return (
         <main className="spm-home">
             <header className="spm-top">
@@ -82,9 +97,9 @@ export function MobilePlayerHome({
                     )}
                 </p>
                 <div className="spm-chips">
-                    <button type="button" onClick={onOpenUrl}>{t("Open URL", "По ссылке")}</button>
+                    <button type="button" data-coach="m-player-url" onClick={onOpenUrl}>{t("Open URL", "По ссылке")}</button>
                     {onDeck && (
-                        <button type="button" onClick={onDeck}>
+                        <button type="button" data-coach="m-player-deck" onClick={onDeck}>
                             {t("Deck", "Колода")}: <b>{deckName || "Anki"}</b>
                         </button>
                     )}
@@ -92,17 +107,54 @@ export function MobilePlayerHome({
                 {error && <p className="spm-error" role="alert">{error}</p>}
             </section>
 
+            {onAddFolder && !library && (
+                <section className="spm-folders">
+                    <div className="spm-section-head">
+                        <h2>{t("Video library", "Видеотека")}</h2>
+                        <small>
+                            {t(
+                                "Add a folder with a show or a whole anime folder once: Setsuna sorts episodes into titles, finds posters, matches subtitles and remembers where you stopped.",
+                                "Один раз добавь папку с сериалом или всю папку с аниме: Setsuna разложит серии по тайтлам, найдёт обложки, подберёт субтитры и запомнит, где ты остановился.",
+                            )}
+                        </small>
+                    </div>
+                    <button type="button" className="spm-folder-add" onClick={onAddFolder} disabled={addingFolder}>
+                        {addingFolder ? t("Reading the folder…", "Читаю папку…") : t("+ Add a folder", "+ Добавить папку")}
+                    </button>
+                </section>
+            )}
+
+            {library && (
+                <section className="spm-library">
+                    <div className="spm-section-head">
+                        <h2>{t("Video library", "Видеотека")}</h2>
+                    </div>
+                    {library}
+                </section>
+            )}
+
             {recent.length > 0 && (
                 <section className="spm-recent">
-                    <div className="spm-section-head">
-                        <h2>{t("Recently watched", "Недавно смотрели")}</h2>
-                        <small>{t("Pick the file again to resume", "Выбери файл снова — продолжится с места")}</small>
+                    <div className="spm-section-head spm-recent-head">
+                        <div>
+                            <h2>{t("Recently opened files", "Недавно открытые файлы")}</h2>
+                            <small>{t("Pick the file again to resume where you stopped", "Выбери файл снова — продолжится с того же места")}</small>
+                        </div>
+                        {confirmClear ? (
+                            <span className="spm-recent-confirm">
+                                <button type="button" className="is-danger" onClick={() => forget()}>{t("Clear", "Очистить")}</button>
+                                <button type="button" onClick={() => setConfirmClear(false)}>{t("Cancel", "Отмена")}</button>
+                            </span>
+                        ) : (
+                            <button type="button" className="spm-recent-clear" onClick={() => setConfirmClear(true)}>{t("Clear", "Очистить")}</button>
+                        )}
                     </div>
                     {recent.map((item) => {
                         const title = cleanReleaseTitle(item.name, true).title || item.name;
                         const pct = item.duration > 0 ? Math.min(100, (item.time / item.duration) * 100) : 0;
                         return (
-                            <button key={item.key} type="button" className="spm-recent-item" onClick={onOpenFiles}>
+                            <div key={item.key} className="spm-recent-row">
+                            <button type="button" className="spm-recent-item" onClick={onOpenFiles}>
                                 <span className="spm-recent-name">
                                     <strong>{title}</strong>
                                     <small>{episodeLabel(item.name, 0, en)}</small>
@@ -118,6 +170,16 @@ export function MobilePlayerHome({
                                     <span style={{ width: `${item.completed ? 100 : pct}%` }} />
                                 </span>
                             </button>
+                            <button
+                                type="button"
+                                className="spm-recent-remove"
+                                onClick={() => forget(item.key)}
+                                aria-label={t(`Remove ${title} from the list`, `Убрать «${title}» из списка`)}
+                                title={t("Remove from the list", "Убрать из списка")}
+                            >
+                                ×
+                            </button>
+                            </div>
                         );
                     })}
                 </section>

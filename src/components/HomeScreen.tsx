@@ -1,7 +1,9 @@
 import { appVersionLabel } from "../utils/appVersion";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { IconBookTab, IconPlayerTab, IconSettings, IconTextTab, IconWifi } from "./Icons";
 import { ANIME_PLAYER_AVAILABLE, EPUB_READER_AVAILABLE, YATSU_READER_AVAILABLE } from "../utils/featureFlags";
+import ModeIntro from "../features/onboarding/ModeIntro";
+import type { OnboardingMode } from "../features/onboarding/onboardingStore";
 import "./HomeScreen.css";
 
 type HomeScreenProps = {
@@ -33,6 +35,7 @@ export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, o
         }
     }, []);
     const isEn = language === "en";
+    const [helpMode, setHelpMode] = useState<OnboardingMode | null>(null);
     const items: ModeItem[] = [
         {
             id: "text",
@@ -96,8 +99,8 @@ export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, o
 
                 <div className="home-mode-grid">
                     {items.map((item, index) => (
+                        <div key={item.id} className="home-mode-slot">
                         <button
-                            key={item.id}
                             type="button"
                             className={`home-mode home-mode-${item.id}`}
                             style={{ ['--i' as any]: index }}
@@ -119,8 +122,20 @@ export default function HomeScreen({ language, onTextHooker, onEpub, onPlayer, o
                             </span>
                             <span className="home-mode-open" aria-hidden="true">→</span>
                         </button>
+                        <button
+                            type="button"
+                            className="home-mode-help"
+                            onClick={() => setHelpMode(item.id === "text" ? "texthooker" : item.id)}
+                            title={isEn ? `What is ${item.title}?` : `Что такое «${item.title}»?`}
+                            aria-label={isEn ? `What is ${item.title}?` : `Что такое «${item.title}»?`}
+                        >
+                            ?
+                        </button>
+                        </div>
                     ))}
                 </div>
+
+                {helpMode && <ModeIntro mode={helpMode} language={language} onClose={() => setHelpMode(null)} />}
 
                 <footer className="home-menu-footer">
                     <span>{isEn ? "One library. Three ways to read." : "Одна библиотека. Три режима чтения."}</span>

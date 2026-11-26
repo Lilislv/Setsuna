@@ -1,4 +1,5 @@
 import { addPlayerNote, subtitleScenes } from "../features/player/mining";
+import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
 import type { PlayerScene } from "../features/player/model";
 import { createHoverScanQueue, findHoverTextPoint, sameHoverTextPoint, scanTextNodes, selectScanRange } from '../utils/hoverScan';
 import { trackLookup } from '../utils/lookupStats';
@@ -38,11 +39,17 @@ export interface LookupData {
     externalScreenshot?: string | null;
     /** Character range of the looked-up word inside `sentence` (phone sheet). */
     match?: { start: number; length: number };
+    /** No dictionary is installed: the popup explains that instead of showing nothing. */
+    noDictionaries?: boolean;
 }
+
+/** Sent by the "no dictionaries" card; App opens Settings → Lookup → Dictionaries. */
+export const OPEN_SETTINGS_EVENT = 'setsuna:open-settings';
 export type LookupScreenshotSource =
     | { kind: 'internal' }
     | { kind: 'process'; captureSource: CaptureSourceBinding }
     | { kind: 'region'; dataUrl: string }
+    | { kind: 'callback'; capture: () => Promise<string | null>; unavailableMessage?: string }
     | { kind: 'none' };
 
 export interface LookuperProps {
@@ -769,7 +776,14 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                         return;
                     }
                 } else {
-                    if (hasMobileScreenCapture()) {
+                    if (screenshotSource?.kind === 'callback') {
+                        b64 = await screenshotSource.capture();
+                        if (!b64) {
+                            alert(screenshotSource.unavailableMessage || t('anki.processNotFound'));
+                            setIsAdding(false);
+                            return;
+                        }
+                    } else if (hasMobileScreenCapture()) {
                         document.documentElement.classList.add('setsuna-capture-clean');
                         try {
                             await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -1132,6 +1146,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
       [baseSettings, ankiDeck],
   );
   const [activeGrammarDesc, setActiveGrammarDesc] = useState<string | null>(null);
+  const [contextCopied, setContextCopied] = useState(false);
   const [playingAudio, setPlayingAudio] = useState<string | null>(null);
   const [audioFailed, setAudioFailed] = useState<Record<string, boolean>>({});
   const audioSerial = useRef(0);
@@ -1144,6 +1159,7 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
   const previousPopupKeysRef = useRef<string[]>([]);
   useEffect(() => {
     setActiveGrammarDesc(null);
+    setContextCopied(false);
 
     if (!(stack.length > 0 && settings?.ankiDeck && settings?.ankiFieldWord && settings.ankiFieldWord !== 'none')) {
         setAnkiStatuses({});
@@ -1308,8 +1324,9 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
               const current = scanLive.current;
               const parent = popup ? current.stack[popupIndex] : undefined;
               const sceneContext = playerScene ?? parent?.playerScene;
+              const noDictionaries = entries.length === 0 && !popup && !(current.settings?.dictionaries?.length);
               const data: LookupData = { rect: point.rect, entries, word, sentence: parent?.playerScene ? parent.sentence : sentence, playerScene: sceneContext, source: parent?.source,
-                  screenPoint: parent?.screenPoint, externalScreenshot: parent?.externalScreenshot };
+                  screenPoint: parent?.screenPoint, externalScreenshot: parent?.externalScreenshot, noDictionaries };
               if (popup) current.onReplaceAt?.(popupIndex, data);
               else current.onReplace?.(data);
           };
@@ -1451,6 +1468,8 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
   }, [renderStack, settings]);
 
   const sheetDrag = useRef<{ y: number; dy: number; at: number } | null>(null);
+  // Vertical (tate) reading on a phone: the sheet comes from the left and is swiped back left.
+  const sideDrag = useRef<{ x: number; y: number; dx: number; at: number; horizontal: boolean | null } | null>(null);
   // The sentence card sits right above the phone sheet, so it needs the sheet height.
   const [sheetHeight, setSheetHeight] = useState(0);
   const sheetObserver = useRef<ResizeObserver | null>(null);
@@ -1490,6 +1509,9 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
   const isLookupOnlyWindow = typeof window !== 'undefined' && /(jl-popup|lookup-window)/.test(window.location.pathname);
   const isCompactWindow = typeof window !== 'undefined' && !isLookupOnlyWindow && (window.innerWidth < 640 || window.innerHeight < 480);
   const isMobileSheet = isMobilePlatform() || isCompactWindow;
+  // Vertical text with its sentence card: dictionary on the left, the sentence
+  // stays readable in a tall column on the right (tate reads right to left).
+  const isSideSheet = isMobileSheet && verticalContext && Boolean(onSentenceLookup);
 
   // Swipe-down-to-close for the phone sheet. Only starts when the sheet is
   // scrolled to the top and follows the finger directly on the DOM nodes (no
@@ -1521,6 +1543,45 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
           node.style.transition = 'none';
           node.style.translate = `0 ${dy}px`;
       });
+  };
+  const sideTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+      if (event.touches.length !== 1 || isLeaving) {
+          sideDrag.current = null;
+          return;
+      }
+      sideDrag.current = { x: event.touches[0].clientX, y: event.touches[0].clientY, dx: 0, at: performance.now(), horizontal: null };
+  };
+  const sideTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+      const drag = sideDrag.current;
+      if (!drag) return;
+      const dx = event.touches[0].clientX - drag.x;
+      const dy = event.touches[0].clientY - drag.y;
+      if (drag.horizontal === null) {
+          if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+          drag.horizontal = Math.abs(dx) > Math.abs(dy);
+      }
+      if (!drag.horizontal) return;
+      const el = event.currentTarget;
+      drag.dx = Math.min(0, dx);
+      el.style.transition = 'none';
+      el.style.translate = `${drag.dx}px 0`;
+  };
+  const sideTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+      const drag = sideDrag.current;
+      sideDrag.current = null;
+      if (!drag || !drag.horizontal || drag.dx >= 0) return;
+      const el = event.currentTarget;
+      const velocity = -drag.dx / Math.max(1, performance.now() - drag.at);
+      if (-drag.dx > Math.min(120, el.offsetWidth * 0.3) || velocity > 0.6) {
+          el.style.transition = 'translate 200ms cubic-bezier(0.4, 0, 1, 1), opacity 200ms ease';
+          el.style.translate = `${-(el.offsetWidth + 24)}px 0`;
+          if (contextCardRef.current) contextCardRef.current.style.opacity = '0';
+          window.setTimeout(() => onClose?.(), 190);
+      } else {
+          el.style.transition = 'translate 420ms var(--ease-spring)';
+          el.style.translate = '';
+          window.setTimeout(() => { el.style.transition = ''; }, 440);
+      }
   };
   const sheetTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
       const drag = sheetDrag.current;
@@ -1566,10 +1627,34 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                         }
                     }}
                     lang="ja"
-                    className={`dict-mobile-context${verticalContext ? ' is-vertical' : ''}${isLeaving ? ' is-leaving' : ''}${sheetHeight ? '' : ' is-measuring'}`}
-                    style={{ bottom: sheetHeight + 10 }}
+                    className={`dict-mobile-context${verticalContext ? ' is-vertical' : ''}${isSideSheet ? ' is-side' : ''}${isLeaving ? ' is-leaving' : ''}${sheetHeight || isSideSheet ? '' : ' is-measuring'}`}
+                    style={isSideSheet ? undefined : { bottom: sheetHeight + 10 }}
                     onClick={(event) => event.stopPropagation()}
                 >
+                    <button
+                        type="button"
+                        className={`dict-mobile-context-copy${contextCopied ? ' is-copied' : ''}`}
+                        title={settings?.appLanguage === 'en' ? 'Copy sentence' : 'Скопировать предложение'}
+                        aria-label={settings?.appLanguage === 'en' ? 'Copy sentence' : 'Скопировать предложение'}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            const text = top.sentence || '';
+                            if (!text) return;
+                            void writeClipboardText(text)
+                                .catch(() => navigator.clipboard?.writeText(text))
+                                .then(() => {
+                                    setContextCopied(true);
+                                    window.setTimeout(() => setContextCopied(false), 1500);
+                                });
+                        }}
+                    >
+                        {contextCopied ? '✓' : (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <rect x="9" y="9" width="13" height="13" rx="2" />
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                            </svg>
+                        )}
+                    </button>
                     <TokenizedLine
                         text={top.sentence}
                         searchQuery=""
@@ -1583,7 +1668,28 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
             );
         })()}
         {groupedStack.map(({ data, groupedEntries }, index) => {
-            if (groupedEntries.length === 0) return null;
+            if (groupedEntries.length === 0) {
+                if (!data.noDictionaries || index !== 0) return null;
+                const en = settings?.appLanguage === 'en';
+                const width = Math.min(340, window.innerWidth - 20);
+                const left = Math.max(10, Math.min((data.rect?.left || 0), window.innerWidth - width - 10));
+                const below = (data.rect?.bottom || 0) + 8;
+                const top = below + 150 > window.innerHeight ? Math.max(10, (data.rect?.top || 0) - 158) : below;
+                return (
+                    <div key="no-dictionaries" className="dict-popup dict-no-dictionaries" data-popup-index={0} style={{ left, top, width }} onClick={(e) => e.stopPropagation()}>
+                        <div className="dict-no-dictionaries-title">{en ? 'No dictionaries yet' : 'Словари не загружены'}</div>
+                        <p>{en
+                            ? 'Setsuna looks words up in dictionaries you install. Add at least one (JMdict, for example) and this card will show the word.'
+                            : 'Setsuna ищет слова в словарях, которые ты установишь. Добавь хотя бы один (например, JMdict), и здесь появится перевод слова.'}</p>
+                        <button type="button" className="dict-no-dictionaries-link" onClick={() => {
+                            window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, { detail: 'lookup-dicts' }));
+                            onClose?.();
+                        }}>
+                            {en ? 'Open dictionary settings →' : 'Открыть настройки словарей →'}
+                        </button>
+                    </div>
+                );
+            }
             if (isMobileSheet && index !== groupedStack.length - 1) return null;
 
             const scale = settings?.lookupScale || 1.0;
@@ -1637,9 +1743,9 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    top: 'auto',
+                    top: isSideSheet ? 0 : 'auto',
                     width: '100%',
-                    maxHeight: '80vh',
+                    maxHeight: isSideSheet ? 'none' : '80vh',
                     zIndex: 10000 + index,
                     ['--lookup-font-family' as any]: resolveLookupFontFamily(settings),
                     fontFamily: LOOKUP_FONT_STACK,
@@ -1652,10 +1758,10 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
             }
 
             return (
-                <div key={index} ref={isMobileSheet ? measureSheet : undefined} className={`${isMobileSheet ? "dict-popup dict-mobile-sheet" : "dict-popup"}${isLeaving ? " is-leaving" : ""}`} data-popup-index={index} style={popupStyle}
-                    onTouchStart={isMobileSheet ? sheetTouchStart : undefined}
-                    onTouchMove={isMobileSheet ? sheetTouchMove : undefined}
-                    onTouchEnd={isMobileSheet ? sheetTouchEnd : undefined}
+                <div key={index} ref={isMobileSheet ? measureSheet : undefined} className={`${isMobileSheet ? "dict-popup dict-mobile-sheet" : "dict-popup"}${isSideSheet ? " is-side" : ""}${isLeaving ? " is-leaving" : ""}`} data-popup-index={index} style={popupStyle}
+                    onTouchStart={isSideSheet ? sideTouchStart : isMobileSheet ? sheetTouchStart : undefined}
+                    onTouchMove={isSideSheet ? sideTouchMove : isMobileSheet ? sheetTouchMove : undefined}
+                    onTouchEnd={isSideSheet ? sideTouchEnd : isMobileSheet ? sheetTouchEnd : undefined}
                     onTouchCancel={isMobileSheet ? sheetTouchEnd : undefined}
                     onClick={(e) => {
                     e.stopPropagation();

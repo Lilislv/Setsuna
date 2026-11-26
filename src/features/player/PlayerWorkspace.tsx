@@ -10,7 +10,9 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { AppSettings } from "../../components/SettingsModal";
 import DeckPicker from "../../components/DeckPicker";
 import { FuriganaLine } from "../../components/TextContainer";
-import { PlayerCardEditor, type SceneDraft } from "./PlayerCardEditor";
+import CoachTour from "../onboarding/CoachTour";
+import TourHelpButton from "../onboarding/TourHelpButton";
+import { playerMenuTips } from "../onboarding/surfaceTips";
 import {
     autoPauseResumeDelayMs,
     escapeCardText,
@@ -35,17 +37,28 @@ import { IconChevronDown, IconChevronUp, IconClose, IconHome, IconImport, IconPl
 import { isMobilePlatform } from "../../utils/platform";
 import { MOBILE_BACK_PRIORITY, useMobileBackHandler } from "../../utils/mobileBack";
 import "../../components/AppMenu.css";
+import EscActionGrid from "../../components/EscActionGrid";
 import { LibraryDialog } from "./PosterPicker";
 import { catalogEntries, cleanReleaseTitle, inferMediaTitle } from "./posterModel";
 import { PlayerLibrary } from "./PlayerLibrary";
 import { usePlayerLibrary } from "./usePlayerLibrary";
 import { MobilePlayerHome } from "./MobilePlayerHome";
 import { isMobileMediaPath, mobileProgressKey, registerMobileFiles } from "./mobileMedia";
+import { hasAndroidFolders, isAndroidFolderPath } from "./androidFolders";
 import { episodeProgress, naturalOrder, positionKey, readProgress, suggestedEpisode, type LibraryDirectory } from "./libraryModel";
 import "./player.css";
 import "./mobile.css";
 
 const ESC_MENU_CLOSE_MS = 180;
+
+function DeckIcon() {
+    return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="3" y="7" width="13" height="14" rx="2" />
+            <path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" />
+        </svg>
+    );
+}
 
 type Props = {
     settings: AppSettings;
@@ -57,6 +70,7 @@ function availableAudio(element: HTMLVideoElement) {
     return (element as HTMLVideoElement & { audioTracks?: AudioTrackList }).audioTracks;
 }
 type Mode = "normal" | "pause" | "pauseStart" | "fast" | "repeat" | "skip";
+type SceneDraft = { word: string; sentence: string; meaning: string; scene: PlayerScene };
 function CueText({ cue, scene, furigana }: { cue: Cue; scene?: PlayerScene; furigana: string }) {
     return (
         <span
@@ -191,7 +205,10 @@ export default function PlayerWorkspace(
         setLoading(true);
         setError("");
         try {
-            await invoke("player_allow_library_media", { root, path: selected.path });
+            // Android folders stream through the app's own media server; nothing to allow.
+            if (!isAndroidFolderPath(selected.path)) {
+                await invoke("player_allow_library_media", { root, path: selected.path });
+            }
             if (request.current !== id) return;
             setLibraryQueue({ root, directory });
             setSources(directory.episodes.map((episode) => episode.path));
@@ -280,7 +297,7 @@ export default function PlayerWorkspace(
             }
             if (
                 props.escMenuBlocked ||
-                document.querySelector("dialog[open], .modal-overlay, .settings-window, .deck-picker-backdrop")
+                document.querySelector("dialog[open], .modal-overlay, .settings-window, .deck-picker-backdrop, .onb-coach-layer, .onb-backdrop")
             )
                 return;
             event.preventDefault();
@@ -356,6 +373,7 @@ export default function PlayerWorkspace(
                   }}
                   role="presentation"
               >
+                  <CoachTour steps={playerMenuTips(props.language || "ru")} language={props.language || "ru"} active={escMenuVisible && escMenuOpen} delayMs={500} surface="player-menu" />
                   <div
                       ref={escMenuPanelRef}
                       tabIndex={-1}
@@ -371,21 +389,25 @@ export default function PlayerWorkspace(
                               <h1 id="player-esc-menu-title">{escMenuTitle}</h1>
                               <p className="app-menu-subtitle">{escMenuSubtitle}</p>
                           </div>
-                          <button
-                              type="button"
-                              className="app-menu-close"
-                              onClick={() => setEscMenuOpen(false)}
-                              aria-label={en ? "Close menu" : "Закрыть меню"}
-                          >
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
-                                  <path d="M6 6l12 12M18 6 6 18" />
-                              </svg>
-                          </button>
+                          <div className="app-menu-heading-actions">
+                              <TourHelpButton surface="player-menu" language={props.language || "ru"} className="app-menu-close app-menu-help" />
+                              <button
+                                  type="button"
+                                  className="app-menu-close"
+                                  onClick={() => setEscMenuOpen(false)}
+                                  aria-label={en ? "Close menu" : "Закрыть меню"}
+                              >
+                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+                                      <path d="M6 6l12 12M18 6 6 18" />
+                                  </svg>
+                              </button>
+                          </div>
                       </header>
 
                       <div className="app-menu-body">
                           <section
                               className="app-menu-column app-menu-tabs-column"
+                              data-coach="player-menu-list"
                               aria-label={!libraryOpen && sources.length > 0 ? (en ? "Episodes" : "Серии") : en ? "Library" : "Видеотека"}
                           >
                               <div className="app-menu-section-head">
@@ -400,6 +422,7 @@ export default function PlayerWorkspace(
                                   <div className="app-menu-section-actions">
                                       <button
                                           type="button"
+                                          data-coach="player-menu-add"
                                           className="app-menu-icon-button"
                                           onClick={() => runEscMenuAction(() => void choose())}
                                           title={en ? "Open media…" : "Открыть видео…"}
@@ -477,121 +500,100 @@ export default function PlayerWorkspace(
                           </section>
 
                           <section className="app-menu-column">
-                              <div className="app-menu-section-head">
-                                  <span className="app-menu-section-label">{en ? "Actions" : "Действия"}</span>
-                              </div>
-                              <div className="app-menu-grid">
-                                  {!libraryOpen ? (
-                                      <button
-                                          type="button"
-                                          className="app-menu-tile"
-                                          style={{ ["--i" as string]: 0 }}
-                                          onClick={() =>
-                                              runEscMenuAction(() => {
-                                                  setAutoNext(false);
-                                                  setLibraryOpen(true);
-                                              })
-                                          }
-                                      >
-                                          <span className="app-menu-tile-icon"><IconPlayerTab /></span>
-                                          <span className="app-menu-tile-text">
-                                              <strong>{en ? "Library" : "Видеотека"}</strong>
-                                              <small>{en ? "Browse shows & folders" : "Тайтлы и папки"}</small>
-                                          </span>
-                                      </button>
-                                  ) : currentSource ? (
-                                      <button
-                                          type="button"
-                                          className="app-menu-tile"
-                                          style={{ ["--i" as string]: 0 }}
-                                          onClick={() => runEscMenuAction(() => setLibraryOpen(false))}
-                                      >
-                                          <span className="app-menu-tile-icon"><IconPlayerTab /></span>
-                                          <span className="app-menu-tile-text">
-                                              <strong>{en ? "Back to video" : "Вернуться к видео"}</strong>
-                                              <small>{title}</small>
-                                          </span>
-                                      </button>
-                                  ) : null}
-
-                                  <button
-                                      type="button"
-                                      className="app-menu-tile"
-                                      style={{ ["--i" as string]: 1 }}
-                                      onClick={() => runEscMenuAction(() => void choose())}
-                                  >
-                                      <span className="app-menu-tile-icon"><IconImport /></span>
-                                      <span className="app-menu-tile-text">
-                                          <strong>{en ? "Open media…" : "Открыть видео…"}</strong>
-                                          <small>.mkv · .mp4 · .webm</small>
-                                      </span>
-                                  </button>
-
-                                  <button
-                                      type="button"
-                                      className="app-menu-tile"
-                                      style={{ ["--i" as string]: 2 }}
-                                      onClick={() =>
-                                          runEscMenuAction(() => {
+                              <EscActionGrid
+                                  menuId="player"
+                                  english={en}
+                                  menuOpen={escMenuOpen}
+                                  onRun={runEscMenuAction}
+                                  tiles={[
+                                      ...(!libraryOpen
+                                          ? [
+                                                {
+                                                    id: "library",
+                                                    coachId: "player-menu-library",
+                                                    label: en ? "Library" : "Видеотека",
+                                                    hint: en ? "Browse shows & folders" : "Тайтлы и папки",
+                                                    icon: <IconPlayerTab />,
+                                                    onSelect: () => {
+                                                        setAutoNext(false);
+                                                        setLibraryOpen(true);
+                                                    },
+                                                },
+                                            ]
+                                          : currentSource
+                                            ? [
+                                                  {
+                                                      id: "library",
+                                                      coachId: "player-menu-library",
+                                                      label: en ? "Back to video" : "Вернуться к видео",
+                                                      hint: title,
+                                                      icon: <IconPlayerTab />,
+                                                      onSelect: () => setLibraryOpen(false),
+                                                  },
+                                              ]
+                                            : []),
+                                      {
+                                          id: "open",
+                                          coachId: "player-menu-open",
+                                          label: en ? "Open media…" : "Открыть видео…",
+                                          hint: ".mkv · .mp4 · .webm",
+                                          icon: <IconImport />,
+                                          onSelect: () => void choose(),
+                                      },
+                                      {
+                                          id: "url",
+                                          coachId: "player-menu-url",
+                                          label: en ? "Open URL…" : "Открыть по URL…",
+                                          hint: "HTTPS stream / page",
+                                          icon: (
+                                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                                                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                                              </svg>
+                                          ),
+                                          onSelect: () => {
                                               setError("");
                                               setUrlVisible(true);
-                                          })
-                                      }
-                                  >
-                                      <span className="app-menu-tile-icon">
-                                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                                              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                                          </svg>
-                                      </span>
-                                      <span className="app-menu-tile-text">
-                                          <strong>{en ? "Open URL…" : "Открыть по URL…"}</strong>
-                                          <small>HTTPS stream / page</small>
-                                      </span>
-                                  </button>
-
-                                  {props.onDeckChange && (
-                                      <button
-                                          type="button"
-                                          className="app-menu-tile"
-                                          style={{ ["--i" as string]: 3 }}
-                                          onClick={() => runEscMenuAction(() => setDeckPickerOpen(true))}
-                                      >
-                                          <span className="app-menu-tile-icon">
-                                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                                  <rect x="3" y="7" width="13" height="14" rx="2" />
-                                                  <path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" />
-                                              </svg>
-                                          </span>
-                                          <span className="app-menu-tile-text">
-                                              <strong>{en ? "Anki deck" : "Колода Anki"}</strong>
-                                              <small>{activeDeckName}</small>
-                                          </span>
-                                      </button>
-                                  )}
-
-                                  {props.onSettings && (
-                                      <button
-                                          type="button"
-                                          className="app-menu-tile"
-                                          style={{ ["--i" as string]: 4 }}
-                                          onClick={() => runEscMenuAction(() => props.onSettings?.())}
-                                      >
-                                          <span className="app-menu-tile-icon"><IconSettings /></span>
-                                          <span className="app-menu-tile-text">
-                                              <strong>{en ? "Settings" : "Настройки"}</strong>
-                                              <small>{en ? "Anime Player" : "Аниме-плеер"}</small>
-                                          </span>
-                                      </button>
-                                  )}
-                              </div>
+                                          },
+                                      },
+                                      ...(props.onDeckChange
+                                          ? [
+                                                {
+                                                    id: "deck",
+                                                    coachId: "player-menu-deck",
+                                                    label: en ? "Anki deck" : "Колода Anki",
+                                                    hint: activeDeckName,
+                                                    icon: (
+                                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                                            <rect x="3" y="7" width="13" height="14" rx="2" />
+                                                            <path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" />
+                                                        </svg>
+                                                    ),
+                                                    onSelect: () => setDeckPickerOpen(true),
+                                                },
+                                            ]
+                                          : []),
+                                      ...(props.onSettings
+                                          ? [
+                                                {
+                                                    id: "settings",
+                                                    coachId: "player-menu-settings",
+                                                    label: en ? "Settings" : "Настройки",
+                                                    hint: en ? "Video Player" : "Видео-плеер",
+                                                    icon: <IconSettings />,
+                                                    onSelect: () => props.onSettings?.(),
+                                                },
+                                            ]
+                                          : []),
+                                  ]}
+                              />
                           </section>
                       </div>
 
                       <footer className="app-menu-footer">
                           <div className="app-menu-footer-actions">
                               {props.onHome && (
-                                  <button type="button" className="is-home" onClick={() => runEscMenuAction(() => props.onHome?.())}>
+                                  <button type="button" data-coach="player-menu-home" className="is-home" onClick={() => runEscMenuAction(() => props.onHome?.())}>
                                       <IconHome /> {en ? "Home screen" : "Главный экран"}
                                   </button>
                               )}
@@ -660,11 +662,21 @@ export default function PlayerWorkspace(
                 <button aria-expanded={urlVisible} onClick={() => setUrlVisible(!urlVisible)}>URL</button>
                 {props.onDeckChange && (
                     <button
+                        type="button"
+                        data-coach="player-deck"
                         className="sp-deck"
                         onClick={() => setDeckPickerOpen(true)}
-                        title={en ? "Choose the Anki deck for this mode" : "Выбрать колоду Anki для плеера"}
+                        title={en ? "Choose Anki deck for video cards" : "Выбрать колоду Anki для карточек из видео"}
                     >
-                        {props.settings.playerAnkiDeck || "Anki"}
+                        <DeckIcon />
+                        {props.settings.playerAnkiDeck ? (
+                            <>
+                                <span className="sp-deck-label">{en ? "Deck:" : "Колода:"}</span>
+                                <span className="sp-deck-name">{props.settings.playerAnkiDeck}</span>
+                            </>
+                        ) : (
+                            <span className="sp-deck-name">{en ? "Anki deck" : "Колода Anki"}</span>
+                        )}
                     </button>
                 )}
             </div>
@@ -809,6 +821,16 @@ export default function PlayerWorkspace(
                     onDeck={props.onDeckChange ? () => setDeckPickerOpen(true) : undefined}
                     onSettings={props.onSettings}
                     onHome={props.onHome}
+                    onAddFolder={hasAndroidFolders() ? () => void library.chooseFolder() : undefined}
+                    addingFolder={library.pending}
+                    library={library.roots.some(isAndroidFolderPath) ? (
+                        <PlayerLibrary
+                            library={library}
+                            en={en}
+                            opening={loading}
+                            openEpisode={openLibraryEpisode}
+                        />
+                    ) : undefined}
                 />
             )}
             {libraryOpen ? !isMobile && (
@@ -938,7 +960,6 @@ function Session({
     const [offset, setOffset] = useState(resume.offset);
     const [translationOffset, setTranslationOffset] = useState(resume.translationOffset);
     const [current, setCurrent] = useState(0);
-    const [draft, setDraft] = useState<SceneDraft | null>(null);
     const [studyOpen, setStudyOpen] = useState(false);
     const [tracks, setTracks] = useState<string[]>([]);
     const [audioTrack, setAudioTrack] = useState<number>();
@@ -976,9 +997,6 @@ function Session({
     usePlayerSource(video, compatible.copy || source, report);
     const mining = useRef(false);
     const [busy, setBusy] = useState(false);
-    useMobileBackHandler(isMobile && Boolean(draft), MOBILE_BACK_PRIORITY.MODAL, () => {
-        if (!busy) setDraft(null);
-    });
     useMobileBackHandler(isMobile && studyOpen, MOBILE_BACK_PRIORITY.MODAL, () => setStudyOpen(false));
     useMobileBackHandler(isMobile && moreMenuOpen, MOBILE_BACK_PRIORITY.MODAL, () => setMoreMenuOpen(false));
     useMobileBackHandler(isMobile && fullscreen, MOBILE_BACK_PRIORITY.READER_OVERLAY, () => {
@@ -1043,13 +1061,13 @@ function Session({
             idleTimerRef.current = null;
         }
         setControlsIdle(false);
-        if (isPlaying && !studyOpen && !draft && !moreMenuOpen && !shortcutsBlocked) {
+        if (isPlaying && !studyOpen && !moreMenuOpen && !shortcutsBlocked) {
             idleTimerRef.current = window.setTimeout(() => {
                 setControlsIdle(true);
                 idleTimerRef.current = null;
             }, isMobile ? 3200 : 2200);
         }
-    }, [isMobile, isPlaying, studyOpen, draft, moreMenuOpen, shortcutsBlocked]);
+    }, [isMobile, isPlaying, studyOpen, moreMenuOpen, shortcutsBlocked]);
     useEffect(() => {
         wakeControls();
     }, [wakeControls]);
@@ -1399,7 +1417,7 @@ function Session({
             mining.current = false;
         }
     };
-    const mine = async (edit = false, explicitCue?: Cue) => {
+    const mine = async (explicitCue?: Cue) => {
         const selected = explicitCue || cue || previousCue(cues, clock);
         const selectedScene = selected && sceneFor(selected);
         if (!source || !duration) return;
@@ -1421,16 +1439,7 @@ function Session({
                 : "",
             scene,
         };
-        if (!selectedScene || edit) {
-            video.current?.pause();
-            const interval =
-                range.a !== undefined && range.b !== undefined
-                    ? { start: range.a, end: range.b }
-                    : selectedScene
-                      ? clipInterval(scene, settings.playerClipPadStart, settings.playerClipPadEnd)
-                      : scene;
-            setDraft({ ...data, scene: { ...scene, ...interval } });
-        } else await saveCard(data);
+        await saveCard(data);
     };
     useEffect(() => {
         if (!moreMenuOpen) return;
@@ -1453,7 +1462,6 @@ function Session({
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (
-                draft ||
                 studyOpen ||
                 shortcutsBlocked ||
                 e.defaultPrevented ||
@@ -1483,8 +1491,6 @@ function Session({
                 stepBy(true);
             } else if (match(settings.playerKeyReplayCue || "r")) {
                 replayCue();
-            } else if (match(settings.playerKeyMine || "m")) {
-                if (!e.repeat) void mine(true);
             } else if (match(settings.playerKeyUpdateLast || "u")) {
                 if (!e.repeat) void updateLastCard();
             } else if (match(settings.playerKeyCopySub || "c")) {
@@ -1633,11 +1639,20 @@ function Session({
                             {onOpenDeckPicker && (
                                 <button
                                     type="button"
+                                    data-coach="player-hud-deck"
                                     className="sp-deck-pill"
                                     onClick={onOpenDeckPicker}
-                                    title={tr("Choose Anki deck", "Выбрать колоду Anki для плеера")}
+                                    title={tr("Choose Anki deck for video cards", "Выбрать колоду Anki для карточек из видео")}
                                 >
-                                    {deckName || "Anki"}
+                                    <DeckIcon />
+                                    {deckName ? (
+                                        <>
+                                            <span className="sp-deck-label">{tr("Deck:", "Колода:")}</span>
+                                            <span className="sp-deck-name">{deckName}</span>
+                                        </>
+                                    ) : (
+                                        <span className="sp-deck-name">{tr("Anki deck", "Колода Anki")}</span>
+                                    )}
                                 </button>
                             )}
 
@@ -1899,7 +1914,7 @@ function Session({
                             <button
                                 className="sp-mine-quick"
                                 disabled={busy || !duration}
-                                onClick={() => void mine(false)}
+                                onClick={() => void mine()}
                                 title={tr("Add this line to Anki with its clip", "Добавить реплику в Anki с клипом")}
                                 aria-label={tr("Add line to Anki", "Добавить реплику в Anki")}
                             >
@@ -1917,15 +1932,6 @@ function Session({
                                 {busy ? "…" : "↻"}
                             </button>
                         )}
-                        <button
-                            className="sp-mine-edit"
-                            disabled={busy || !duration}
-                            onClick={() => void mine(true)}
-                            title={tr("Create Anki card manually… (M)", "Создать карточку Anki вручную… (M)")}
-                            aria-label={tr("Create Anki card manually", "Создать карточку Anki вручную")}
-                        >
-                            ✎
-                        </button>
                     </div>
                 </PlayerTransport>
                 {studyOpen && (
@@ -2200,14 +2206,6 @@ function Session({
                         </div>
                     </LibraryDialog>
                 )}
-                {draft && (
-                    <PlayerCardEditor
-                        draft={draft}
-                        en={language === "en"}
-                        onClose={() => setDraft(null)}
-                        onSave={(data) => saveCard(data, true)}
-                    />
-                )}
                 {!isMobile && compatible.failed && source && !source.startsWith("https:") && (
                     <div className="sp-controls">
                         {compatible.busy ? (
@@ -2279,24 +2277,27 @@ function Session({
                         >
                             <IconSearch />
                         </button>
-                        <button
-                            disabled={!cues.length}
-                            onClick={() => moveCue(false)}
-                            aria-label={tr("Previous line", "Предыдущая реплика")}
-                            title={tr("Previous line (↑)", "Предыдущая реплика (↑)")}
-                        >
-                            <IconChevronUp />
-                        </button>
-                        <button
-                            disabled={!cues.length}
-                            onClick={() => moveCue(true)}
-                            aria-label={tr("Next line", "Следующая реплика")}
-                            title={tr("Next line (↓)", "Следующая реплика (↓)")}
-                        >
-                            <IconChevronDown />
-                        </button>
+                        <span className="sp-side-steps" data-coach="player-side-steps" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            <button
+                                disabled={!cues.length}
+                                onClick={() => moveCue(false)}
+                                aria-label={tr("Previous line", "Предыдущая реплика")}
+                                title={tr("Previous line (↑)", "Предыдущая реплика (↑)")}
+                            >
+                                <IconChevronUp />
+                            </button>
+                            <button
+                                disabled={!cues.length}
+                                onClick={() => moveCue(true)}
+                                aria-label={tr("Next line", "Следующая реплика")}
+                                title={tr("Next line (↓)", "Следующая реплика (↓)")}
+                            >
+                                <IconChevronDown />
+                            </button>
+                        </span>
                         <button
                             type="button"
+                            data-coach="player-side-close"
                             onClick={() => setTranscriptOpen(false)}
                             aria-label={tr("Close transcript", "Скрыть панель реплик")}
                             title={tr("Close transcript (T)", "Скрыть панель (T)")}

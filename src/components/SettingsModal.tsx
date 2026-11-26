@@ -1,4 +1,8 @@
 ﻿import { useState, useEffect, useRef } from "react";
+import { resetOnboarding } from '../features/onboarding/onboardingStore';
+import CoachTour from '../features/onboarding/CoachTour';
+import TourHelpButton from '../features/onboarding/TourHelpButton';
+import { settingsTips } from '../features/onboarding/surfaceTips';
 import FontPicker from './FontPicker';
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ReactNode } from "react";
@@ -137,6 +141,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
   const [localScrollOffset, setLocalScrollOffset] = useState(settings.autoScrollOffset ?? 80);
   const [wsAutoScanning, setWsAutoScanning] = useState(false);
   const [wsAutoStatus, setWsAutoStatus] = useState("");
+  const [wsDiscovered, setWsDiscovered] = useState<{ name: string; url: string; host: string; port: number; path: string; isLocal: boolean }[] | null>(null);
   const [textSyncStatus, setTextSyncStatus] = useState("");
   const [accountPassword, setAccountPassword] = useState("");
   const [accountStatus, setAccountStatus] = useState("");
@@ -176,45 +181,91 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           }
       });
 
+  const addDiscoveredWebSocket = (item: { name: string; url: string }) => {
+      const normalized = normalizeWebSocketUrl(item.url);
+      const current = settings.websockets || [];
+      if (current.some((ws) => normalizeWebSocketUrl(ws.url) === normalized)) return;
+      updateSetting('websockets', [
+          ...current,
+          { id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: item.name, url: item.url, active: true },
+      ]);
+  };
+
+  const addAllDiscoveredWebSockets = (items: { name: string; url: string }[]) => {
+      const current = settings.websockets || [];
+      const existing = new Set(current.map((ws) => normalizeWebSocketUrl(ws.url)));
+      const additions = items
+          .filter((item) => {
+              const norm = normalizeWebSocketUrl(item.url);
+              if (existing.has(norm)) return false;
+              existing.add(norm);
+              return true;
+          })
+          .map((item, idx) => ({
+              id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+              name: item.name,
+              url: item.url,
+              active: true,
+          }));
+      if (additions.length > 0) updateSetting('websockets', [...current, ...additions]);
+  };
+
   const autoFindWebSocket = async () => {
       setWsAutoScanning(true);
-      setWsAutoStatus(settings.appLanguage === 'en' ? 'Scanning...' : 'Ищу подключения...');
+      setWsDiscovered(null);
+      setWsAutoStatus(settings.appLanguage === 'en' ? 'Scanning this PC and local network...' : 'Сканирую этот ПК и локальную сеть...');
       try {
-          const hosts = new Set(['127.0.0.1', 'localhost']);
+          const extraHostSet = new Set<string>();
           if (settings.remoteCaptureAgentUrl) {
-              try { hosts.add(new URL(settings.remoteCaptureAgentUrl).hostname); } catch {}
+              try { extraHostSet.add(new URL(settings.remoteCaptureAgentUrl).hostname); } catch {}
           }
           (settings.websockets || []).forEach((ws) => {
-              try { hosts.add(new URL(normalizeWebSocketUrl(ws.url)).hostname); } catch {}
+              try { extraHostSet.add(new URL(normalizeWebSocketUrl(ws.url)).hostname); } catch {}
           });
 
-          const ports = [9002, 9001, 9000, 9003, 9004, 9005, 6677, 6678, 8080, 27080];
-          const candidates = Array.from(hosts).flatMap((host) =>
-              ports.flatMap((port) => [
-                  { name: 'Agent / Textractor', url: `ws://${host}:${port}` },
-                  { name: 'LunaTranslator', url: `ws://${host}:${port}/api/text/origin` },
-              ])
-          );
-
-          const existing = new Set((settings.websockets || []).map((ws) => normalizeWebSocketUrl(ws.url)));
-          for (let i = 0; i < candidates.length; i += 8) {
-              const batch = candidates.slice(i, i + 8).filter((candidate) => !existing.has(candidate.url));
-              const results = await Promise.all(batch.map(async (candidate) => ({
-                  ...candidate,
-                  ok: await testWebSocketUrl(candidate.url),
-              })));
-              const found = results.find((result) => result.ok);
-              if (found) {
-                  updateSetting('websockets', [
-                      ...(settings.websockets || []),
-                      { id: Date.now().toString(), name: found.name, url: found.url, active: true },
-                  ]);
-                  setWsAutoStatus(settings.appLanguage === 'en' ? `Found: ${found.url}` : `Найдено: ${found.url}`);
-                  return;
+          let found: { name: string; url: string; host: string; port: number; path: string; isLocal: boolean }[] = [];
+          try {
+              found = await invoke<typeof found>('discover_websocket_sources', {
+                  extraHosts: Array.from(extraHostSet),
+                  scanLan: true,
+              });
+          } catch {
+              // Browser/non-Tauri fallback: probe local and saved hosts without early return.
+              const hosts = new Set(['127.0.0.1', 'localhost', ...extraHostSet]);
+              const ports = [9002, 9001, 9000, 9003, 9004, 9005, 6677, 6678, 2333, 2334, 8080, 27080];
+              const candidates = Array.from(hosts).flatMap((host) =>
+                  ports.flatMap((port) => [
+                      { name: 'Agent / Textractor', url: `ws://${host}:${port}`, host, port, path: '', isLocal: host === '127.0.0.1' || host === 'localhost' },
+                      { name: 'LunaTranslator', url: `ws://${host}:${port}/api/text/origin`, host, port, path: '/api/text/origin', isLocal: host === '127.0.0.1' || host === 'localhost' },
+                  ])
+              );
+              const collected: typeof found = [];
+              for (let i = 0; i < candidates.length; i += 8) {
+                  const batch = candidates.slice(i, i + 8);
+                  const results = await Promise.all(batch.map(async (candidate) => ({
+                      ...candidate,
+                      ok: await testWebSocketUrl(candidate.url),
+                  })));
+                  results.forEach((result) => {
+                      if (result.ok) {
+                          const { ok: _ok, ...item } = result;
+                          collected.push(item);
+                      }
+                  });
               }
+              const byUrl = new Map<string, typeof found[number]>();
+              collected.forEach((item) => { if (!byUrl.has(item.url)) byUrl.set(item.url, item); });
+              found = Array.from(byUrl.values());
           }
 
-          setWsAutoStatus(settings.appLanguage === 'en' ? 'Nothing found. Add IP:port manually.' : 'Ничего не найдено. Можно добавить IP:port вручную.');
+          setWsDiscovered(found);
+          if (found.length > 0) {
+              setWsAutoStatus(settings.appLanguage === 'en' ? `Found ${found.length} connections` : `Найдено подключений: ${found.length}`);
+          } else {
+              setWsAutoStatus(settings.appLanguage === 'en'
+                  ? 'Nothing found on this PC or LAN. Make sure the hooker is running, or add IP:port manually.'
+                  : 'Ничего не найдено на этом ПК и в локальной сети. Убедитесь, что хукер запущен, или добавьте IP:port вручную.');
+          }
       } finally {
           setWsAutoScanning(false);
       }
@@ -801,7 +852,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           ...settings,
           theme: 'dark', fontSize: 26, fontFamily: "'Noto Serif JP', 'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif",
           customFontFamily: '', customFontData: '', customFontPath: '', customFontName: '',
-          panelPosition: 'bottom', autoScrollOffset: 80, textOrientation: 'horizontal',
+          panelPosition: 'top-right', autoScrollOffset: 80, textOrientation: 'horizontal',
           lookupScale: 1.0, lookupFontSize: 14, lookupTagFontSize: 11, lookupWidth: 380,
       });
       setResetDialog(false);
@@ -837,6 +888,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           setHighlightedSection(initialSection);
       } else if (initialSection.startsWith('epub-')) {
           setActiveTab('epub');
+          setActiveSubTab(initialSection);
+          setHighlightedSection(initialSection);
+      } else if (initialSection.startsWith('lookup-')) {
+          setActiveTab('lookup');
           setActiveSubTab(initialSection);
           setHighlightedSection(initialSection);
       }
@@ -904,6 +959,14 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
           </div>
       )}
 
+      <CoachTour
+        steps={settingsTips(activeTab, settings.appLanguage || 'ru')}
+        language={settings.appLanguage || 'ru'}
+        active={isOpen && !isPreviewMode && !wizardOpen && !isClosing}
+        delayMs={600}
+        watch={activeTab === 'anki' || activeTab === 'cloud'}
+        surface="settings"
+      />
       <div className={`settings-overlay${isPreviewMode ? ' is-preview' : ''}${peekSlider ? ' is-peeking' : ''}${isClosing ? ' is-closing' : ''}`} onClick={() => { if (!isPreviewMode) { handleCancel(); onClearLookup(); } }}>
         <div className={`settings-window${isPreviewMode ? ' is-preview' : ''}${peekSlider ? ' is-peeking' : ''}${isClosing ? ' is-closing' : ''}`} onClick={(e) => { e.stopPropagation(); onClearLookup(); }}>
           <header className="settings-topbar">
@@ -915,6 +978,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                   </div>
               </div>
               <div className="settings-topbar-actions">
+                  <TourHelpButton surface="settings" language={settings.appLanguage || 'ru'} className="settings-action" />
                   <button type="button" className="settings-action" onClick={() => setIsPreviewMode(true)}>
                       <IconEye /> <span>{t('settings.preview')}</span>
                   </button>
@@ -996,6 +1060,10 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                               <select className="modern-select" value={settings.appLanguage || 'ru'} onChange={(e) => updateSetting('appLanguage', e.target.value as any)}><option value="ru">{t('wizard.language.ru')}</option><option value="en">{t('wizard.language.en')}</option></select>
                           </div>
                       </div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 15, fontSize: 12, color: 'var(--text-muted)' }}>
+                          <span>{isEnglish ? 'Tips for buttons and modes are shown once, the first time you open them.' : 'Подсказки по кнопкам и режимам показываются один раз, при первом знакомстве.'}</span>
+                          <button type="button" style={{ flexShrink: 0, padding: '6px 12px', fontSize: 12, borderRadius: 6, cursor: 'pointer', background: 'var(--bg-side)', color: 'var(--text-main)', border: '1px solid var(--border-main)' }} onClick={() => resetOnboarding()}>{isEnglish ? 'Show tips again' : 'Показать подсказки заново'}</button>
+                      </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 11px', marginBottom: 15, borderRadius: 8, background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.25)', fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
                           <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 999, background: 'rgba(245, 158, 11, 0.18)', color: '#f59e0b', flexShrink: 0 }}>
                               {isEnglish ? 'ALPHA' : 'АЛЬФА'}
@@ -1060,13 +1128,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                       <div className="card-label" style={{ color: 'var(--text-main)' }}>{t('settings.statsPanel')}</div>
                       <div style={{ display: 'flex', gap: '15px' }}>
                           <div style={{ flex: 1 }}>
-                              <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '6px' }}>{t('settings.position')}</div>
-                              <select className="modern-select" value={settings.panelPosition || 'bottom'} onChange={(e) => updateSetting('panelPosition', e.target.value as any)}>
-                                  <option value="bottom">{t('settings.bottomDocked')}</option>
-                                  <option value="top-right">{t('settings.topRightFloating')}</option>
-                              </select>
-                          </div>
-                          <div style={{ flex: 1 }}>
                               <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '6px' }}>{t('settings.readingSpeed')}</div>
                               <select className="modern-select" value={settings.speedMetric || 'chars'} onChange={(e) => updateSetting('speedMetric', e.target.value as any)}>
                                   <option value="chars">{t('settings.metricChars')}</option>
@@ -1124,6 +1185,67 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                               {settings.appLanguage === 'en' ? 'Connect primary WebSocket on startup' : 'Подключать основной WebSocket при запуске'}
                           </label>
                           {wsAutoStatus && <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginBottom: '8px' }}>{wsAutoStatus}</div>}
+                          {wsDiscovered && wsDiscovered.length > 0 && (() => {
+                              const existingUrls = new Set((settings.websockets || []).map((ws) => normalizeWebSocketUrl(ws.url)));
+                              const pendingCount = wsDiscovered.filter((item) => !existingUrls.has(normalizeWebSocketUrl(item.url))).length;
+                              return (
+                                  <div className="ws-discover-results">
+                                      <div className="ws-discover-header">
+                                          <span>
+                                              {settings.appLanguage === 'en'
+                                                  ? `Found on this PC & LAN (${wsDiscovered.length})`
+                                                  : `Найденные на ПК и в сети (${wsDiscovered.length})`}
+                                          </span>
+                                          <div className="ws-discover-header-actions">
+                                              {pendingCount > 1 && (
+                                                  <button
+                                                      type="button"
+                                                      className="ws-discover-add-btn"
+                                                      onClick={() => addAllDiscoveredWebSockets(wsDiscovered)}
+                                                  >
+                                                      {settings.appLanguage === 'en' ? 'Add all' : 'Добавить все'}
+                                                  </button>
+                                              )}
+                                              <button
+                                                  type="button"
+                                                  className="ws-discover-close-btn"
+                                                  onClick={() => setWsDiscovered(null)}
+                                                  title={t('common.close')}
+                                                  aria-label={t('common.close')}
+                                              >
+                                                  ✕
+                                              </button>
+                                          </div>
+                                      </div>
+                                      <div className="ws-discover-list">
+                                          {wsDiscovered.map((item) => {
+                                              const added = existingUrls.has(normalizeWebSocketUrl(item.url));
+                                              return (
+                                                  <div key={item.url} className="ws-discover-row">
+                                                      <span className={`ws-discover-badge${item.isLocal ? ' is-local' : ''}`}>
+                                                          {item.isLocal ? (settings.appLanguage === 'en' ? 'This PC' : 'Этот ПК') : 'LAN'}
+                                                      </span>
+                                                      <div className="ws-discover-info">
+                                                          <strong>{item.name}</strong>
+                                                          <code>{item.url}</code>
+                                                      </div>
+                                                      <button
+                                                          type="button"
+                                                          className={`ws-discover-add-btn${added ? ' is-added' : ''}`}
+                                                          disabled={added}
+                                                          onClick={() => addDiscoveredWebSocket(item)}
+                                                      >
+                                                          {added
+                                                              ? (settings.appLanguage === 'en' ? 'Added' : 'Добавлено')
+                                                              : (settings.appLanguage === 'en' ? 'Add' : 'Добавить')}
+                                                      </button>
+                                                  </div>
+                                              );
+                                          })}
+                                      </div>
+                                  </div>
+                              );
+                          })()}
                           {(!settings.websockets || settings.websockets.length === 0) ? ( <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{t('settings.noConnections')}</div> ) : (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                   {settings.websockets.map((ws, idx) => (
@@ -1868,7 +1990,6 @@ export default function SettingsModal({ isOpen, onClose, settings, onSettingsCha
                                 ['playerKeyBack', settings.appLanguage === 'en' ? 'Back' : 'Назад'],
                                 ['playerKeyForward', settings.appLanguage === 'en' ? 'Forward' : 'Вперёд'],
                                 ['playerKeyReplayCue', settings.appLanguage === 'en' ? 'Replay / prev cue' : 'Повтор / пред. реплика'],
-                                ['playerKeyMine', settings.appLanguage === 'en' ? 'Mine clip' : 'Майнить клип'],
                                 ['playerKeyUpdateLast', settings.appLanguage === 'en' ? 'Update last Anki card' : 'Дополнить посл. карточку'],
                                 ['playerKeyCopySub', settings.appLanguage === 'en' ? 'Copy subtitle' : 'Копировать реплику'],
                                 ['playerKeyOffsetMinus', settings.appLanguage === 'en' ? 'Subs later' : 'Субтитры позже'],

@@ -551,6 +551,7 @@ export default function SettingsLookup({ settings, updateSetting, highlightedSec
                     initialTab={shareDialog.tab}
                     onClose={() => setShareDialog(null)}
                     syncDictionaries={syncDictionaries}
+                    refreshToken={settings.gdriveRefreshToken}
                 />
             )}
             <div id="lookup-dicts" className={`modern-card ${highlightedSection === "lookup-dicts" ? "card-highlighted" : ""}`} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>

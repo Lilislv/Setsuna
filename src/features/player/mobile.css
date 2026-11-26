@@ -361,3 +361,97 @@
     height: 100%;
     background: #f0b96b;
 }
+
+/* ---- Phone: folders library + removable recent files ---- */
+.spm-folders {
+    display: grid;
+    gap: 12px;
+    padding: 16px;
+    border: 1px solid var(--line, var(--border-main));
+    border-radius: 20px;
+    background: var(--surface-1, var(--bg-panel));
+}
+.spm-folders .spm-section-head small { line-height: 1.45; }
+.sp-workspace .spm-folder-add {
+    min-height: 48px;
+    border: 0;
+    border-radius: 14px;
+    background: color-mix(in srgb, #f0b96b 22%, var(--surface-2, var(--bg-side)));
+    color: var(--text-main);
+    font: inherit;
+    font-weight: 600;
+}
+.sp-workspace .spm-folder-add:disabled { opacity: 0.6; }
+
+/* The desktop library, reused inside the phone home: no second page title. */
+.spm-home .sp-library {
+    min-height: 0;
+    padding: 0;
+    background: none;
+    overflow: visible;
+}
+.spm-home .sp-library-inner { padding: 0; gap: 12px; }
+.spm-home .sp-library-header { padding: 0; }
+.spm-home .sp-library-title { display: none; }
+.spm-home .sp-library-actions { margin-left: auto; display: flex; gap: 8px; }
+.spm-library { display: grid; gap: 10px; }
+.spm-home .sp-library-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.spm-home .sp-library-filters { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.spm-home .sp-library-search { min-width: 0; }
+.spm-home .sp-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+
+.spm-recent-head {
+    display: flex !important;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+.spm-recent-head > div { display: grid; gap: 2px; min-width: 0; }
+.sp-workspace .spm-recent-clear,
+.sp-workspace .spm-recent-confirm button {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--surface-2, var(--bg-side));
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 13px;
+}
+.spm-recent-confirm { display: flex; gap: 6px; flex: 0 0 auto; }
+.sp-workspace .spm-recent-confirm .is-danger { background: var(--danger-soft, rgba(224, 90, 90, 0.15)); color: var(--danger, #e05a5a); }
+.spm-recent-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: stretch;
+    gap: 6px;
+}
+.sp-workspace .spm-recent-remove {
+    width: 40px;
+    border: 0;
+    border-radius: 14px;
+    background: var(--surface-1, var(--bg-panel));
+    color: var(--text-muted);
+    font-size: 20px;
+    line-height: 1;
+}
+
+/* Phone portrait: the title gets the room; the deck pill shrinks to its icon
+   (the deck name stays in its tooltip and in the deck picker). */
+@media (max-width: 560px) {
+    .sp-workspace.is-mobile .sp-top-hud { gap: 6px; }
+    .sp-workspace.is-mobile .sp-top-hud-left { flex: 1 1 auto; min-width: 0; }
+    .sp-workspace.is-mobile .sp-top-hud-right { flex: 0 1 auto; min-width: 0; gap: 6px; }
+    .sp-workspace.is-mobile .sp-deck-pill .sp-deck-label,
+    .sp-workspace.is-mobile .sp-deck-pill .sp-deck-name { display: none; }
+    .sp-workspace.is-mobile .sp-deck-pill { padding-inline: 10px; min-width: 38px; justify-content: center; }
+    .sp-workspace.is-mobile .sp-top-hud .sp-episode-select { max-width: 30vw; }
+    .sp-workspace.is-mobile .sp-transport-row { flex-wrap: wrap; row-gap: 8px; }
+}

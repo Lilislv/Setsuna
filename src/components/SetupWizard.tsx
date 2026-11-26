@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ensureSetsunaAnkiSetup, ensureSetsunaNoteType, getModelFields, invokeAnki, recommendAnkiFieldSettings } from "../utils/anki";
+import { ensureSetsunaAnkiSetup, ensureSetsunaNoteType, getModelFields, invokeAnki, noteTypeLabel, recommendAnkiFieldSettings, sortNoteTypes } from "../utils/anki";
 import type { AppSettings } from "./SettingsModal";
 import FontPicker from "./FontPicker";
 import { getTranslator, type AppLanguage } from "../utils/i18n";
@@ -123,8 +123,8 @@ export default function SetupWizard({
                 ? deck
                 : ankiDeck && list.includes(ankiDeck) ? ankiDeck : (setup.defaultDeck || list[0] || "");
             if (preferred) chooseDeck(preferred);
-            // Keep the note type already in use, else Lapis; Setsuna's own simple
-            // type only when there is neither. Another type can be picked below.
+            // Keep the note type already in use, else Setsuna Japanese (the
+            // recommended default). Another type can be picked below.
             const noteType = await ensureSetsunaNoteType(ankiModel || "");
             setModels(noteType.models);
             if (noteType.model) {
@@ -359,10 +359,8 @@ export default function SetupWizard({
                                         <div className="sw-row">
                                             <span>{L("Note type", "Тип карточек")}</span>
                                             <select className="sw-select" value={model} onChange={(event) => void chooseModel(event.target.value)}>
-                                                {models.map((name) => (
-                                                    <option key={name} value={name}>
-                                                        {name === "Setsuna Japanese" ? L(`${name} (default)`, `${name} (по умолчанию)`) : name}
-                                                    </option>
+                                                {sortNoteTypes(models).map((name) => (
+                                                    <option key={name} value={name}>{noteTypeLabel(name, models, isEn)}</option>
                                                 ))}
                                             </select>
                                         </div>

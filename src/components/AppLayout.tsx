@@ -8,7 +8,18 @@ import {
     IconChevronDown,
     IconClose,
 } from './Icons';
-import { defaultStats, EMPTY_LINES, Tab } from '../utils/constants';
+import { defaultStats, EMPTY_LINES, isTabLocked, Tab } from '../utils/constants';
+import { createTabUid } from '../utils/sharedReading';
+import SharedReadingBar from './SharedReadingBar';
+import {
+    MobileAnkiExtendedSettings,
+    MobileAppearanceAndTextSettings,
+    MobileLookupAppearanceSettings,
+    MobilePlayerSettings,
+    MobileReaderSettings,
+    MobileUpdatesSettings,
+    MobileWsDiscoveryBlock,
+} from './MobileSettingsSections';
 import { useEffect, useRef, useState } from 'react';
 import { usePresence } from '../utils/presence';
 import './MobileShell.css';
@@ -18,7 +29,7 @@ import EpubWorkspace from '../features/epub/EpubWorkspace';
 import StatsPanel from './StatsPanel';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { readText as readClipboardText } from '@tauri-apps/plugin-clipboard-manager';
+import { readText as readClipboardText, writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
 import { listen } from '@tauri-apps/api/event';
 import {
     assertGoogleOAuthConfigured,
@@ -58,13 +69,22 @@ import {
 import { openMobileDictionaryPicker } from '../utils/mobileFiles';
 import { MOBILE_BACK_PRIORITY, useMobileBackHandler } from '../utils/mobileBack';
 import SettingsFeedback from './Settings/SettingsFeedback';
+import { sharedBadge, sharedBadgeClass } from './sharedLiveBadge';
+import CoachTour from '../features/onboarding/CoachTour';
+import TourHelpButton from '../features/onboarding/TourHelpButton';
+import { mobileSettingsTips, mobileTabsTips } from '../features/onboarding/mobileGuides';
+import MobileSources, { type SourceState } from './MobileSources';
+import MobileDictionarySync, { type DictTransferPhase } from './MobileDictionarySync';
+import { addWsSource, primaryWsSource, sameWsUrl, type WsSource } from '../utils/mobileSources';
 import {
     clearAnkiMetaCache,
     getAnkiDroidStatus,
     getDecks,
     getModelFields,
     getModels,
+    noteTypeLabel,
     requestAnkiDroidPermission,
+    sortNoteTypes,
 } from '../utils/anki';
 
 
@@ -85,7 +105,7 @@ export const SearchBar = ({
 
     return (
         <div
-            className="search-bar-anim"
+            className="search-bar-anim m-search-bar"
             onClick={(e) => e.stopPropagation()}
             style={{
                 position: 'absolute',
@@ -213,10 +233,22 @@ type MobileLookupToken = {
     end?: number;
     lookup?: boolean;
 };
-type MobileSettingsSection = 'reading' | 'flow' | 'source' | 'anki' | 'drive' | 'data' | 'feedback';
+type MobileSettingsSection =
+    | 'reading'
+    | 'flow'
+    | 'source'
+    | 'anki'
+    | 'drive'
+    | 'data'
+    | 'reader'
+    | 'player'
+    | 'updates'
+    | 'feedback';
 type MobileDriveTransfer = {
     operation: 'backup-upload' | 'backup-download' | 'upload' | 'download';
     label: string;
+    /** Dictionary transfers: preparing → transfer → checking → done. */
+    phase?: DictTransferPhase;
     transferred: number;
     total: number;
     percent: number;
@@ -377,6 +409,31 @@ export const MobileLayout = ({
     onOpenCloudSettings,
     onHome,
     onCloseMobileSettings,
+    openSharedReading,
+    sharedStatus,
+    viewerActivity,
+    matchingSavedSharedTabName,
+    onMergeSharedIntoSaved,
+    onToggleSharedWait,
+    onToggleSharedSyncTimer,
+    onKeepSharedCopy,
+    onStopSharedReading,
+    onJumpToSharedLine,
+    onDismissSharedSpotlight,
+    onSpotlightLine,
+    spotlightLineIndex,
+    spotlightAuthor,
+    scrollToLineRequest,
+    onUserManualTimerToggle,
+    onOpenSearch,
+    onArchiveTab,
+    onUnarchiveTab,
+    onCycleTabStatus,
+    onRenameTab,
+    onImportJsonFile,
+    onOpenPlayerWorkspace,
+    onCheckForUpdates,
+    updateChecking,
 }: any) => {
     const t = getTranslator(settings?.appLanguage || 'ru');
     const [activeMobileView, setActiveMobileView] = useState<'text' | 'lookup'>('text');
@@ -385,6 +442,11 @@ export const MobileLayout = ({
     const [mobileSettingsSection, setMobileSettingsSection] = useState<MobileSettingsSection>('reading');
     const [isStatsOpen, setIsStatsOpen] = useState(false);
     const [tabsOpen, setTabsOpen] = useState(false);
+    const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
+    const [renamingTabValue, setRenamingTabValue] = useState('');
+    const [archiveExpanded, setArchiveExpanded] = useState(false);
+    const [mobileTabNotice, setMobileTabNotice] = useState('');
+    const importFileInputRef = useRef<HTMLInputElement | null>(null);
     const [driveStatus, setDriveStatus] = useState('');
     const [driveAuthInput, setDriveAuthInput] = useState('');
     const [driveBusy, setDriveBusy] = useState(false);
@@ -474,8 +536,22 @@ export const MobileLayout = ({
         }
     };
     const visibleTabs = (tabs || []).filter((tab: Tab) => !tab.archived);
+    const archivedTabs = (tabs || []).filter((tab: Tab) => tab.archived);
     const stats = activeTab?.stats || defaultStats;
     const isEn = settings?.appLanguage === 'en';
+
+    useEffect(() => {
+        if (!mobileTabNotice) return;
+        const timer = window.setTimeout(() => setMobileTabNotice(''), 3200);
+        return () => window.clearTimeout(timer);
+    }, [mobileTabNotice]);
+
+    useEffect(() => {
+        if (!tabsOpen) {
+            setRenamingTabId(null);
+            setRenamingTabValue('');
+        }
+    }, [tabsOpen]);
     const overlayText = activeTab?.lines?.[activeTab.lines.length - 1] || '';
     const overlayOptions = {
         dictionaries: settings.dictionaries || [],
@@ -540,6 +616,9 @@ export const MobileLayout = ({
                         : payload.operation === 'upload'
                         ? (isEn ? 'Uploading dictionaries' : 'Загрузка словарей в Drive')
                         : (isEn ? 'Downloading dictionaries' : 'Скачивание словарей из Drive'),
+                    phase: payload.phase === 'connecting' || payload.phase === 'retrying' ? 'preparing'
+                        : payload.phase === 'validating' ? 'checking'
+                        : 'transfer',
                     transferred: Number(payload.transferred || 0),
                     total: Number(payload.total || 0),
                     percent: Number(payload.percent || 0),
@@ -770,22 +849,28 @@ export const MobileLayout = ({
         }
     };
 
-    // Mobile text source over WebSocket (e.g. Textractor / LunaTranslator WS server
-    // running on a Steam Deck / PC on the same network). Reuses the shared websocket
-    // client in App.tsx by persisting a single dedicated entry in settings.websockets.
-    const MOBILE_WS_ID = 'mobile-ws';
-    const mobileWs = (settings.websockets || []).find((w: any) => w.id === MOBILE_WS_ID) || null;
+    // Mobile text sources over WebSocket (Agent / Textractor / LunaTranslator WS
+    // servers on a PC or Steam Deck in the same Wi-Fi): the whole settings.websockets
+    // list, like on the desktop. In the Android app the main source runs in the
+    // native background service; any other switched-on source uses the in-app socket.
+    const wsSources: WsSource[] = Array.isArray(settings.websockets) ? settings.websockets : [];
+    const primaryWs = primaryWsSource(wsSources, settings.primaryWebSocketId);
     const useNativeCapture = hasMobileTextCapture();
-    const wsConnected = useNativeCapture
-        ? nativeCapture.connected
-        : !!(wsStatuses && wsStatuses[MOBILE_WS_ID]);
-    const wsIsConnecting = useNativeCapture
-        ? nativeCapture.running && !nativeCapture.connected
-        : !!(wsConnecting && wsConnecting[MOBILE_WS_ID]) && !wsConnected;
-    const wsIntentOn = useNativeCapture
-        ? nativeCapture.running
-        : !!(wsIntents && wsIntents[MOBILE_WS_ID]);
-    const [wsDraftUrl, setWsDraftUrl] = useState(mobileWs?.url || '');
+    const nativeHolds = (id: string) => {
+        if (!useNativeCapture || !nativeCapture.running) return false;
+        const source = wsSources.find((w) => w.id === id);
+        return Boolean(source && sameWsUrl(source.url, nativeCapture.url));
+    };
+    const sourceStateOf = (id: string): SourceState => {
+        if (nativeHolds(id)) return nativeCapture.connected ? 'on' : 'pending';
+        if (wsStatuses?.[id]) return 'on';
+        if (wsConnecting?.[id] || wsIntents?.[id]) return 'pending';
+        return 'off';
+    };
+    const sourceStates = wsSources.map((w) => sourceStateOf(w.id));
+    const wsConnected = sourceStates.includes('on');
+    const wsIsConnecting = !wsConnected && sourceStates.includes('pending');
+    const wsIntentOn = sourceStates.some((state) => state !== 'off');
 
     useEffect(() => {
         if (!useNativeCapture) return;
@@ -795,56 +880,70 @@ export const MobileLayout = ({
         return () => window.clearInterval(timer);
     }, [useNativeCapture]);
 
-    const persistMobileWsUrl = (rawUrl: string, active: boolean) => {
-        const url = normalizeWebSocketUrl(rawUrl);
-        const list: any[] = Array.isArray(settings.websockets) ? [...settings.websockets] : [];
-        const idx = list.findIndex((w) => w.id === MOBILE_WS_ID);
-        if (idx >= 0) list[idx] = { ...list[idx], url, active };
-        else list.push({ id: MOBILE_WS_ID, name: isEn ? 'Phone source' : 'Источник телефона', url, active });
-        updateManySettings({
-            websockets: list,
-            websocketAutoConnect: true,
-            primaryWebSocketId: MOBILE_WS_ID,
-        });
-        return url;
-    };
+    // The background service already receives the main source: an in-app socket
+    // to the same address (auto-connect on launch) would add every line twice.
+    useEffect(() => {
+        if (!useNativeCapture || !nativeCapture.running) return;
+        for (const source of wsSources) {
+            if (wsIntents?.[source.id] && sameWsUrl(source.url, nativeCapture.url)) setWsEnabled?.(source.id, false);
+        }
+    }, [useNativeCapture, nativeCapture.running, nativeCapture.url, wsIntents, wsSources]);
 
-    const connectMobileWs = () => {
-        const url = normalizeWebSocketUrl(wsDraftUrl);
-        if (!url) return;
-        setWsDraftUrl(url);
-        persistMobileWsUrl(url, true);
-        if (useNativeCapture) {
+    const connectSource = (id: string, list: WsSource[] = wsSources) => {
+        const source = list.find((w) => w.id === id);
+        if (!source?.url) return;
+        const patch: Record<string, any> = { websocketAutoConnect: true };
+        if (!source.active) patch.websockets = list.map((w) => (w.id === id ? { ...w, active: true } : w));
+        else if (list !== wsSources) patch.websockets = list;
+        // The background service holds one connection: the main source, or this
+        // one if the service is free (it then becomes the main source).
+        const goNative = useNativeCapture && (!nativeCapture.running || nativeHolds(id) || id === primaryWs?.id);
+        if (goNative) patch.primaryWebSocketId = id;
+        updateManySettings(patch);
+        if (goNative) {
             try {
-                startMobileTextCapture(url);
+                startMobileTextCapture(normalizeWebSocketUrl(source.url));
                 setNativeCapture(getMobileTextCaptureStatus());
-                setWsEnabled?.(MOBILE_WS_ID, false);
-                if (setIsPaused) setIsPaused(false);
+                setWsEnabled?.(id, false);
             } catch (error: any) {
                 setDriveStatus(error?.message || String(error));
             }
-            return;
+        } else {
+            setWsEnabled?.(id, true);
         }
-        // This must be explicit rather than a toggle: persisting settings is
-        // asynchronous, so a stale "off" value used to leave Android waiting
-        // forever without actually opening a socket.
-        setWsEnabled?.(MOBILE_WS_ID, true);
-        // Connecting a text source means "I want to read now" - the app starts
+        // Connecting a text source means "I want to read now": the app starts
         // paused, which would otherwise silently drop the incoming lines.
         if (setIsPaused) setIsPaused(false);
     };
 
-    const disconnectMobileWs = () => {
-        if (useNativeCapture) {
+    const disconnectSource = (id: string) => {
+        if (nativeHolds(id)) {
             try {
                 stopMobileTextCapture();
                 setNativeCapture(getMobileTextCaptureStatus());
             } catch (error: any) {
                 setDriveStatus(error?.message || String(error));
             }
-            return;
         }
-        setWsEnabled?.(MOBILE_WS_ID, false);
+        setWsEnabled?.(id, false);
+    };
+
+    /** From auto-find: add (if new) and connect. */
+    const connectFoundUrl = (url: string, name?: string) => {
+        const result = addWsSource(wsSources, url, name);
+        if (!primaryWs) updateManySettings({ primaryWebSocketId: result.id });
+        connectSource(result.id, result.list);
+    };
+
+    const addFoundUrls = (items: { url: string; name: string }[]) => {
+        let list = wsSources;
+        let firstId = '';
+        for (const item of items) {
+            const result = addWsSource(list, item.url, item.name);
+            list = result.list;
+            firstId = firstId || result.id;
+        }
+        updateManySettings({ websockets: list, ...(primaryWs ? {} : { primaryWebSocketId: firstId }) });
     };
 
     const wsStatusLabel = wsConnected
@@ -1193,6 +1292,7 @@ export const MobileLayout = ({
             setDriveTransfer({
                 operation: 'upload',
                 label: isEn ? 'Uploading dictionaries' : 'Загрузка словарей в Drive',
+                phase: 'preparing',
                 transferred: 0,
                 total: local.size,
                 percent: 0,
@@ -1202,7 +1302,8 @@ export const MobileLayout = ({
                 url: sessionUrl,
                 token,
             });
-            setDriveStatus(isEn ? 'Dictionary uploaded.' : 'Словарь загружен.');
+            setDriveTransfer((current) => (current ? { ...current, phase: 'done', percent: 100, transferred: current.total || current.transferred } : current));
+            setDriveStatus(isEn ? 'Dictionaries saved to Google Drive.' : 'Словари сохранены в Google Drive.');
             await refreshDriveOverview(true);
         } catch (error: any) {
             setDriveStatus(error?.message || String(error));
@@ -1230,6 +1331,7 @@ export const MobileLayout = ({
             setDriveTransfer({
                 operation: 'download',
                 label: isEn ? 'Downloading dictionaries' : 'Скачивание словарей из Drive',
+                phase: 'preparing',
                 transferred: 0,
                 total: expectedSize,
                 percent: 0,
@@ -1240,8 +1342,10 @@ export const MobileLayout = ({
                 token,
                 expectedSize: expectedSize || null,
             });
+            setDriveTransfer((current) => (current ? { ...current, phase: 'checking', percent: 100 } : current));
             await syncDictionaries?.();
-            setDriveStatus(isEn ? 'Dictionary restored.' : 'Словарь восстановлен.');
+            setDriveTransfer((current) => (current ? { ...current, phase: 'done', percent: 100, transferred: current.total || current.transferred } : current));
+            setDriveStatus(isEn ? 'Dictionaries from the cloud are installed on this phone.' : 'Словари из облака установлены на телефон.');
             await refreshDriveOverview(true);
         } catch (error: any) {
             setDriveStatus(error?.message || String(error));
@@ -1257,6 +1361,104 @@ export const MobileLayout = ({
     const transferEta = driveTransfer && transferSpeed > 0 && driveTransfer.total > driveTransfer.transferred
         ? (driveTransfer.total - driveTransfer.transferred) / transferSpeed
         : 0;
+
+    const commitTabRename = () => {
+        if (renamingTabId === null) return;
+        const trimmed = renamingTabValue.trim();
+        if (trimmed) onRenameTab?.(renamingTabId, trimmed);
+        setRenamingTabId(null);
+        setRenamingTabValue('');
+    };
+
+    const handleMobileImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        if (/\.json$/i.test(file.name)) {
+            onImportJsonFile?.(event);
+            setTabsOpen(false);
+            return;
+        }
+        if (/\.txt$/i.test(file.name)) {
+            try {
+                const raw = await file.text();
+                const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+                if (lines.length === 0) {
+                    setMobileTabNotice(isEn ? 'Text file is empty.' : 'Текстовый файл пуст.');
+                    return;
+                }
+                const newId = Date.now();
+                const chars = lines.reduce((sum, line) => sum + line.length, 0);
+                const cleanName = file.name.replace(/\.txt$/i, '').slice(0, 28) || (isEn ? 'Imported text' : 'Импорт');
+                setTabs?.((prev: Tab[]) => [
+                    ...prev,
+                    {
+                        id: newId,
+                        uid: createTabUid(),
+                        name: cleanName,
+                        lines,
+                        stats: { chars, words: 0, sentences: lines.length, time: 0 },
+                        speedSamples: [],
+                        mode: 'text',
+                    },
+                ]);
+                switchTab(newId);
+                setTabsOpen(false);
+                setMobileTabNotice(
+                    isEn ? `Imported ${lines.length} lines` : `Импортировано строк: ${lines.length}`,
+                );
+            } catch (err) {
+                setMobileTabNotice(err instanceof Error ? err.message : String(err));
+            } finally {
+                event.target.value = '';
+            }
+            return;
+        }
+        event.target.value = '';
+    };
+
+    const exportActiveMobileTab = async () => {
+        if (!activeTab) return;
+        const lines = Array.isArray(activeTab.lines) ? activeTab.lines : [];
+        const plainText = lines.join('\n');
+        let copied = false;
+        if (plainText) {
+            try {
+                await writeClipboardText(plainText);
+                copied = true;
+            } catch {
+                try {
+                    await navigator.clipboard.writeText(plainText);
+                    copied = true;
+                } catch {}
+            }
+        }
+        try {
+            const payload = {
+                'bannou-texthooker-timeValue': activeTab.stats?.time || 0,
+                'bannou-texthooker-userNotes': '',
+                'bannou-texthooker-lineData': lines.map((line: string, i: number) => ({ id: `line-${i}`, text: line })),
+            };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `${(activeTab.name || 'setsuna-tab').replace(/[\\/:*?"<>|]/g, '_')}.json`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch {}
+        setTabsOpen(false);
+        setMobileTabNotice(
+            copied
+                ? isEn
+                    ? `Copied ${lines.length} lines to clipboard & saved JSON.`
+                    : `Скопировано строк: ${lines.length} + JSON.`
+                : isEn
+                  ? 'Exported tab JSON.'
+                  : 'Экспорт вкладки выполнен.',
+        );
+    };
 
     const tabStatusColor = (status?: string) => status === 'reading' ? '#4CAF50' : status === 'paused' ? '#d6a84f' : status === 'completed' ? '#8bdeff' : '#8b8f98';
     const formatTimer = (seconds: number) => {
@@ -1289,13 +1491,19 @@ export const MobileLayout = ({
         [
             { id: 'flow', label: 'Setsuna Flow', hint: settings.mobileOverlayEnabled ? (isEn ? 'Shown over apps' : 'Поверх приложений') : (isEn ? 'Off' : 'Выключен'), icon: '▣', tone: '#8bdeff' },
             { id: 'anki', label: 'AnkiDroid', hint: settings.ankiDeck || (isEn ? 'Not set up' : 'Не настроено'), icon: 'A', tone: '#d7b8ff' },
-            { id: 'reading', label: isEn ? 'Appearance' : 'Внешний вид', hint: `${settings.appLanguage === 'en' ? 'English' : 'Русский'} · ${settings.fontSize || 26}px`, icon: 'Aa', tone: '#c8ccd4' },
+            { id: 'reading', label: isEn ? 'TextHooker & UI' : 'Текстхукер и вид', hint: `${settings.appLanguage === 'en' ? 'English' : 'Русский'} · ${settings.fontSize || 26}px`, icon: 'Aa', tone: '#c8ccd4' },
         ],
         [
+            { id: 'reader', label: isEn ? 'Reader & Manga OCR' : 'Читалка и манга OCR', hint: isEn ? 'EPUB, Manga OCR, sync' : 'Книги, манга OCR, синхронизация', icon: '書', tone: '#67c587' },
+            { id: 'player', label: isEn ? 'Video Player' : 'Видео-плеер', hint: isEn ? 'Subtitles, clips, Anki' : 'Субтитры, клипы, Anki', icon: '▶', tone: '#e5a957' },
+        ],
+        [
+            { id: 'updates', label: isEn ? 'Updates' : 'Обновления', hint: isEn ? 'Version & check' : 'Версия и проверка', icon: '↻', tone: '#8bdeff' },
             { id: 'feedback', label: isEn ? 'Feedback' : 'Обратная связь', hint: isEn ? 'Bugs and ideas' : 'Ошибки и идеи', icon: '✉', tone: '#c8ccd4' },
         ],
     ];
     const currentPage = settingsGroups.flat().find((item) => item.id === mobileSettingsSection);
+    const settingsTourSurface = `m-settings:${settingsHome ? 'home' : mobileSettingsSection}`;
 
     return (
         <div
@@ -1308,14 +1516,22 @@ export const MobileLayout = ({
             }}
         >
             <header className="m-island-row">
-                <button type="button" className="m-island" onClick={() => setTabsOpen(true)} aria-label={isEn ? 'Tabs' : 'Вкладки'}>
+                <TourHelpButton surface="mode:texthooker" language={isEn ? 'en' : 'ru'} className="m-help-btn" />
+                <button type="button" className="m-island" data-coach="m-island" onClick={() => setTabsOpen(true)} aria-label={isEn ? 'Tabs' : 'Вкладки'}>
                     <span className="m-dot" style={{ ['--dot' as any]: tabStatusColor(activeTab?.status) }} aria-hidden="true" />
                     <span key={activeTab?.id} className="m-island-name">{activeTab?.name || t('tabs.defaultName')}</span>
+                    {(() => {
+                        const badge = activeTab ? sharedBadge(activeTab, sharedStatus?.[activeTab.id], isEn) : null;
+                        return badge && badge.kind !== 'ended' ? (
+                            <span className={`m-island-live ${sharedBadgeClass(badge)}`} title={badge.title} aria-label={badge.title} />
+                        ) : null;
+                    })()}
                     <span className="m-island-meta">{(stats.chars || 0).toLocaleString('ru-RU')}</span>
                 </button>
                 <button
                     type="button"
                     className={`m-source m-source-${sourceState}`}
+                    data-coach="m-source"
                     onClick={() => openSettingsPage('source')}
                     aria-label={wsStatusLabel}
                     title={wsStatusLabel}
@@ -1325,12 +1541,17 @@ export const MobileLayout = ({
             </header>
 
             <main className="m-main">
-                {lookupNotice && <div className="m-toast" role="status">{lookupNotice}</div>}
+                {(lookupNotice || mobileTabNotice) && <div className="m-toast" role="status">{mobileTabNotice || lookupNotice}</div>}
                 {activeTab?.mode === 'player' ? (
                     <div className="m-empty">
                         <div className="m-empty-icon">▶</div>
-                        <strong>{isEn ? 'Video Player (Beta)' : 'Видео-плеер (Бета)'}</strong>
-                        <span>{isEn ? 'The mobile video player will come after text, lookup, and Anki are stable.' : 'Мобильный видео-плеер добавим после текста, лукапа и Anki.'}</span>
+                        <strong>{isEn ? 'Video Player' : 'Видео-плеер'}</strong>
+                        <span>{isEn ? 'Watch anime with dual subtitles and mine Anki cards.' : 'Смотри видео с двойными субтитрами и майни карточки Anki.'}</span>
+                        <div className="m-empty-actions">
+                            <button type="button" className="m-pill-button primary" onClick={() => onOpenPlayerWorkspace?.()}>
+                                {isEn ? 'Open Video Player' : 'Открыть видео-плеер'}
+                            </button>
+                        </div>
                     </div>
                 ) : activeTab?.mode === 'epub' ? (
                     <EpubWorkspace
@@ -1340,7 +1561,7 @@ export const MobileLayout = ({
                         isMobile={true}
                         standaloneMobile={false}
                         onHome={() => setActiveMobileView('text')}
-                        onSettings={() => openSettingsPage('reading')}
+                        onSettings={() => openSettingsPage('reader')}
                         onOpenFile={() => onOpenEpubFile?.()}
                         onSelectBook={(tabId) => (onSelectEpubBook ? onSelectEpubBook(tabId) : switchTab(tabId))}
                         onRemoveBook={(tabId) => onRemoveEpubBook?.(tabId)}
@@ -1367,24 +1588,56 @@ export const MobileLayout = ({
                         onUpdateSettings={(patch) => updateSettings({ ...settings, ...patch })}
                         onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
                     />
-                ) : activeTab?.lines?.length ? (
-                    <TextContainer
-                        contentKey={activeTab?.id ?? activeTabId}
-                        lines={activeTab.lines || EMPTY_LINES}
-                        lineFurigana={activeTab.lineFurigana || []}
-                        onDelete={deleteLine}
-                        onEdit={editLine}
-                        furiganaMode={settings?.furiganaMode || 'none'}
-                        autoScrollOffset={settings?.autoScrollOffset ?? 80}
-                        searchQuery={searchQuery}
-                        activeSearchLineIdx={searchResults[currentSearchIdx]?.lineIdx ?? -1}
-                        searchTrigger={searchTrigger}
-                        panelPosition="bottom"
-                        language={settings.appLanguage}
-                        textOrientation="horizontal"
-                        lookupActive={lookupOpen}
-                        onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
-                    />
+                ) : activeTab?.shared || activeTab?.lines?.length ? (
+                    <>
+                        {activeTab?.shared && (
+                            <SharedReadingBar
+                                tab={activeTab}
+                                status={sharedStatus?.[activeTab.id]}
+                                viewerActivity={viewerActivity?.[activeTab.id] || 'reading'}
+                                en={isEn}
+                                matchingSavedTabName={matchingSavedSharedTabName || null}
+                                onMergeIntoSaved={onMergeSharedIntoSaved ? () => onMergeSharedIntoSaved(activeTab.id) : undefined}
+                                onOpenDialog={() => openSharedReading?.(activeTab.id)}
+                                onToggleWait={() => onToggleSharedWait?.(activeTab.id)}
+                                onToggleSyncTimer={() => onToggleSharedSyncTimer?.(activeTab.id)}
+                                onKeepCopy={() => onKeepSharedCopy?.(activeTab.id)}
+                                onLeave={() => onStopSharedReading?.(activeTab.id)}
+                                onJumpToLine={(lineIdx: number) => onJumpToSharedLine?.(lineIdx)}
+                                onDismissSpotlight={() => onDismissSharedSpotlight?.(activeTab.id)}
+                            />
+                        )}
+                        {activeTab?.lines?.length ? (
+                            <TextContainer
+                                contentKey={activeTab?.id ?? activeTabId}
+                                lines={activeTab.lines || EMPTY_LINES}
+                                lineFurigana={activeTab.lineFurigana || []}
+                                onDelete={deleteLine}
+                                onEdit={editLine}
+                                furiganaMode={settings?.furiganaMode || 'none'}
+                                autoScrollOffset={settings?.autoScrollOffset ?? 80}
+                                searchQuery={searchQuery}
+                                activeSearchLineIdx={searchResults[currentSearchIdx]?.lineIdx ?? -1}
+                                searchTrigger={searchTrigger}
+                                panelPosition="bottom"
+                                language={settings.appLanguage}
+                                textOrientation={settings?.textOrientation || 'horizontal'}
+                                readOnly={isTabLocked(activeTab)}
+                                lookupActive={lookupOpen}
+                                onLookupToken={(token: string, sentence: string, cursor: number, boundaries?: number[], lemma?: string) => onLookupSentenceToken?.(token, sentence, cursor, boundaries, lemma)}
+                                onSpotlightLine={activeTab?.shared && !activeTab.shared.ended ? onSpotlightLine : undefined}
+                                spotlightLineIndex={spotlightLineIndex ?? null}
+                                spotlightAuthor={spotlightAuthor ?? null}
+                                scrollToLineRequest={scrollToLineRequest}
+                            />
+                        ) : (
+                            <div className="m-empty">
+                                <div className="m-empty-icon">((o))</div>
+                                <strong>{isEn ? 'Connected to shared room' : 'Комната совместного чтения'}</strong>
+                                <span>{isEn ? 'Waiting for lines from the host…' : 'Ждём новые строки от хоста…'}</span>
+                            </div>
+                        )}
+                    </>
                 ) : (
                     <div className="m-empty">
                         <div className="m-empty-icon">刹</div>
@@ -1393,6 +1646,11 @@ export const MobileLayout = ({
                         <div className="m-empty-actions">
                             <button type="button" className="m-pill-button primary" onClick={() => openSettingsPage('source')}>{isEn ? 'Connect source' : 'Подключить источник'}</button>
                             <button type="button" className="m-pill-button" onClick={() => setActiveMobileView('lookup')}>{isEn ? 'Type text' : 'Ввести текст'}</button>
+                            {openSharedReading && (
+                                <button type="button" className="m-pill-button" onClick={() => openSharedReading(activeTabId)}>
+                                    {isEn ? 'Read together' : 'Читать вместе'}
+                                </button>
+                            )}
                         </div>
                     </div>
                 )}
@@ -1402,23 +1660,27 @@ export const MobileLayout = ({
                 <button
                     type="button"
                     className={`m-dock-timer${isPaused ? '' : ' is-running'}`}
-                    onClick={() => setIsPaused(!isPaused)}
+                    data-coach="m-dock-timer"
+                    onClick={() => {
+                        onUserManualTimerToggle?.();
+                        setIsPaused(!isPaused);
+                    }}
                     aria-label={isPaused ? (isEn ? 'Start timer' : 'Запустить таймер') : (isEn ? 'Pause timer' : 'Пауза')}
                 >
                     <span aria-hidden="true">{isPaused ? '▶' : 'Ⅱ'}</span>
                     {formatTimer(stats.time)}
                 </button>
-                <button type="button" className="m-dock-btn" onClick={() => setTabsOpen(true)} aria-label={isEn ? 'Tabs' : 'Вкладки'}>
+                <button type="button" className="m-dock-btn" data-coach="m-dock-tabs" onClick={() => setTabsOpen(true)} aria-label={isEn ? 'Tabs' : 'Вкладки'}>
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3" /><path d="M4 10h16" /></svg>
                     {visibleTabs.length > 1 && <span className="m-badge">{visibleTabs.length}</span>}
                 </button>
-                <button type="button" className={`m-dock-btn${activeMobileView === 'lookup' ? ' is-active' : ''}`} onClick={() => setActiveMobileView(activeMobileView === 'lookup' ? 'text' : 'lookup')} aria-label={isEn ? 'Type or look up text' : 'Ввод и поиск'}>
+                <button type="button" data-coach="m-dock-input" className={`m-dock-btn${activeMobileView === 'lookup' ? ' is-active' : ''}`} onClick={() => setActiveMobileView(activeMobileView === 'lookup' ? 'text' : 'lookup')} aria-label={isEn ? 'Type or look up text' : 'Ввод и поиск'}>
                     <IconSearch />
                 </button>
-                <button type="button" className={`m-dock-btn${settings.mobileOverlayEnabled ? ' is-active' : ''}`} onClick={toggleMobileFlow} aria-label="Setsuna Flow">
+                <button type="button" data-coach="m-dock-flow" className={`m-dock-btn${settings.mobileOverlayEnabled ? ' is-active' : ''}`} onClick={toggleMobileFlow} aria-label="Setsuna Flow">
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="13" height="10" rx="2.5" /><rect x="8" y="10" width="13" height="10" rx="2.5" /></svg>
                 </button>
-                <button type="button" className="m-dock-btn" onClick={() => openSettingsPage(null)} aria-label={isEn ? 'Settings' : 'Настройки'}>
+                <button type="button" className="m-dock-btn" data-coach="m-dock-settings" onClick={() => openSettingsPage(null)} aria-label={isEn ? 'Settings' : 'Настройки'}>
                     <IconSettings />
                 </button>
             </nav>
@@ -1429,26 +1691,132 @@ export const MobileLayout = ({
                         <div className="m-grabber" />
                         <div className="m-sheet-head">
                             <h2>{isEn ? 'Tabs' : 'Вкладки'}</h2>
-                            <button type="button" className="m-round-btn" onClick={() => setTabsOpen(false)} aria-label={isEn ? 'Close' : 'Закрыть'}>×</button>
+                            <span className="m-head-actions">
+                                <TourHelpButton surface="m-tabs" language={isEn ? 'en' : 'ru'} className="m-help-btn" />
+                                <button type="button" className="m-round-btn" onClick={() => setTabsOpen(false)} aria-label={isEn ? 'Close' : 'Закрыть'}>×</button>
+                            </span>
                         </div>
+                        <CoachTour steps={mobileTabsTips(isEn ? 'en' : 'ru')} language={isEn ? 'en' : 'ru'} active={tabsOpen && !tabsPresence.closing} delayMs={600} surface="m-tabs" />
                         <div className="m-tab-list">
                             {visibleTabs.map((tab: Tab, index: number) => (
                                 <div key={tab.id} className={`m-tab-row${tab.id === activeTabId ? ' is-active' : ''}`} style={{ ['--i' as any]: Math.min(index, 10) }}>
-                                    <button type="button" className="m-tab-main" onClick={() => { switchTab(tab.id); setTabsOpen(false); }}>
+                                    <button
+                                        type="button"
+                                        className="m-dot-btn"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            onCycleTabStatus?.(tab.id);
+                                        }}
+                                        aria-label={isEn ? 'Cycle reading status' : 'Сменить статус чтения'}
+                                        title={isEn ? 'Cycle status' : 'Сменить статус'}
+                                    >
                                         <span className="m-dot" style={{ ['--dot' as any]: tabStatusColor(tab.status) }} aria-hidden="true" />
-                                        <span className="m-tab-name">{tab.name || t('tabs.defaultName')}</span>
-                                        <span className="m-tab-meta">{(tab.stats?.chars || 0).toLocaleString('ru-RU')}</span>
                                     </button>
-                                    {visibleTabs.length > 1 && (
-                                        <button type="button" className="m-tab-close" aria-label={isEn ? 'Close' : 'Закрыть'} onClick={() => closeTab(tab.id)}>×</button>
+                                    {renamingTabId === tab.id ? (
+                                        <div className="m-tab-rename-row" onClick={(e) => e.stopPropagation()}>
+                                            <input
+                                                type="text"
+                                                value={renamingTabValue}
+                                                onChange={(e) => setRenamingTabValue(e.target.value)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter') commitTabRename();
+                                                    if (e.key === 'Escape') { setRenamingTabId(null); setRenamingTabValue(''); }
+                                                }}
+                                                autoFocus
+                                            />
+                                            <button type="button" className="m-tab-icon-btn" onClick={commitTabRename} aria-label={isEn ? 'Save' : 'Сохранить'}>✓</button>
+                                            <button type="button" className="m-tab-icon-btn" onClick={() => { setRenamingTabId(null); setRenamingTabValue(''); }} aria-label={isEn ? 'Cancel' : 'Отмена'}>×</button>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <button type="button" className="m-tab-main" onClick={() => { switchTab(tab.id); setTabsOpen(false); }}>
+                                                <span className="m-tab-name">{tab.name || t('tabs.defaultName')}</span>
+                                                {(() => {
+                                                    const badge = sharedBadge(tab, sharedStatus?.[tab.id], isEn);
+                                                    return badge ? (
+                                                        <span className={`tab-live ${sharedBadgeClass(badge)}`} title={badge.title}>{badge.label}</span>
+                                                    ) : null;
+                                                })()}
+                                                <span className="m-tab-meta">{(tab.stats?.chars || 0).toLocaleString('ru-RU')}</span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="m-tab-icon-btn"
+                                                aria-label={isEn ? 'Rename tab' : 'Переименовать'}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setRenamingTabId(tab.id);
+                                                    setRenamingTabValue(tab.name || '');
+                                                }}
+                                            >
+                                                ✎
+                                            </button>
+                                            {visibleTabs.length > 1 && !tab.shared && (
+                                                <button
+                                                    type="button"
+                                                    className="m-tab-icon-btn"
+                                                    aria-label={isEn ? 'Archive tab' : 'В архив'}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        onArchiveTab?.(tab.id);
+                                                    }}
+                                                >
+                                                    ↓
+                                                </button>
+                                            )}
+                                            {visibleTabs.length > 1 && (
+                                                <button type="button" className="m-tab-close" aria-label={isEn ? 'Close' : 'Закрыть'} onClick={() => closeTab(tab.id)}>×</button>
+                                            )}
+                                        </>
                                     )}
                                 </div>
                             ))}
                         </div>
+                        {archivedTabs.length > 0 && (
+                            <div className="m-archive-section">
+                                <button type="button" className="m-archive-toggle" onClick={() => setArchiveExpanded((v) => !v)}>
+                                    <span>{isEn ? `Archive (${archivedTabs.length})` : `Архив (${archivedTabs.length})`}</span>
+                                    <span>{archiveExpanded ? '▴' : '▾'}</span>
+                                </button>
+                                {archiveExpanded && (
+                                    <div className="m-archive-list">
+                                        {archivedTabs.map((tab: Tab) => (
+                                            <div key={tab.id} className="m-tab-row">
+                                                <button type="button" className="m-tab-main" onClick={() => { onUnarchiveTab?.(tab.id); switchTab(tab.id); setTabsOpen(false); }}>
+                                                    <span className="m-tab-name">{tab.name || t('tabs.defaultName')}</span>
+                                                    <span className="m-tab-meta">{(tab.stats?.chars || 0).toLocaleString('ru-RU')}</span>
+                                                </button>
+                                                <button type="button" className="m-tab-icon-btn" aria-label={isEn ? 'Restore tab' : 'Восстановить'} onClick={() => onUnarchiveTab?.(tab.id)}>↩</button>
+                                                <button type="button" className="m-tab-close" aria-label={isEn ? 'Delete tab' : 'Удалить'} onClick={() => closeTab(tab.id)}>×</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        <input
+                            ref={importFileInputRef}
+                            type="file"
+                            accept=".txt,.json"
+                            style={{ display: 'none' }}
+                            onChange={handleMobileImportFile}
+                        />
                         <div className="m-sheet-actions">
-                            <button type="button" className="m-pill-button primary m-wide" onClick={() => { addNewTab(); setTabsOpen(false); }}>＋ {isEn ? 'New tab' : 'Новая вкладка'}</button>
+                            <button type="button" className="m-pill-button primary m-wide" data-coach="m-tabs-new" onClick={() => { addNewTab(); setTabsOpen(false); }}>＋ {isEn ? 'New tab' : 'Новая вкладка'}</button>
+                            {onOpenSearch && (
+                                <button type="button" className="m-pill-button" onClick={() => { setTabsOpen(false); onOpenSearch(); }}>
+                                    🔍 {isEn ? 'Search' : 'Поиск'}
+                                </button>
+                            )}
+                            {openSharedReading && (
+                                <button type="button" className="m-pill-button" data-coach="m-tabs-together" onClick={() => { setTabsOpen(false); openSharedReading(activeTabId); }}>
+                                    {isEn ? 'Read together' : 'Читать вместе'}
+                                </button>
+                            )}
                             <button type="button" className="m-pill-button" onClick={() => { setTabsOpen(false); setActiveMobileView('lookup'); }}>✎ {isEn ? 'Type text' : 'Ввести текст'}</button>
-                            <button type="button" className="m-pill-button" onClick={() => { setTabsOpen(false); setIsStatsOpen(true); }}>⏱ {isEn ? 'Statistics' : 'Статистика'}</button>
+                            <button type="button" className="m-pill-button" data-coach="m-tabs-stats" onClick={() => { setTabsOpen(false); setIsStatsOpen(true); }}>⏱ {isEn ? 'Statistics' : 'Статистика'}</button>
+                            <button type="button" className="m-pill-button" data-coach="m-tabs-import" onClick={() => importFileInputRef.current?.click()}>↓ {isEn ? 'Import TXT/JSON' : 'Импорт TXT/JSON'}</button>
+                            <button type="button" className="m-pill-button" onClick={() => void exportActiveMobileTab()}>↑ {isEn ? 'Export' : 'Экспорт'}</button>
                             <button type="button" className="m-pill-button danger" onClick={() => { clearAll(); setTabsOpen(false); }}>{isEn ? 'Clear tab' : 'Очистить вкладку'}</button>
                         </div>
                     </section>
@@ -1515,6 +1883,15 @@ export const MobileLayout = ({
 
             {settingsPresence.mounted && (
                 <div className={`m-page${settingsPresence.closing ? ' is-closing' : ''}`} onClickCapture={swallowGhostTap} onClick={(e) => e.stopPropagation()}>
+                    <CoachTour
+                        key={settingsTourSurface}
+                        steps={mobileSettingsTips(settingsHome ? null : mobileSettingsSection, isEn ? 'en' : 'ru')}
+                        language={isEn ? 'en' : 'ru'}
+                        active={isMobileSettingsOpen && !settingsPresence.closing}
+                        delayMs={600}
+                        watch
+                        surface={settingsTourSurface}
+                    />
                     {settingsHome ? (
                         <div className="m-page-inner" key="home">
                             <header className="m-page-head">
@@ -1522,7 +1899,10 @@ export const MobileLayout = ({
                                     <p className="m-eyebrow">SETSUNA</p>
                                     <h1>{isEn ? 'Settings' : 'Настройки'}</h1>
                                 </div>
-                                <button type="button" className="m-round-btn" onClick={closeMobileSettings} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                                <span className="m-head-actions">
+                                    <TourHelpButton surface={settingsTourSurface} language={isEn ? 'en' : 'ru'} className="m-help-btn" />
+                                    <button type="button" className="m-round-btn" onClick={closeMobileSettings} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                                </span>
                             </header>
                             {driveBusy && driveTransfer && (
                                 <button type="button" className="m-card m-transfer-card" onClick={() => openSettingsPage('drive')}>
@@ -1534,7 +1914,7 @@ export const MobileLayout = ({
                             {settingsGroups.map((group, groupIndex) => (
                                 <div key={groupIndex} className="m-card m-list" style={{ ['--i' as any]: groupIndex }}>
                                     {group.map((item) => (
-                                        <button key={item.id} type="button" className="m-list-row" onClick={() => openSettingsPage(item.id)}>
+                                        <button key={item.id} type="button" className="m-list-row" data-coach={`m-settings-${item.id}`} onClick={() => openSettingsPage(item.id)}>
                                             <span className="m-list-icon" style={{ ['--tone' as any]: item.tone }} aria-hidden="true">{item.icon}</span>
                                             <span className="m-list-text">
                                                 <strong>{item.label}</strong>
@@ -1552,44 +1932,20 @@ export const MobileLayout = ({
                                 <button type="button" className="m-back" onClick={() => setSettingsHome(true)}>
                                     <span aria-hidden="true">‹</span> {isEn ? 'Settings' : 'Настройки'}
                                 </button>
-                                <button type="button" className="m-round-btn" onClick={closeMobileSettings} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                                <span className="m-head-actions">
+                                    <TourHelpButton surface={settingsTourSurface} language={isEn ? 'en' : 'ru'} className="m-help-btn" />
+                                    <button type="button" className="m-round-btn" onClick={closeMobileSettings} aria-label={isEn ? 'Close settings' : 'Закрыть настройки'}>×</button>
+                                </span>
                             </header>
                             <h1 className="m-page-title">{currentPage?.label || (isEn ? 'Settings' : 'Настройки')}</h1>
                             <div className="mobile-settings-sheet m-section">
-                        {mobileSettingsSection === 'reading' && <div className="mobile-settings-section">
-                            <div className="mobile-section-title">{isEn ? 'Interface' : 'Интерфейс'}</div>
-                            <label className="mobile-setting-row">
-                                <span>{isEn ? 'Language' : 'Язык'}</span>
-                                <select value={settings.appLanguage || 'ru'} onChange={(e) => updateSetting('appLanguage', e.target.value)}>
-                                    <option value="ru">Русский</option>
-                                    <option value="en">English</option>
-                                </select>
-                            </label>
-                            <div className="mobile-settings-note">
-                                <strong style={{ color: '#f59e0b', marginRight: 6 }}>{isEn ? 'ALPHA' : 'АЛЬФА'}</strong>
-                                {isEn
-                                    ? 'Primary target learning language: Japanese. English as a target learning language is early alpha.'
-                                    : 'Основной язык изучения: японский. Поддержка английского как целевого языка изучения — ранняя альфа.'}
-                            </div>
-                            <label className="mobile-setting-row">
-                                <span>{isEn ? 'Font size' : 'Размер текста'}</span>
-                                <input
-                                    type="range"
-                                    min="18"
-                                    max="36"
-                                    value={settings.fontSize || 26}
-                                    onChange={(e) => updateSetting('fontSize', Number(e.target.value))}
-                                />
-                            </label>
-                            <label className="mobile-setting-row">
-                                <span>{isEn ? 'Clean hooked text' : 'Чистить текст'}</span>
-                                <input
-                                    type="checkbox"
-                                    checked={settings.enableTextCleaner !== false}
-                                    onChange={(e) => updateSetting('enableTextCleaner', e.target.checked)}
-                                />
-                            </label>
-                        </div>}
+                        {mobileSettingsSection === 'reading' && (
+                            <MobileAppearanceAndTextSettings
+                                settings={settings}
+                                isEn={isEn}
+                                updateSetting={updateSetting}
+                            />
+                        )}
 
                         {mobileSettingsSection === 'flow' && <div className="mobile-settings-section mobile-flow-settings">
                             <div className="mobile-section-title">Setsuna Flow</div>
@@ -1677,50 +2033,27 @@ export const MobileLayout = ({
                             {overlayStatus && <div className="mobile-drive-status">{overlayStatus}</div>}
                         </div>}
 
-                        {mobileSettingsSection === 'source' && <div className="mobile-settings-section">
-                            <div className="mobile-section-title">{isEn ? 'Text source (WebSocket)' : 'Источник текста (WebSocket)'}</div>
-                            <div className="mobile-settings-note">
-                                {isEn
-                                    ? 'Connect to a texthooker on another device (Textractor / LunaTranslator WebSocket server) over the same Wi-Fi. Enter its address, e.g. ws://192.168.1.50:6677.'
-                                    : 'Подключись к текстхукеру на другом устройстве (WebSocket-сервер Textractor / LunaTranslator) по одной сети Wi-Fi. Введи адрес, например ws://192.168.1.50:6677.'}
-                            </div>
-                            <label className="mobile-setting-row">
-                                <span>{isEn ? 'Address' : 'Адрес'}</span>
-                                <input
-                                    type="text"
-                                    inputMode="url"
-                                    autoCapitalize="none"
-                                    autoCorrect="off"
-                                    spellCheck={false}
-                                    placeholder="ws://192.168.1.50:6677"
-                                    value={wsDraftUrl}
-                                    onChange={(e) => setWsDraftUrl(e.target.value)}
-                                    onBlur={() => { if (wsDraftUrl.trim()) persistMobileWsUrl(wsDraftUrl, mobileWs?.active ?? true); }}
-                                />
-                            </label>
-                            <div className="mobile-settings-actions two">
-                                <button
-                                    type="button"
-                                    className="mobile-action primary"
-                                    disabled={!wsDraftUrl.trim() || wsIsConnecting}
-                                    onClick={connectMobileWs}
-                                >
-                                    {wsIsConnecting ? (isEn ? 'Connecting...' : 'Подключаюсь...') : (isEn ? 'Connect' : 'Подключить')}
-                                </button>
-                                <button
-                                    type="button"
-                                    className="mobile-action"
-                                    disabled={!wsIntentOn}
-                                    onClick={disconnectMobileWs}
-                                >
-                                    {isEn ? 'Disconnect' : 'Отключить'}
-                                </button>
-                            </div>
-                            <div className="mobile-drive-status">
-                                <span className={`mobile-ws-dot ${wsConnected ? 'on' : wsIsConnecting || wsIntentOn ? 'pending' : 'off'}`} />
-                                {wsStatusLabel}
-                            </div>
-                        </div>}
+                        {mobileSettingsSection === 'source' && <>
+                            <MobileSources
+                                isEn={isEn}
+                                sources={wsSources}
+                                primaryId={primaryWs?.id || ''}
+                                stateOf={sourceStateOf}
+                                errorOf={(id) => (nativeHolds(id) ? nativeCapture.error || '' : '')}
+                                isBackground={nativeHolds}
+                                hasBackgroundService={useNativeCapture}
+                                onChange={(patch) => updateManySettings(patch)}
+                                onConnect={connectSource}
+                                onDisconnect={disconnectSource}
+                            />
+                            <MobileWsDiscoveryBlock
+                                isEn={isEn}
+                                extraHosts={wsSources.map((w) => w.url)}
+                                onConnectUrl={connectFoundUrl}
+                                onAddUrls={addFoundUrls}
+                                isKnownUrl={(url) => wsSources.some((w) => sameWsUrl(w.url, url))}
+                            />
+                        </>}
 
                         {mobileSettingsSection === 'anki' && <div className="mobile-settings-section">
                             <div className="mobile-section-title">Anki</div>
@@ -1783,7 +2116,7 @@ export const MobileLayout = ({
                                 <span>{isEn ? 'Model' : 'Модель'}</span>
                                 <select value={settings.ankiModel || ''} onChange={(e) => updateSetting('ankiModel', e.target.value)}>
                                     <option value="">{isEn ? 'Not selected' : 'Не выбрано'}</option>
-                                    {ankiModels.map((model) => <option key={model} value={model}>{model}</option>)}
+                                    {sortNoteTypes(ankiModels).map((model) => <option key={model} value={model}>{noteTypeLabel(model, ankiModels, isEn)}</option>)}
                                 </select>
                             </label>
                             <label className="mobile-setting-row">
@@ -1815,6 +2148,12 @@ export const MobileLayout = ({
                                 </select>
                             </label>
                             {ankiStatusText && <div className="mobile-drive-status">{ankiStatusText}</div>}
+                            <MobileAnkiExtendedSettings
+                                settings={settings}
+                                isEn={isEn}
+                                ankiFields={ankiFields}
+                                updateSetting={updateSetting}
+                            />
                         </div>}
 
                         {mobileSettingsSection === 'drive' && <div className="mobile-settings-section">
@@ -1841,7 +2180,7 @@ export const MobileLayout = ({
                                         <button type="button" className="mobile-icon-btn tiny" disabled={driveBusy} onClick={() => void refreshDriveOverview()} aria-label={isEn ? 'Refresh Drive' : 'Обновить Drive'}>↻</button>
                                     </div>
 
-                                    {driveTransfer && (
+                                    {driveTransfer && driveTransfer.operation.startsWith('backup') && (
                                         <div className={`mobile-drive-transfer ${driveBusy ? 'active' : 'done'}`} role="status" aria-live="polite">
                                             <div className="mobile-drive-transfer-head">
                                                 <strong>{driveTransfer.label}</strong>
@@ -1860,7 +2199,7 @@ export const MobileLayout = ({
                                         </div>
                                     )}
 
-                                    <section className="mobile-drive-block">
+                                    <section className="mobile-drive-block" data-coach="m-drive-backup">
                                         <div className="mobile-drive-block-head">
                                             <div>
                                                 <strong>{isEn ? 'Setsuna backup' : 'Копия Setsuna'}</strong>
@@ -1883,48 +2222,30 @@ export const MobileLayout = ({
                                         </div>
                                     </section>
 
-                                    <section className="mobile-drive-block">
-                                        <div className="mobile-drive-block-head">
-                                            <div>
-                                                <strong>{isEn ? 'Dictionary database' : 'База словарей'}</strong>
-                                                <span>{isEn ? 'All imported Yomitan dictionaries' : 'Все импортированные словари Yomitan'}</span>
-                                            </div>
-                                            <span className="mobile-drive-size">{formatMobileBytes(localDictionary?.size)}</span>
-                                        </div>
-                                        <div className="mobile-drive-storage-grid">
-                                            <div>
-                                                <span>{isEn ? 'On phone' : 'На телефоне'}</span>
-                                                <strong>{formatMobileBytes(localDictionary?.size)}</strong>
-                                            </div>
-                                            <div>
-                                                <span>{isEn ? 'In Drive' : 'В Drive'}</span>
-                                                <strong>{driveDictionary ? formatMobileBytes(driveDictionary.size) : (isEn ? 'Not saved' : 'Не сохранено')}</strong>
-                                            </div>
-                                            <div>
-                                                <span>{isEn ? 'Phone free' : 'Свободно на телефоне'}</span>
-                                                <strong>{localDictionary?.availableBytes != null ? formatMobileBytes(localDictionary.availableBytes) : '—'}</strong>
-                                            </div>
-                                            <div>
-                                                <span>{isEn ? 'Drive free' : 'Свободно в Drive'}</span>
-                                                <strong>{driveQuota?.unlimited
-                                                    ? (isEn ? 'Unlimited' : 'Без лимита')
-                                                    : driveQuota ? formatMobileBytes(bytesAvailableInDrive(driveQuota)) : '—'}</strong>
-                                            </div>
-                                        </div>
-                                        <div className="mobile-drive-warning">
-                                            {isEn
-                                                ? 'Dictionaries may take several gigabytes. Setsuna checks free space before upload and restore. Wi-Fi is recommended.'
-                                                : 'Словари могут занимать несколько гигабайт. Перед загрузкой Setsuna проверит свободное место. Рекомендуется Wi-Fi.'}
-                                        </div>
-                                        <div className="mobile-settings-actions two compact">
-                                            <button className="mobile-action" disabled={driveBusy || !localDictionary?.size} onClick={uploadMobileDictionary}>
-                                                {isEn ? 'Upload database' : 'Загрузить базу в Drive'}
-                                            </button>
-                                            <button className="mobile-action" disabled={driveBusy || !driveDictionary} onClick={restoreMobileDictionary}>
-                                                {isEn ? 'Replace phone database' : 'Заменить базу на телефоне'}
-                                            </button>
-                                        </div>
-                                    </section>
+                                    <MobileDictionarySync
+                                        isEn={isEn}
+                                        busy={driveBusy}
+                                        phoneBytes={localDictionary ? Number(localDictionary.size || 0) : null}
+                                        phoneFreeBytes={localDictionary?.availableBytes ?? null}
+                                        cloudBytes={driveDictionary ? Number(driveDictionary.size || 0) : null}
+                                        cloudUpdatedAt={driveDictionary?.modifiedTime}
+                                        cloudFreeBytes={driveQuota && !driveQuota.unlimited ? bytesAvailableInDrive(driveQuota) : null}
+                                        cloudUnlimited={Boolean(driveQuota?.unlimited)}
+                                        transfer={driveTransfer && (driveTransfer.operation === 'upload' || driveTransfer.operation === 'download') ? {
+                                            operation: driveTransfer.operation,
+                                            phase: driveTransfer.phase || (driveBusy ? 'transfer' : 'done'),
+                                            transferred: driveTransfer.transferred,
+                                            total: driveTransfer.total,
+                                            percent: driveTransfer.percent,
+                                            speed: transferSpeed,
+                                            eta: transferEta,
+                                            elapsed: transferElapsedSeconds,
+                                        } : null}
+                                        formatBytes={formatMobileBytes}
+                                        formatDuration={formatMobileDuration}
+                                        onDownload={() => void restoreMobileDictionary()}
+                                        onUpload={() => void uploadMobileDictionary()}
+                                    />
 
                                     <div className={`mobile-backup-list ${isDriveArchiveOpen ? 'open' : ''}`}>
                                         <button type="button" className="mobile-backup-list-head" onClick={() => setIsDriveArchiveOpen((open) => !open)} aria-expanded={isDriveArchiveOpen}>
@@ -1989,7 +2310,39 @@ export const MobileLayout = ({
                             <SettingsFeedback english={isEn} />
                         </div>}
 
+                        {mobileSettingsSection === 'reader' && (
+                            <MobileReaderSettings
+                                settings={settings}
+                                isEn={isEn}
+                                updateSetting={updateSetting}
+                            />
+                        )}
+
+                        {mobileSettingsSection === 'player' && (
+                            <MobilePlayerSettings
+                                settings={settings}
+                                isEn={isEn}
+                                ankiDecks={ankiDecks}
+                                updateSetting={updateSetting}
+                            />
+                        )}
+
+                        {mobileSettingsSection === 'updates' && (
+                            <MobileUpdatesSettings
+                                settings={settings}
+                                isEn={isEn}
+                                updateSetting={updateSetting}
+                                onCheckForUpdates={onCheckForUpdates}
+                                updateChecking={updateChecking}
+                            />
+                        )}
+
                         {mobileSettingsSection === 'data' && <div className="mobile-settings-section">
+                            <MobileLookupAppearanceSettings
+                                settings={settings}
+                                isEn={isEn}
+                                updateSetting={updateSetting}
+                            />
                             <div className="mobile-section-title">{isEn ? 'Data' : 'Данные'}</div>
                             <SettingsLookup dictionariesOnly settings={settings} updateSetting={updateSetting} highlightedSection={null} isOpen={true} syncDictionaries={syncDictionaries} runDictImport={runDictImport} setConfirmDialog={setConfirmDialog} />
                             <div className="mobile-settings-note mobile-starter-dicts-note">

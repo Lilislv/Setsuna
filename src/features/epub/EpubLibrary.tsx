@@ -872,6 +872,7 @@ export default function EpubLibrary({
                     {onSyncNow && (
                         <button
                             type="button"
+                            data-coach="lib-sync"
                             className={`epub-glass-btn epub-lib-action-btn epub-sync-btn is-${syncStatus}`}
                             disabled={syncStatus === "syncing"}
                             title={
@@ -905,6 +906,7 @@ export default function EpubLibrary({
                     {onOpenStats && (
                         <button
                             type="button"
+                            data-coach="lib-stats"
                             className="epub-glass-btn epub-lib-action-btn"
                             onClick={onOpenStats}
                             title={t("epub.statsTitle")}
@@ -915,6 +917,7 @@ export default function EpubLibrary({
                     {!isMobile && localMangaBooks.length > 0 && (
                         <button
                             type="button"
+                            data-coach="lib-mokuro"
                             className="epub-glass-btn epub-lib-action-btn"
                             title={isEn ? "Run batch Mokuro OCR on manga volumes" : "Запустить пакетный прогон Mokuro OCR по томам манги"}
                             onClick={() => {
@@ -929,6 +932,7 @@ export default function EpubLibrary({
                     )}
                     <button
                         type="button"
+                        data-coach="lib-select"
                         className={`epub-glass-btn epub-lib-action-btn${selectMode ? " is-active" : ""}`}
                         onClick={() => {
                             setSelectMode((prev) => {
@@ -945,6 +949,7 @@ export default function EpubLibrary({
                     <div className="epub-display-anchor" onClick={(e) => e.stopPropagation()}>
                         <button
                             type="button"
+                            data-coach="lib-display"
                             className={`epub-glass-btn epub-lib-action-btn${displayOpen ? " is-active" : ""}`}
                             onClick={() => setDisplayOpen((prev) => !prev)}
                             title={t("epub.displaySettings")}
@@ -1081,6 +1086,7 @@ export default function EpubLibrary({
                     {onImportFolder && !isMobile && (
                         <button
                             type="button"
+                            data-coach="lib-folder"
                             className="epub-glass-btn epub-lib-action-btn"
                             onClick={onImportFolder}
                             title={t("epub.importFolderHint")}
@@ -1090,6 +1096,7 @@ export default function EpubLibrary({
                     )}
                     <button
                         type="button"
+                        data-coach="lib-open"
                         className={isMobile ? "m-pill-button primary" : "btn-primary"}
                         onClick={onOpenFile}
                     >
@@ -1128,7 +1135,7 @@ export default function EpubLibrary({
             )}
 
             {/* Reading status shelves + format filter + custom shelves */}
-            <div className="epub-library-shelves">
+            <div className="epub-library-shelves" data-coach="lib-shelves">
                 {formatCounts.manga > 0 && (
                     <div className="epub-segmented epub-shelf-tabs" role="tablist" aria-label={isEn ? "Media type" : "Тип"}>
                         {([
@@ -1251,7 +1258,7 @@ export default function EpubLibrary({
             </div>
 
             <div className="epub-library-filters">
-                <div className="epub-library-search-wrap">
+                <div className="epub-library-search-wrap" data-coach="lib-search">
                     <span className="epub-library-search-icon" aria-hidden="true"><IconSearch /></span>
                     <input
                         type="search"
@@ -1263,7 +1270,7 @@ export default function EpubLibrary({
                     />
                 </div>
 
-                <div className="epub-library-filter-controls">
+                <div className="epub-library-filter-controls" data-coach="lib-filters">
                     <div className="epub-segmented" role="group" aria-label={t("epub.allLanguages")}>
                         {(["all", "ja", "en"] as const).map((code) => (
                             <button

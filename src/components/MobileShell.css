@@ -468,6 +468,7 @@
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-content: start;
     gap: 14px;
     padding: 6px 16px max(28px, env(safe-area-inset-bottom));
@@ -614,11 +615,13 @@
 .m-section,
 .m-page .mobile-settings-sheet {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-content: start;
     gap: 12px;
     position: static;
     height: auto;
-    min-height: 0;
+    min-height: auto;
+    min-width: 0;
     max-height: none;
     padding: 0;
     overflow: visible;
@@ -631,10 +634,12 @@
 
 .m-page .mobile-settings-section {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-content: start;
     gap: 12px;
     margin: 0;
-    min-height: 0;
+    min-height: auto;
+    min-width: 0;
     padding: 0;
     background: transparent;
     border: 0;
@@ -673,16 +678,26 @@
     font-size: 14.5px;
 }
 
-.m-page .mobile-setting-row > span:first-child { display: grid; gap: 2px; min-width: 0; }
+.m-page .mobile-setting-row { min-width: 0; box-sizing: border-box; overflow-wrap: anywhere; }
+.m-page .mobile-setting-row > span:first-child { display: grid; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.m-page .mobile-setting-row > select,
+.m-page .mobile-setting-row > input:not([type="checkbox"]):not([type="range"]) { flex: 0 1 auto; min-width: 0; }
+.m-page .mobile-setting-row input[type="checkbox"] { flex: 0 0 auto; width: 22px; height: 22px; margin: 0; accent-color: var(--accent-blue); }
+.m-page .mobile-setting-row select { text-overflow: ellipsis; }
 .m-page .mobile-setting-row small { color: var(--text-muted); font-size: 12px; }
 .m-page .mobile-setting-row b { color: var(--accent-blue); font-weight: 600; margin-left: 4px; }
 
 .m-page .mobile-setting-range {
     flex-direction: column;
     align-items: stretch;
+    justify-content: center;
+    gap: 8px;
+    padding-top: 12px;
+    padding-bottom: 12px;
 }
+.m-page .mobile-setting-range > span:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 
-.m-page .mobile-setting-range input[type="range"] { width: 100%; }
+.m-page .mobile-setting-range input[type="range"] { width: 100%; min-width: 0; margin: 0; accent-color: var(--accent-blue); }
 
 .m-page .mobile-setting-row select,
 .m-page .mobile-setting-row input[type="text"] {
@@ -974,6 +989,27 @@
     font-size: 14px;
 }
 
+/* Moved from App.css: backup list scrolls inside itself, feedback form controls */
+.m-page .mobile-backup-list-body { max-height: min(46dvh, 420px); overflow-y: auto; overscroll-behavior: contain; }
+.m-page .mobile-backup-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-page .mobile-feedback-section .modern-card { min-width: 0; }
+.m-page .mobile-feedback-section input:not([type="checkbox"]),
+.m-page .mobile-feedback-section textarea,
+.m-page .mobile-feedback-section select {
+    min-height: 44px;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 10px;
+    font: inherit;
+    font-size: 16px;
+    color: var(--text-main);
+    background: var(--bg-main);
+    border: 1px solid var(--border-main);
+    border-radius: 6px;
+}
+.m-page .mobile-feedback-section .btn-primary { min-height: 44px; white-space: normal; }
+.m-page .mobile-action { min-width: 0; text-align: center; white-space: normal; line-height: 1.25; }
+
 /* Dictionary list inside the Dictionaries page */
 .m-page .modern-card {
     padding: 14px !important;
@@ -983,6 +1019,7 @@
 .m-page #lookup-dicts .dictionary-item-header { flex-wrap: wrap; }
 .m-page #lookup-dicts .dictionary-item-name { order: -1; flex: 1 0 100% !important; white-space: normal !important; overflow-wrap: anywhere; }
 .m-page #lookup-dicts button { min-height: 36px; }
+.m-page #lookup-dicts input[type=checkbox] { width: 24px; height: 24px; }
 
 /* ---- Lookup bottom sheet (rendered by Lookuper) ---- */
 body .dict-popup.dict-mobile-sheet {
@@ -1046,7 +1083,7 @@ body .dict-mobile-scrim.is-leaving {
     z-index: 10001;
     max-height: 30dvh;
     overflow-y: auto;
-    padding: 12px 16px;
+    padding: 12px 44px 12px 16px;
     border: 1px solid var(--line);
     border-radius: 22px;
     background: var(--bg-panel);
@@ -1068,7 +1105,42 @@ body .dict-mobile-scrim.is-leaving {
     overflow-y: hidden;
     height: 28dvh;
     max-height: 28dvh;
-    padding: 14px 16px;
+    padding: 40px 16px 14px;
+}
+
+.dict-mobile-context-copy {
+    position: sticky;
+    float: right;
+    top: 0;
+    right: 0;
+    z-index: 2;
+    margin: -4px -32px 0 8px;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface-2, var(--bg-side));
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    writing-mode: horizontal-tb;
+}
+.dict-mobile-context.is-vertical .dict-mobile-context-copy {
+    position: absolute;
+    float: none;
+    top: 8px;
+    left: 8px;
+    right: auto;
+    margin: 0;
+}
+.dict-mobile-context-copy.is-copied {
+    background: rgba(62, 207, 142, 0.2);
+    border-color: #3ecf8e;
+    color: #3ecf8e;
 }
 
 .dict-mobile-context.is-measuring { visibility: hidden; }
@@ -1117,3 +1189,442 @@ body .dict-mobile-scrim.is-plain {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
 }
+
+/* ---- Mobile island live badge ---- */
+.m-island-live {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: #3ecf8e;
+    box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.22);
+}
+.m-island-live.is-host {
+    background: #ff5d6c;
+    box-shadow: 0 0 0 3px rgba(255, 93, 108, 0.22);
+}
+.m-island-live.is-pending {
+    background: #e5a957;
+    box-shadow: 0 0 0 3px rgba(229, 169, 87, 0.22);
+    animation: m-blink 0.9s infinite;
+}
+.m-island-live.is-offline {
+    background: #8a8f98;
+    box-shadow: 0 0 0 3px rgba(138, 143, 152, 0.2);
+}
+
+/* ---- Mobile search bar ---- */
+@media (max-width: 720px) {
+    .m-search-bar {
+        left: 12px !important;
+        right: 12px !important;
+        top: calc(max(10px, env(safe-area-inset-top)) + 52px) !important;
+        padding: 8px 10px !important;
+        gap: 6px !important;
+    }
+    .m-search-bar input {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        width: auto !important;
+    }
+}
+
+/* ---- Enhanced tabs sheet (status, rename, archive) ---- */
+.m-dot-btn {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+}
+
+.m-tab-rename-row {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+}
+
+.m-tab-rename-row input {
+    flex: 1;
+    min-width: 0;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--accent-blue);
+    border-radius: 10px;
+    background: var(--surface-0);
+    color: var(--text-main);
+    font: inherit;
+    font-size: 14px;
+    outline: none;
+}
+
+.m-tab-icon-btn {
+    width: 34px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 15px;
+    cursor: pointer;
+}
+.m-tab-icon-btn:active { background: var(--surface-2); }
+
+.m-archive-section {
+    display: grid;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.m-archive-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface-1);
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.m-archive-list {
+    display: grid;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 14px;
+    background: var(--surface-0);
+}
+
+/* ---- WS discovery & text replacements inside mobile settings ---- */
+.m-ws-found-list,
+.m-repl-list {
+    display: grid;
+    gap: 8px;
+}
+
+.m-ws-found-row,
+.m-repl-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface-1);
+}
+
+.m-ws-found-info {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+}
+.m-ws-found-info strong { font-size: 13.5px; }
+.m-ws-found-info small {
+    color: var(--text-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.m-ws-found-btn { flex: 0 0 auto; min-height: 36px !important; padding: 0 12px !important; }
+
+.m-repl-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    font-size: 13px;
+}
+.m-repl-text code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: var(--surface-0);
+}
+.m-repl-badge {
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-blue);
+    font-size: 11px;
+    font-weight: 600;
+}
+.m-repl-del {
+    width: 30px;
+    height: 30px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--danger-soft);
+    color: var(--danger);
+    font-size: 16px;
+    cursor: pointer;
+}
+
+.m-repl-add {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface-1);
+}
+.m-repl-add input[type="text"] {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 38px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface-0);
+    color: var(--text-main);
+    font: inherit;
+    font-size: 14px;
+}
+.m-repl-add-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+.m-repl-regex-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-main);
+    font-size: 13px;
+}
+
+/* ---- Polish embedded desktop-styled cards (SettingsMangaOcr) inside .m-page ---- */
+.m-page .modern-input,
+.m-page .modern-select {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 38px;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    background: var(--surface-0);
+    color: var(--text-main);
+    font: inherit;
+    font-size: 14px;
+}
+.m-page .btn-primary {
+    min-height: 38px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--accent-blue);
+    color: #fff;
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+/* ---- Phone text sources (settings → Text source) ---- */
+.m-page .m-source-list { display: grid; gap: 10px; }
+.m-page .m-source-item {
+    display: grid;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: var(--surface-1);
+    min-width: 0;
+}
+.m-page .m-source-item.is-on { border-color: color-mix(in srgb, #4caf50 45%, var(--line)); }
+.m-page .m-source-main { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.m-page .m-source-text { display: grid; gap: 2px; min-width: 0; }
+.m-page .m-source-text strong { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.m-page .m-source-text small { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.m-page .m-source-state.is-on { color: #4caf50; }
+.m-page .m-source-state.is-pending { color: #e5a957; }
+.m-page .m-source-primary { margin-left: 6px; color: #f2b84b; font-size: 13px; }
+.m-page .m-source-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; }
+.m-page .m-source-btn {
+    min-height: 34px;
+    padding: 0 10px;
+    white-space: nowrap;
+    border: 0;
+    border-radius: 10px;
+    background: var(--surface-2);
+    color: var(--text-main);
+    font: inherit;
+    font-size: 13px;
+}
+.m-page .m-source-btn.danger { background: var(--danger-soft); color: var(--danger); }
+.m-page .m-source-confirm { flex: 1 1 100%; color: var(--text-muted); font-size: 12.5px; }
+.m-page .m-source-field { display: grid; gap: 6px; color: var(--text-muted); font-size: 12.5px; }
+.m-page .m-source-field input {
+    min-height: 42px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    background: var(--surface-0);
+    color: var(--text-main);
+    font: inherit;
+    font-size: 15px;
+}
+.m-page .m-ws-found-row { flex-wrap: wrap; }
+.m-page .m-ws-found-row .m-ws-found-info { flex: 1 1 170px; }
+.m-page .m-ws-found-info small { white-space: normal; overflow-wrap: anywhere; }
+.m-page .m-ws-found-actions { display: flex; gap: 6px; flex: 0 0 auto; margin-left: auto; }
+.m-page .m-ws-found-known { color: #4caf50 !important; }
+
+/* ---- Phone Google Drive → dictionaries ---- */
+.m-page .m-dict-sync { gap: 12px; }
+.m-page .m-dict-sync .mobile-drive-block-head span { line-height: 1.45; }
+.m-page .m-dict-places {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: stretch;
+    gap: 6px;
+}
+.m-page .m-dict-place {
+    display: grid;
+    gap: 2px;
+    align-content: start;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: var(--surface-0);
+    min-width: 0;
+}
+.m-page .m-dict-place.is-empty strong { color: var(--text-muted); }
+.m-page .m-dict-place-icon { font-size: 16px; color: var(--accent-blue); }
+.m-page .m-dict-place-name { color: var(--text-muted); font-size: 12px; }
+.m-page .m-dict-place strong { font-size: 18px; font-weight: 600; }
+.m-page .m-dict-place small { color: var(--text-muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.m-page .m-dict-arrow { align-self: center; color: var(--text-muted); font-size: 18px; }
+.m-page .m-dict-main { min-height: 50px; }
+.m-page .m-dict-progress {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--accent-blue) 8%, var(--surface-0));
+}
+.m-page .m-dict-progress.is-done { background: color-mix(in srgb, #4caf50 10%, var(--surface-0)); }
+.m-page .m-dict-progress.is-done .mobile-drive-progress > span { background: #4caf50; }
+.m-page .m-dict-steps {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.m-page .m-dict-steps li {
+    padding-top: 6px;
+    border-top: 3px solid var(--line);
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.25;
+}
+.m-page .m-dict-steps li.is-past { border-top-color: color-mix(in srgb, var(--accent-blue) 55%, var(--line)); }
+.m-page .m-dict-steps li.is-current { border-top-color: var(--accent-blue); color: var(--text-main); font-weight: 600; }
+.m-page .m-dict-progress.is-done .m-dict-steps li { border-top-color: #4caf50; }
+.m-page .m-dict-hint { color: var(--text-muted); font-size: 12px; }
+.m-page .m-dict-confirm {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 14px;
+    background: var(--surface-0);
+}
+.m-page .m-dict-confirm p { margin: 0; font-size: 13.5px; line-height: 1.5; }
+.m-page .m-dict-more {
+    justify-self: start;
+    padding: 6px 2px;
+    border: 0;
+    background: transparent;
+    color: var(--accent-blue);
+    font: inherit;
+    font-size: 13.5px;
+    text-align: left;
+}
+.m-page .m-dict-upload { display: grid; gap: 8px; }
+
+/* ---- Lookup in vertical (tate) reading: dictionary from the left, sentence column on the right ---- */
+:root { --m-vctx-w: clamp(118px, 34vw, 170px); }
+
+body .dict-popup.dict-mobile-sheet.is-side {
+    top: 0 !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: auto !important;
+    width: calc(100vw - var(--m-vctx-w)) !important;
+    max-height: none !important;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    border-left: 0;
+    border-radius: 0 28px 28px 0;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(18px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+    box-shadow: 24px 0 60px -20px rgba(0, 0, 0, 0.65);
+    animation: m-sheet-from-left 380ms var(--ease-spring-soft) both;
+    touch-action: pan-y;
+}
+body .dict-popup.dict-mobile-sheet.is-side::before { display: none; }
+body .dict-popup.dict-mobile-sheet.is-side.is-leaving { animation: m-sheet-to-left 220ms var(--ease-exit) forwards; }
+
+.dict-mobile-context.is-vertical.is-side {
+    left: auto;
+    right: max(8px, env(safe-area-inset-right));
+    top: max(12px, env(safe-area-inset-top));
+    bottom: max(12px, env(safe-area-inset-bottom));
+    width: calc(var(--m-vctx-w) - 16px);
+    height: auto;
+    max-height: none;
+    box-sizing: border-box;
+    padding: 46px 10px 14px;
+    animation: m-context-from-right 380ms var(--ease-spring-soft) both;
+}
+.dict-mobile-context.is-vertical.is-side.is-leaving { animation: m-context-to-right 220ms var(--ease-exit) forwards; }
+
+@keyframes m-sheet-from-left { from { transform: translateX(-100%); } to { transform: none; } }
+@keyframes m-sheet-to-left { from { transform: none; } to { transform: translateX(-100%); } }
+@keyframes m-context-from-right { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: none; } }
+@keyframes m-context-to-right { to { opacity: 0; transform: translateX(40px); } }
+
+@media (prefers-reduced-motion: reduce) {
+    body .dict-popup.dict-mobile-sheet.is-side, .dict-mobile-context.is-vertical.is-side { animation: none !important; }
+}
+
+/* ---- Phone "?" buttons that replay the tips of a screen ---- */
+.onb-help-btn.m-help-btn {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    font-size: 15px;
+    pointer-events: auto;
+}
+.m-island-row .onb-help-btn.m-help-btn {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    translate: 0 -50%;
+    opacity: 0.75;
+}
+.m-head-actions { display: inline-flex; align-items: center; gap: 8px; }

@@ -9,6 +9,7 @@ interface EpubGlassSelectProps {
     value: string;
     options: EpubGlassOption[];
     onChange: (value: string) => void;
+    onOpenChange?: (open: boolean) => void;
     ariaLabel: string;
     className?: string;
     align?: "left" | "right";
@@ -20,6 +21,7 @@ export default function EpubGlassSelect({
     value,
     options,
     onChange,
+    onOpenChange,
     ariaLabel,
     className = "",
     align = "left",
@@ -30,6 +32,12 @@ export default function EpubGlassSelect({
     const rootRef = useRef<HTMLDivElement>(null);
 
     const activeOption = options.find((opt) => opt.value === value) || options[0];
+
+    useEffect(() => {
+        onOpenChange?.(open);
+    }, [open, onOpenChange]);
+
+    useEffect(() => () => onOpenChange?.(false), [onOpenChange]);
 
     useEffect(() => {
         if (!open) return;

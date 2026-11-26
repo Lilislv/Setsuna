@@ -10,10 +10,20 @@ const bundle = await build({ stdin: { contents: "export * from './src/utils/anki
         builder.onResolve({ filter: /^@tauri-apps\// }, args => ({ path: args.path, namespace: 'native-mock' }));
         builder.onLoad({ filter: /.*/, namespace: 'native-mock' }, () => ({ contents: 'export const invoke = (...args) => globalThis.testInvoke(...args); export const fetch = () => { throw new Error("Unexpected network"); };' }));
     } }] });
-const { addNote, checkWordsStatusMulti, formatLapisFurigana, resolveDictionaryAudio, audioPreviewUrl } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+const { addNote, checkWordsStatusMulti, formatLapisFurigana, resolveDictionaryAudio, audioPreviewUrl, sortNoteTypes, noteTypeLabel } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 const clip = { data: 'SUQzAg==', filename: 'setsuna_audio_0123456789abcdef.mp3', mimeType: 'audio/mpeg', source: 'nhk16', speaker: '', display: '', reading: 'たべる' };
 const settings = { dictionaryAudioSource: 'local', localAudioDatabasePath: 'test.db', ankiFieldWord: 'Word', ankiFieldAudio: 'Audio', ankiDeck: 'Test', ankiModel: 'Test' };
 const note = { word: '食べる', rawReading: 'たべる', audioUrl: 'https://old.example/audio.mp3' };
+
+test('recommended note types come first and are labelled', () => {
+    const models = ['Basic', 'Kaishi 1.5k', 'Lapis+', 'Lapis', 'Setsuna Japanese'];
+    assert.deepEqual(sortNoteTypes(models), ['Setsuna Japanese', 'Lapis', 'Basic', 'Kaishi 1.5k', 'Lapis+']);
+    assert.equal(noteTypeLabel('Setsuna Japanese', models, false), 'Setsuna Japanese · рекомендуется, по умолчанию');
+    assert.equal(noteTypeLabel('Lapis', models, true), 'Lapis · recommended');
+    assert.equal(noteTypeLabel('Lapis+', models, true), 'Lapis+');
+    // Only a Lapis copy installed: that copy is the recommended Lapis.
+    assert.deepEqual(sortNoteTypes(['Basic', 'Lapis++']), ['Lapis++', 'Basic']);
+});
 
 test('Anki ruby separates preceding kana but keeps okurigana attached', () => {
     for (const [word, reading, expected] of [
@@ -24,6 +34,9 @@ test('Anki ruby separates preceding kana but keeps okurigana attached', () => {
         ['学校', 'がっこう', '学校[がっこう]'],
         ['かな', 'かな', 'かな'],
         ['むず 痒い', 'むずがゆい', 'むず 痒[がゆ]い'],
+        ['神々しさ', 'こうごうしさ', '神々[こうごう]しさ'],
+        ['人々', 'ひとびと', '人々[ひとびと]'],
+        ['一ヶ月', 'いっかげつ', '一ヶ月[いっかげつ]'],
     ]) assert.equal(formatLapisFurigana(word, reading), expected);
 });
 

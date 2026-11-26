@@ -322,32 +322,134 @@
     z-index: 8;
 }
 
-/* Bottom-left corner: in vertical-rl text the first character sits top-right. */
-.manga-bubble-edit-btn {
+/* Bottom-left corner inside the bubble so hovering the actions never fires onMouseLeave. */
+.manga-bubble-actions {
     position: absolute;
-    bottom: -9px;
-    left: -9px;
-    width: 18px;
-    height: 18px;
+    bottom: 2px;
+    left: 2px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    z-index: 12;
+    writing-mode: horizontal-tb;
+}
+
+.manga-bubble-edit-btn,
+.manga-bubble-copy-btn {
+    width: 24px;
+    height: 24px;
+    padding: 0;
     border-radius: 999px;
     border: 1px solid rgba(255, 255, 255, 0.25);
     background: #1b2230;
     color: #eef1f5;
-    font-size: 10px;
-    opacity: 0.75;
+    font-size: 11px;
+    opacity: 0.92;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+}
+
+@media (pointer: coarse) {
+    .manga-bubble-edit-btn,
+    .manga-bubble-copy-btn {
+        width: 30px;
+        height: 30px;
+        font-size: 13px;
+    }
+}
+
+.manga-bubble-edit-btn:hover,
+.manga-bubble-copy-btn:hover {
+    opacity: 1;
+    background: var(--accent-blue, #4fa6ff);
+    color: #fff;
+}
+
+.manga-bubble-copy-btn.is-copied {
+    opacity: 1;
+    background: #3ecf8e;
+    border-color: #3ecf8e;
+    color: #0b1610;
+}
+
+.manga-overlay-layer.is-bubble-select .manga-bubble {
+    border-color: rgba(79, 166, 255, 0.55);
+    background: rgba(79, 166, 255, 0.07);
+    cursor: pointer;
+    transition: background-color 0.13s ease, border-color 0.13s ease, box-shadow 0.13s ease;
+}
+
+.manga-overlay-layer.is-bubble-select .manga-bubble:hover {
+    border-color: rgba(79, 166, 255, 0.9);
+    background: rgba(79, 166, 255, 0.16);
+}
+
+.manga-overlay-layer.is-bubble-select .manga-bubble .lookup-word {
+    pointer-events: none;
+}
+
+.manga-overlay-layer .manga-bubble.is-selected {
+    border-color: var(--accent-blue, #4fa6ff);
+    background: rgba(79, 166, 255, 0.24);
+    box-shadow: 0 0 0 2px rgba(79, 166, 255, 0.38);
+    z-index: 9;
+}
+
+.manga-bubble-order-badge {
+    position: absolute;
+    top: -9px;
+    right: -9px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--accent-blue, #4fa6ff);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.4);
     z-index: 12;
     writing-mode: horizontal-tb;
 }
 
-.manga-bubble-edit-btn:hover {
-    opacity: 1;
-    background: var(--accent-blue, #4fa6ff);
-    color: #fff;
+.manga-select-bar {
+    position: absolute;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 44;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    max-width: calc(100% - 28px);
+    padding: 8px 10px 8px 16px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-blue) 45%, var(--border-main));
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    backdrop-filter: blur(18px) saturate(1.25);
+    font-size: 13px;
+}
+
+@media (max-width: 720px) {
+    .manga-select-bar {
+        bottom: max(12px, env(safe-area-inset-bottom));
+        left: 10px;
+        right: 10px;
+        transform: none;
+        max-width: none;
+        border-radius: 18px;
+        padding: 10px 12px;
+        gap: 8px 10px;
+    }
 }
 
 /* Settings popover & floating bottom scrubber */

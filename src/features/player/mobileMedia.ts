@@ -47,6 +47,19 @@ export interface RecentMobileMedia {
     lastPlayedAt: number;
 }
 
+/** Forgets saved positions of picked files: one key, or every picked file when no key is given. */
+export function forgetRecentMobileMedia(key?: string) {
+    try {
+        const store = JSON.parse(localStorage.getItem("setsuna.player.positions") || "{}") || {};
+        for (const name of Object.keys(store)) {
+            if (key ? name === key : name.startsWith("mobile-file:")) delete store[name];
+        }
+        localStorage.setItem("setsuna.player.positions", JSON.stringify(store));
+    } catch {
+        /* storage unavailable */
+    }
+}
+
 /** Recently watched picked files, newest first (from the player's progress store). */
 export function recentMobileMedia(progress: Record<string, unknown>, limit = 12): RecentMobileMedia[] {
     const out: RecentMobileMedia[] = [];

@@ -458,6 +458,14 @@ export async function cleanupUnusedDictionaryParts(accessToken: string): Promise
 export const loadStoredGoogleRefreshToken = () => invoke<string | null>('load_google_refresh_token');
 export const storeGoogleRefreshToken = (refreshToken: string) => invoke<void>('store_google_refresh_token', { refreshToken });
 export const deleteStoredGoogleRefreshToken = () => invoke<void>('delete_google_refresh_token');
+/**
+ * Desktop keeps the refresh token in the OS keychain; Android has no keychain
+ * command and keeps it in `settings.gdriveRefreshToken`, passed as the fallback.
+ */
+export const resolveGoogleRefreshToken = async (fallback?: string | null): Promise<string | null> => {
+    const stored = await loadStoredGoogleRefreshToken().catch(() => null);
+    return (stored && stored.trim()) || fallback?.trim() || null;
+};
 
 export async function getDriveQuota(accessToken: string): Promise<DriveQuotaInfo> {
     const fields = 'storageQuota(limit,usage,usageInDrive,usageInDriveTrash),maxUploadSize';

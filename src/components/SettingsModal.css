@@ -431,3 +431,125 @@
 :is(.settings-window, .mobile-settings-sheet) .dict-row-update { padding: 4px 10px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--accent-blue) 14%, transparent); color: var(--accent-blue); font-size: 12px; white-space: nowrap; cursor: pointer; }
 :is(.settings-window, .mobile-settings-sheet) .dict-row-update:disabled { opacity: 0.6; cursor: default; }
 :is(.settings-window, .mobile-settings-sheet) .dict-row-danger-button { padding: 6px 12px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--danger, #ff6b6b) 14%, transparent); color: var(--danger, #ff6b6b); font-size: 13px; cursor: pointer; }
+
+/* LAN WebSocket discovery results */
+.ws-discover-results {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--accent-line, rgba(79, 166, 255, 0.35));
+    border-radius: var(--radius, 10px);
+    background: var(--surface-0, var(--bg-side));
+}
+
+.ws-discover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.ws-discover-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ws-discover-list {
+    display: grid;
+    gap: 6px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.ws-discover-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border: 1px solid var(--line, var(--border-main));
+    border-radius: 8px;
+    background: var(--surface-1, var(--bg-panel));
+}
+
+.ws-discover-badge {
+    flex: 0 0 auto;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+    color: var(--accent-blue);
+    font-size: 10.5px;
+    font-weight: 600;
+}
+
+.ws-discover-badge.is-local {
+    background: rgba(65, 195, 108, 0.16);
+    color: #5fd286;
+}
+
+.ws-discover-info {
+    min-width: 0;
+    flex: 1;
+    display: grid;
+    gap: 2px;
+}
+
+.ws-discover-info strong {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ws-discover-info code {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ws-discover-add-btn {
+    flex: 0 0 auto;
+    padding: 4px 10px;
+    border: 1px solid var(--accent-line, rgba(79, 166, 255, 0.35));
+    border-radius: 7px;
+    background: var(--accent-soft, rgba(79, 166, 255, 0.14));
+    color: var(--accent-blue);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.ws-discover-add-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent-blue) 24%, transparent);
+}
+
+.ws-discover-add-btn.is-added,
+.ws-discover-add-btn:disabled {
+    border-color: var(--line, var(--border-main));
+    background: transparent;
+    color: var(--text-muted);
+    cursor: default;
+}
+
+.ws-discover-close-btn {
+    padding: 2px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.ws-discover-close-btn:hover {
+    color: var(--text-main);
+    background: var(--surface-2, var(--hover-bg));
+}

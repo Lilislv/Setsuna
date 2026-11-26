@@ -71,6 +71,8 @@ export async function recordSceneClip(
     if (typeof MediaRecorder === "undefined") throw new Error("MediaRecorder is not available");
     const length = Math.max(0.2, end - start);
     const media = document.createElement("video");
+    // Library folders stream from the app's local server (another origin).
+    if (/^http:\/\/127\.0\.0\.1:/.test(url)) media.crossOrigin = "anonymous";
     media.playsInline = true;
     media.preload = "auto";
     media.style.cssText = "position:fixed;left:-4px;top:-4px;width:2px;height:2px;opacity:0;pointer-events:none";
@@ -164,6 +166,7 @@ export async function recordSceneClip(
 /** A single still frame (JPEG data URL) of a media URL. */
 export async function captureFrame(url: string, time: number, maxWidth = 960): Promise<string | undefined> {
     const media = document.createElement("video");
+    if (/^http:\/\/127\.0\.0\.1:/.test(url)) media.crossOrigin = "anonymous";
     media.muted = true;
     media.playsInline = true;
     media.preload = "auto";

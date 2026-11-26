@@ -12,6 +12,7 @@ const IconCheck = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="no
 const IconDelete = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>;
 const IconEdit = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>;
 const IconChecklist = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 6h10"></path><path d="M10 12h10"></path><path d="M10 18h10"></path><path d="m3 6 1.5 1.5L7 5"></path><path d="m3 12 1.5 1.5L7 11"></path><path d="m3 18 1.5 1.5L7 17"></path></svg>;
+const IconPoint = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="3"></circle></svg>;
 const MAX_AI_SELECTION = 40;
 const IconArrowDown = () => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>;
 const jpSerifFallback = "'Yu Mincho', 'YuMincho', 'Hiragino Mincho ProN', 'BIZ UDPMincho', 'Meiryo', serif";
@@ -452,7 +453,7 @@ export const TokenizedLine = ({ text, searchQuery, onLookupToken, furiganaMode =
     })}</>;
 };
 
-const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana, onDelete, onEdit, furiganaMode, searchQuery, isActiveSearchMatch, contextBefore = "", contextAfter = "", language = 'ru', onLookupToken, onTokenTap, activeToken, onExplain, onStartSelect, selectMode = false, selected = false, onToggleSelect, readOnly = false }: any) {
+const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana, onDelete, onEdit, furiganaMode, searchQuery, isActiveSearchMatch, contextBefore = "", contextAfter = "", language = 'ru', onLookupToken, onTokenTap, activeToken, onExplain, onStartSelect, selectMode = false, selected = false, onToggleSelect, readOnly = false, onSpotlight, isSpotlight = false, spotlightAuthor = null }: any) {
     const [isHovered, setIsHovered] = useState(false);
     const [isCopied, setIsCopied] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -468,16 +469,30 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
 
     const btnStyle = { background: 'var(--surface-2, var(--hover-bg))', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', width: '30px', height: '30px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '9px', transition: 'background-color 0.15s, color 0.15s' };
 
+    const spotColor = spotlightAuthor?.color || '#4fa6ff';
     const bgColor = selected
         ? 'rgba(79, 166, 255, 0.16)'
+        : isSpotlight
+        ? `color-mix(in srgb, ${spotColor} 14%, transparent)`
         : isActiveSearchMatch
         ? 'rgba(79, 166, 255, 0.15)' 
         : (isHovered || isEditing ? 'var(--hover-bg)' : 'transparent');
+    const lineBoxShadow = selected
+        ? 'inset 0 0 0 1px rgba(79, 166, 255, 0.55)'
+        : isSpotlight
+        ? `inset 3px 0 0 ${spotColor}, 0 0 0 1px color-mix(in srgb, ${spotColor} 38%, transparent)`
+        : selectMode && isHovered
+        ? 'inset 0 0 0 1px var(--border-main)'
+        : 'none';
     const showActions = !selectMode && (isHovered || isEditing || isActiveSearchMatch);
 
     return (
-        <div className={`text-line-wrapper${selectMode ? ' is-selectable' : ''}${selected ? ' is-selected' : ''}`} data-line-index={index} data-raw-text={line} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} onClickCapture={selectMode ? (e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect?.(index); } : undefined} style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', margin: 0, padding: '6px 10px', borderRadius: '8px', backgroundColor: bgColor, boxShadow: selected ? 'inset 0 0 0 1px rgba(79, 166, 255, 0.55)' : selectMode && isHovered ? 'inset 0 0 0 1px var(--border-main)' : 'none', cursor: selectMode ? 'pointer' : undefined, userSelect: selectMode ? 'none' : undefined, transition: 'background-color 0.2s, box-shadow 0.2s', position: 'relative' }}>
-            
+        <div className={`text-line-wrapper${selectMode ? ' is-selectable' : ''}${selected ? ' is-selected' : ''}`} data-line-index={index} data-raw-text={line} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} onClickCapture={selectMode ? (e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect?.(index); } : undefined} style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', margin: 0, padding: '6px 10px', borderRadius: '8px', backgroundColor: bgColor, boxShadow: lineBoxShadow, cursor: selectMode ? 'pointer' : undefined, userSelect: selectMode ? 'none' : undefined, transition: 'background-color 0.2s, box-shadow 0.2s', position: 'relative' }}>
+            {isSpotlight && spotlightAuthor && (
+                <span style={{ fontSize: '11px', fontWeight: 600, color: spotColor, marginBottom: '2px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                    👆 {spotlightAuthor.name}
+                </span>
+            )}
             <div 
                 ref={textRef}
                 contentEditable={isEditing}
@@ -538,6 +553,7 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
             </div>
 
             <span className="text-line-actions" contentEditable={false} style={{ opacity: showActions ? 1 : 0, pointerEvents: showActions ? 'auto' : 'none', display: 'inline-flex', alignSelf: 'flex-end', flexShrink: 0, gap: '6px', marginTop: '4px', transition: 'opacity 0.2s' }}>
+                {!isEditing && onSpotlight && <button onClick={() => onSpotlight(index, line)} style={{ ...btnStyle, color: 'var(--accent-blue)' }} title={language === 'en' ? 'Point out to everyone' : 'Показать всем в комнате'}><IconPoint /></button>}
                 {!isEditing && onExplain && <button onClick={() => onExplain(index)} style={{ ...btnStyle, color: 'var(--accent-blue)' }} title={language === 'en' ? 'Explain with AI' : 'Объяснить (ИИ)'}><IconSparkle size={16} /></button>}
                 {!isEditing && onStartSelect && <button onClick={() => onStartSelect(index)} style={btnStyle} title={language === 'en' ? 'Pick several lines to explain together' : 'Выбрать несколько строк для объяснения'}><IconChecklist /></button>}
                 {!isEditing && <button onClick={handleCopy} style={btnStyle} title={t('common.copy')}>{isCopied ? <IconCheck /> : <IconCopy />}</button>}
@@ -557,7 +573,7 @@ const TextLineItem = memo(function TextLineItem({ line, index, suppliedFurigana,
     );
 });
 
-const TextContainer = memo(function TextContainer({ contentKey, lines = [], lineFurigana = [], isFlashing = false, onDelete, onEdit, furiganaMode, autoScrollOffset = 80, searchQuery = "", activeSearchLineIdx = -1, searchTrigger = 0, panelPosition = 'bottom', language = 'ru', textOrientation = 'horizontal', readerProgress = 0, onReaderProgress, onLookupToken, lookupActive = false, onExplainLines, readOnly = false }: any) {
+const TextContainer = memo(function TextContainer({ contentKey, lines = [], lineFurigana = [], isFlashing = false, onDelete, onEdit, furiganaMode, autoScrollOffset = 80, searchQuery = "", activeSearchLineIdx = -1, searchTrigger = 0, panelPosition = 'bottom', language = 'ru', textOrientation = 'horizontal', readerProgress = 0, onReaderProgress, onLookupToken, lookupActive = false, onExplainLines, readOnly = false, onSpotlightLine, spotlightLineIndex = null, spotlightAuthor = null, scrollToLineRequest = null }: any) {
   const parentRef = useRef<HTMLDivElement>(null);
   // AI explanations: one line from its button, or several picked in selection mode.
   const [selectMode, setSelectMode] = useState(false);
@@ -672,6 +688,8 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
   const lastProgressUpdateRef = useRef(0);
   const lastShowScrollBottomRef = useRef(false);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const unreadTrackRef = useRef({ key: contentKey, len: lines.length });
   const t = getTranslator(language);
   const isVertical = textOrientation === 'vertical';
 
@@ -823,6 +841,7 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
   }, [isVertical, rowVirtualizer]);
 
   const updateShowScrollBottom = (value: boolean) => {
+      if (!value) setUnreadCount(0);
       if (lastShowScrollBottomRef.current === value) return;
       lastShowScrollBottomRef.current = value;
       setShowScrollBottom(value);
@@ -855,6 +874,7 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
 
   const scrollToBottom = () => {
       shouldFollowTailRef.current = true;
+      setUnreadCount(0);
       if (isVertical) {
           rowVirtualizer.scrollToIndex(Math.max(0, lines.length - 1), { align: 'end' });
           updateShowScrollBottom(false);
@@ -892,6 +912,29 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
       event.preventDefault();
       event.clipboardData.setData('text/plain', cleanText);
   }, []);
+
+  useEffect(() => {
+      const prev = unreadTrackRef.current;
+      unreadTrackRef.current = { key: contentKey, len: lines.length };
+      if (prev.key !== contentKey) {
+          setUnreadCount(0);
+      } else if (lines.length > prev.len && !shouldFollowTailRef.current) {
+          setUnreadCount((count) => count + (lines.length - prev.len));
+      }
+  }, [lines.length, contentKey]);
+
+  useLayoutEffect(() => {
+      if (!scrollToLineRequest || scrollToLineRequest.index < 0 || scrollToLineRequest.index >= lines.length) return;
+      const targetIndex = scrollToLineRequest.index;
+      shouldFollowTailRef.current = false;
+      rowVirtualizer.scrollToIndex(targetIndex, { align: 'center' });
+      const timer = window.setTimeout(() => {
+          rowVirtualizer.scrollToIndex(targetIndex, { align: 'center' });
+          const retryTarget = parentRef.current?.querySelector(`[data-index="${targetIndex}"]`) as HTMLElement | null;
+          retryTarget?.scrollIntoView({ block: 'center', inline: 'center' });
+      }, 80);
+      return () => window.clearTimeout(timer);
+  }, [scrollToLineRequest?.index, scrollToLineRequest?.token, lines.length, rowVirtualizer]);
 
   useEffect(() => {
       const isNewText = lines.length > prevLinesLengthRef.current;
@@ -982,6 +1025,11 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
             {showScrollBottom && (
                 <button onClick={scrollToBottom} style={{ position: 'fixed', bottom: buttonBottomOffset, right: '30px', width: '44px', height: '44px', borderRadius: '50%', background: 'var(--accent-blue)', color: '#fff', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', cursor: 'pointer', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }} title={language === 'en' ? 'Scroll to end' : 'К концу текста'}>
                     <IconArrowDown />
+                    {unreadCount > 0 && (
+                        <span style={{ position: 'absolute', top: '-6px', right: '-4px', minWidth: '20px', height: '20px', padding: '0 5px', borderRadius: '999px', background: '#ff5d6c', color: '#fff', fontSize: '11px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 6px rgba(0,0,0,0.35)' }}>
+                            +{unreadCount}
+                        </span>
+                    )}
                 </button>
             )}
         </div>
@@ -1040,6 +1088,9 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
                             selected={selectMode && selectedLines.includes(index)}
                             onToggleSelect={toggleSelectLine}
                             readOnly={readOnly}
+                            onSpotlight={onSpotlightLine}
+                            isSpotlight={spotlightLineIndex === index}
+                            spotlightAuthor={spotlightAuthor}
                         />
                     )}
                 </div>
@@ -1077,6 +1128,11 @@ const TextContainer = memo(function TextContainer({ contentKey, lines = [], line
               title={t('common.down')}
           >
               <IconArrowDown />
+              {unreadCount > 0 && (
+                  <span style={{ position: 'absolute', top: '-6px', right: '-4px', minWidth: '20px', height: '20px', padding: '0 5px', borderRadius: '999px', background: 'var(--accent-blue)', color: '#fff', fontSize: '11px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 6px rgba(0,0,0,0.35)' }}>
+                      +{unreadCount}
+                  </span>
+              )}
           </button>
       )}
     </div>

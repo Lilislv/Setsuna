@@ -109,6 +109,18 @@ class MainActivity : TauriActivity() {
   @Deprecated("Deprecated in Android API 35")
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode == REQUEST_VIDEO_TREE) {
+      val tree = data?.data
+      if (resultCode != RESULT_OK || tree == null) {
+        dispatchWebEvent("setsuna-mobile-video-folder", "")
+        return
+      }
+      runCatching {
+        contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      dispatchWebEvent("setsuna-mobile-video-folder", tree.toString())
+      return
+    }
     if (resultCode != RESULT_OK || data == null) return
     if (requestCode == REQUEST_EPUB) {
       val uri = data.data ?: return
@@ -269,5 +281,6 @@ class MainActivity : TauriActivity() {
     const val ACTION_OPEN_APP = "com.serichka.setsuna.overlay.OPEN_APP"
     const val REQUEST_DICTIONARIES = 8122
     const val REQUEST_EPUB = 8123
+    const val REQUEST_VIDEO_TREE = 8124
   }
 }

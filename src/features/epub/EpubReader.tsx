@@ -11,6 +11,7 @@ import {
     type TouchEvent as ReactTouchEvent,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { AppSettings } from "../../components/SettingsModal";
 import type { EpubBookmark, Tab } from "../../utils/constants";
 import { getTranslator } from "../../utils/i18n";
@@ -28,6 +29,20 @@ import EpubGlassSelect from "./EpubGlassSelect";
 import EpubQuoteModal from "./EpubQuoteModal";
 import { buildEpubFontPresets } from "./epubFonts";
 import { applyParagraphHighlights } from "./epubHighlightDom";
+import {
+    formatSelectedSentencesForCopy,
+    wrapParagraphHtmlSentences,
+    type EpubSentenceItem,
+} from "./epubSentences";
+
+async function copyPlainText(text: string): Promise<void> {
+    if (!text) return;
+    try {
+        await writeText(text);
+    } catch {
+        await navigator.clipboard.writeText(text);
+    }
+}
 import {
     clamp01,
     computeWeightedBookProgress,
@@ -183,6 +198,26 @@ const EpubHtmlParagraph = memo(function EpubHtmlParagraph({
     );
 });
 
+const EpubSentenceHtmlSpan = memo(function EpubSentenceHtmlSpan({
+    sentenceKey,
+    parity,
+    html,
+}: {
+    sentenceKey: string;
+    parity: number;
+    html: string;
+}) {
+    const markup = useMemo(() => ({ __html: html }), [html]);
+    return (
+        <span
+            className="epub-sentence"
+            data-sentence-key={sentenceKey}
+            data-sentence-parity={String(parity)}
+            dangerouslySetInnerHTML={markup}
+        />
+    );
+});
+
 const EpubImageBlock = memo(function EpubImageBlock({
     index,
     id,
@@ -311,6 +346,15 @@ export default function EpubReader({
     const [trackingPaused, setTrackingPaused] = useState(false);
     const [autoscrollActive, setAutoscrollActive] = useState(false);
     const [selectionPill, setSelectionPill] = useState<{ x: number; y: number; text: string; paragraphIndex: number } | null>(null);
+    const [pillCopied, setPillCopied] = useState(false);
+    const [orientationMenuOpen, setOrientationMenuOpen] = useState(false);
+    const [sentenceSelectMode, setSentenceSelectMode] = useState(false);
+    const [selectedSentenceKeys, setSelectedSentenceKeys] = useState<string[]>([]);
+    const [sentenceCopied, setSentenceCopied] = useState(false);
+    const [sentenceCtxMenu, setSentenceCtxMenu] = useState<{ x: number; y: number; key: string; text: string } | null>(null);
+    const [sentenceQuickCopied, setSentenceQuickCopied] = useState(false);
+    const lastPickedSentenceRef = useRef<string | null>(null);
+    const hoveredSentenceKeyRef = useRef<string | null>(null);
     const [noteTitleInput, setNoteTitleInput] = useState("");
     const [noteBodyInput, setNoteBodyInput] = useState("");
     const [editingHighlightId, setEditingHighlightId] = useState<string | null>(null);
@@ -640,14 +684,14 @@ export default function EpubReader({
 
     const lookupActive = Boolean(lookupOpen) || lookupKeyHeld;
 
-    const evaluateHoverZones = useCallback((clientX: number, clientY: number, suppressChrome: boolean) => {
+    const evaluateHoverZones = useCallback((clientX: number, clientY: number, suppressChrome: boolean, forceTop = false) => {
         const stage = stageRef.current;
         if (!stage) return;
         const rect = stage.getBoundingClientRect();
         const relY = clientY - rect.top;
         const relX = clientX - rect.left;
         const insideStage = relX >= 0 && relX <= rect.width && relY >= 0 && relY <= rect.height;
-        const nearTop = insideStage && relY <= CHROME_TOP_ZONE_PX;
+        const nearTop = insideStage && (forceTop || orientationMenuOpen || relY <= CHROME_TOP_ZONE_PX);
         const nearBottom = insideStage && relY >= rect.height - CHROME_BOTTOM_ZONE_PX;
 
         if (nearTop) {
@@ -676,7 +720,7 @@ export default function EpubReader({
             }, CHROME_HIDE_DELAY_MS);
         }
 
-        if (!suppressChrome && insideStage && (isPaged || isVertical) && !nearTop && !nearBottom && !tocOpen && !appearanceOpen && !searchOpen) {
+        if (!suppressChrome && insideStage && (isPaged || isVertical) && !nearTop && !nearBottom && !tocOpen && !appearanceOpen && !searchOpen && !orientationMenuOpen) {
             const edgePx = Math.min(EDGE_CLICK_MAX_PX, rect.width * EDGE_CLICK_RATIO);
             if (relX <= edgePx) {
                 setEdgeHover((prev) => (prev === "left" ? prev : "left"));
@@ -688,7 +732,7 @@ export default function EpubReader({
         } else if (edgeHover !== null) {
             setEdgeHover(null);
         }
-    }, [topHover, bottomHover, isPaged, isVertical, tocOpen, appearanceOpen, searchOpen, edgeHover]);
+    }, [topHover, bottomHover, isPaged, isVertical, tocOpen, appearanceOpen, searchOpen, orientationMenuOpen, edgeHover]);
 
     // When lookup mode ends, immediately restore chrome if pointer is resting in a trigger zone
     useEffect(() => {
@@ -711,8 +755,14 @@ export default function EpubReader({
     }, [isMobile, lookupOpen, lookupActive, escMenuOpen, evaluateHoverZones]);
 
     useEffect(() => {
-        onOverlayStateChange?.(tocOpen || searchOpen || appearanceOpen || galleryOpen || audioBarOpen || Boolean(quoteModalText));
-    }, [tocOpen, searchOpen, appearanceOpen, galleryOpen, audioBarOpen, quoteModalText, onOverlayStateChange]);
+        if (zenMode || lookupActive || escMenuOpen) {
+            setOrientationMenuOpen(false);
+        }
+    }, [zenMode, lookupActive, escMenuOpen]);
+
+    useEffect(() => {
+        onOverlayStateChange?.(tocOpen || searchOpen || appearanceOpen || galleryOpen || audioBarOpen || sentenceSelectMode || Boolean(sentenceCtxMenu) || Boolean(quoteModalText));
+    }, [tocOpen, searchOpen, appearanceOpen, galleryOpen, audioBarOpen, sentenceSelectMode, sentenceCtxMenu, quoteModalText, onOverlayStateChange]);
 
     useEffect(() => {
         if (!closeOverlaySignal) return;
@@ -721,6 +771,10 @@ export default function EpubReader({
         setAppearanceOpen(false);
         setGalleryOpen(false);
         setAudioBarOpen(false);
+        setOrientationMenuOpen(false);
+        setSentenceSelectMode(false);
+        setSelectedSentenceKeys([]);
+        setSentenceCtxMenu(null);
         setQuoteModalText(null);
         setSelectionPill(null);
         setSettingReadingPoint(false);
@@ -729,7 +783,9 @@ export default function EpubReader({
     useMobileBackHandler(
         isMobile
             && (Boolean(quoteModalText)
+                || Boolean(sentenceCtxMenu)
                 || Boolean(selectionPill)
+                || sentenceSelectMode
                 || settingReadingPoint
                 || galleryOpen
                 || audioBarOpen
@@ -742,8 +798,17 @@ export default function EpubReader({
                 setQuoteModalText(null);
                 return;
             }
+            if (sentenceCtxMenu) {
+                setSentenceCtxMenu(null);
+                return;
+            }
             if (selectionPill) {
                 setSelectionPill(null);
+                return;
+            }
+            if (sentenceSelectMode) {
+                setSentenceSelectMode(false);
+                setSelectedSentenceKeys([]);
                 return;
             }
             if (settingReadingPoint) {
@@ -787,7 +852,8 @@ export default function EpubReader({
         if (modLookup !== lookupKeyHeld && !parts.some((p) => !/^(ctrl|control|alt|shift)$/i.test(p))) {
             setLookupKeyHeld(modLookup);
         }
-        evaluateHoverZones(event.clientX, event.clientY, Boolean(lookupOpen) || modLookup || escMenuOpen);
+        const onTopChrome = Boolean((event.target as HTMLElement | null)?.closest(".epub-floating-top, .epub-glass-select-menu"));
+        evaluateHoverZones(event.clientX, event.clientY, Boolean(lookupOpen) || modLookup || escMenuOpen, onTopChrome);
     }, [isMobile, settings.lookupHotkey, lookupKeyHeld, lookupOpen, escMenuOpen, evaluateHoverZones]);
 
     const handleStageMouseLeave = useCallback(() => {
@@ -806,8 +872,8 @@ export default function EpubReader({
         }, CHROME_HIDE_DELAY_MS);
     }, [isMobile]);
 
-    const topChromeVisible = !zenMode && !lookupActive && !escMenuOpen && ((isMobile && !immersive) || topHover || tocOpen || appearanceOpen || searchOpen);
-    const bottomChromeVisible = !zenMode && !lookupActive && !escMenuOpen && ((isMobile && !immersive) || bottomHover || autoscrollActive || positionFrozen);
+    const topChromeVisible = !zenMode && !lookupActive && !escMenuOpen && ((isMobile && !immersive) || topHover || orientationMenuOpen || tocOpen || appearanceOpen || searchOpen);
+    const bottomChromeVisible = !zenMode && !lookupActive && !escMenuOpen && !sentenceSelectMode && ((isMobile && !immersive) || bottomHover || autoscrollActive || positionFrozen);
 
     // Smart reading timer with lookup-aware idle auto-pause
     useEffect(() => {
@@ -1260,6 +1326,7 @@ export default function EpubReader({
     ]);
 
     const handleScroll = useCallback(() => {
+        if (sentenceCtxMenu) setSentenceCtxMenu(null);
         if (isDiscretePaged) return;
         const el = surfaceRef.current;
         if (!el || !chapter) return;
@@ -1592,18 +1659,24 @@ export default function EpubReader({
     }, [onChangeBookNotes, notes]);
 
     const handleSurfaceMouseUp = useCallback(() => {
-        if (!onChangeBookHighlights || settingReadingPoint) return;
+        if (sentenceSelectMode || settingReadingPoint) return;
         const sel = window.getSelection();
         if (!sel || sel.isCollapsed) {
             setSelectionPill(null);
             return;
         }
-        const selectedText = sel.toString().trim();
+        const range = sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+        let selectedText = "";
+        if (range) {
+            const frag = range.cloneContents();
+            frag.querySelectorAll("rt, rp").forEach((node) => node.remove());
+            selectedText = (frag.textContent || "").trim();
+        }
+        if (!selectedText) selectedText = sel.toString().trim();
         if (!selectedText || selectedText.length > 800) {
             setSelectionPill(null);
             return;
         }
-        const range = sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
         const anchorEl = range?.commonAncestorContainer instanceof Element
             ? range.commonAncestorContainer
             : range?.commonAncestorContainer?.parentElement;
@@ -1619,8 +1692,9 @@ export default function EpubReader({
         const stageRect = stage.getBoundingClientRect();
         const x = Math.min(stageRect.width - 140, Math.max(140, selRect.left + selRect.width / 2 - stageRect.left));
         const y = Math.max(54, selRect.top - stageRect.top - 12);
+        setPillCopied(false);
         setSelectionPill({ x, y, text: selectedText, paragraphIndex });
-    }, [onChangeBookHighlights, settingReadingPoint]);
+    }, [sentenceSelectMode, settingReadingPoint]);
 
     useEffect(() => {
         const el = surfaceRef.current;
@@ -1816,6 +1890,28 @@ export default function EpubReader({
         };
     }, [isPaged, isVertical, canGoPrevChapter, canGoNextChapter, tocOpen, appearanceOpen, searchOpen, galleryOpen, quoteModalText, triggerScrollChapterSwitch]);
 
+    const sentenceLanguage: "ja" | "en" = isJapaneseBook ? "ja" : "en";
+
+    const chapterSentenceData = useMemo(() => {
+        const byParagraph = new Map<number, { html: string; sentences: EpubSentenceItem[] }>();
+        const byKey = new Map<string, EpubSentenceItem>();
+        const orderedKeys: string[] = [];
+        for (const p of paragraphs) {
+            if (p.kind === "separator" || p.kind === "image") continue;
+            const paraHighlights = chapterHighlightsMap.get(p.index);
+            const sourceHtml = paraHighlights && paraHighlights.length > 0
+                ? applyParagraphHighlights(p.html, paraHighlights)
+                : p.html;
+            const wrapped = wrapParagraphHtmlSentences(sourceHtml, p.index, sentenceLanguage);
+            byParagraph.set(p.index, wrapped);
+            for (const item of wrapped.sentences) {
+                byKey.set(item.key, item);
+                orderedKeys.push(item.key);
+            }
+        }
+        return { byParagraph, byKey, orderedKeys };
+    }, [paragraphs, chapterHighlightsMap, sentenceLanguage]);
+
     // Ctrl+F opens in-book search; arrows / PageUp / PageDown / Space turn pages
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
@@ -1830,20 +1926,60 @@ export default function EpubReader({
                 window.setTimeout(() => searchInputRef.current?.focus(), 40);
                 return;
             }
+            if (isCtrl && !event.altKey && sentenceSelectMode && selectedSentenceKeys.length > 0 && (event.code === "KeyC" || keyLower === "c" || keyLower === "с")) {
+                const sel = window.getSelection();
+                if (!sel || sel.isCollapsed) {
+                    const text = formatSelectedSentencesForCopy(
+                        selectedSentenceKeys,
+                        chapterSentenceData.byKey,
+                        sentenceLanguage,
+                    );
+                    if (text) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void copyPlainText(text).then(() => {
+                            setSentenceCopied(true);
+                            window.setTimeout(() => setSentenceCopied(false), 1600);
+                        });
+                        return;
+                    }
+                }
+            }
 
             if (event.ctrlKey || event.metaKey || event.altKey) return;
             const target = event.target as HTMLElement | null;
-            if (event.key === "Escape" && (tocOpen || appearanceOpen || searchOpen || settingReadingPoint || selectionPill)) {
+            if (event.key === "Escape" && (tocOpen || appearanceOpen || searchOpen || settingReadingPoint || selectionPill || sentenceSelectMode || sentenceCtxMenu || orientationMenuOpen)) {
                 if (document.querySelector(".font-picker-overlay")) return;
                 event.preventDefault();
+                event.stopPropagation();
                 setTocOpen(false);
                 setAppearanceOpen(false);
                 setSearchOpen(false);
+                setOrientationMenuOpen(false);
                 setSettingReadingPoint(false);
                 setSelectionPill(null);
+                setSentenceCtxMenu(null);
+                setSentenceSelectMode(false);
+                setSelectedSentenceKeys([]);
                 return;
             }
             if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+            if (sentenceSelectMode && event.key === "Enter" && selectedSentenceKeys.length > 0) {
+                const text = formatSelectedSentencesForCopy(
+                    selectedSentenceKeys,
+                    chapterSentenceData.byKey,
+                    sentenceLanguage,
+                );
+                if (text) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void copyPlainText(text).then(() => {
+                        setSentenceCopied(true);
+                        window.setTimeout(() => setSentenceCopied(false), 1600);
+                    });
+                    return;
+                }
+            }
             if (tocOpen || appearanceOpen || searchOpen || escMenuOpen || galleryOpen || Boolean(quoteModalText)) return;
 
             if (event.code === "KeyZ" && !event.shiftKey) {
@@ -1935,6 +2071,12 @@ export default function EpubReader({
         quoteModalText,
         settingReadingPoint,
         selectionPill,
+        sentenceSelectMode,
+        sentenceCtxMenu,
+        orientationMenuOpen,
+        selectedSentenceKeys,
+        chapterSentenceData,
+        sentenceLanguage,
         onChangeReadingPoint,
         handleSaveReadingPoint,
         readingPoint,
@@ -2006,12 +2148,40 @@ export default function EpubReader({
 
     // Internal EPUB link clicks + edge-click page turning + mobile empty-area tap to toggle full-screen reading
     const handleContentClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-        const hadOpenPopover = appearanceOpen || searchOpen;
+        const hadOpenPopover = appearanceOpen || searchOpen || Boolean(sentenceCtxMenu);
         if (appearanceOpen) setAppearanceOpen(false);
         if (searchOpen) setSearchOpen(false);
+        if (sentenceCtxMenu) setSentenceCtxMenu(null);
         if (selectionPill) setSelectionPill(null);
 
         const target = event.target as HTMLElement | null;
+
+        if (sentenceSelectMode) {
+            const sentEl = target?.closest<HTMLElement>("[data-sentence-key]");
+            const key = sentEl?.dataset.sentenceKey;
+            if (key) {
+                event.preventDefault();
+                event.stopPropagation();
+                setSentenceCopied(false);
+                setSelectedSentenceKeys((prev) => {
+                    const ordered = chapterSentenceData.orderedKeys;
+                    if (event.shiftKey && lastPickedSentenceRef.current) {
+                        const a = ordered.indexOf(lastPickedSentenceRef.current);
+                        const b = ordered.indexOf(key);
+                        if (a >= 0 && b >= 0) {
+                            const [from, to] = a <= b ? [a, b] : [b, a];
+                            const rangeKeys = ordered.slice(from, to + 1);
+                            const merged = new Set(prev);
+                            rangeKeys.forEach((k) => merged.add(k));
+                            return Array.from(merged);
+                        }
+                    }
+                    lastPickedSentenceRef.current = key;
+                    return prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key];
+                });
+                return;
+            }
+        }
 
         if (event.altKey && audiobookMedia?.alignment) {
             const paraNode = target?.closest<HTMLElement>("[data-paragraph-index]");
@@ -2077,7 +2247,28 @@ export default function EpubReader({
                 onToggleImmersive?.();
             }
         }
-    }, [chapters, appearanceOpen, searchOpen, tocOpen, lookupOpen, isMobile, isPaged, isVertical, turnPage, onToggleImmersive, selectionPill, settingReadingPoint, paragraphs, handleSaveReadingPoint, audiobookMedia, chapterIndex]);
+    }, [chapters, appearanceOpen, searchOpen, tocOpen, lookupOpen, isMobile, isPaged, isVertical, turnPage, onToggleImmersive, selectionPill, sentenceSelectMode, sentenceCtxMenu, chapterSentenceData, settingReadingPoint, paragraphs, handleSaveReadingPoint, audiobookMedia, chapterIndex]);
+
+    const handleSurfaceContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+        if (isMobile) return;
+        const target = event.target as HTMLElement | null;
+        const sentEl = target?.closest<HTMLElement>("[data-sentence-key]");
+        const key = sentEl?.dataset.sentenceKey;
+        if (!key) return;
+        const item = chapterSentenceData.byKey.get(key);
+        if (!item || !item.text.trim()) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setSelectionPill(null);
+        setAppearanceOpen(false);
+        setSearchOpen(false);
+        setSentenceCtxMenu({
+            x: Math.max(12, Math.min(event.clientX, window.innerWidth - 250)),
+            y: Math.max(12, Math.min(event.clientY, window.innerHeight - 115)),
+            key,
+            text: item.text,
+        });
+    }, [isMobile, chapterSentenceData]);
 
     const isSwipePaged = isHorizontalPaged || (isVertical && isPaged);
 
@@ -2172,6 +2363,57 @@ export default function EpubReader({
 
     const revealImageLabel = t("epub.revealImage");
 
+    useEffect(() => {
+        setSelectedSentenceKeys([]);
+        setSentenceCopied(false);
+        setSentenceCtxMenu(null);
+        lastPickedSentenceRef.current = null;
+    }, [tab.id, chapterIndex]);
+
+    const applyHoveredSentenceKey = useCallback((nextKey: string | null) => {
+        const prevKey = hoveredSentenceKeyRef.current;
+        if (prevKey === nextKey) return;
+        const surface = surfaceRef.current;
+        if (surface && prevKey) {
+            surface.querySelectorAll<HTMLElement>(`[data-sentence-key="${prevKey}"]`).forEach((el) => {
+                el.classList.remove("is-hovered");
+            });
+        }
+        hoveredSentenceKeyRef.current = nextKey;
+        if (surface && nextKey) {
+            surface.querySelectorAll<HTMLElement>(`[data-sentence-key="${nextKey}"]`).forEach((el) => {
+                el.classList.add("is-hovered");
+            });
+        }
+    }, []);
+
+    const handleSurfaceMouseOver = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+        if (!sentenceSelectMode) return;
+        const target = event.target as HTMLElement | null;
+        const key = target?.closest<HTMLElement>("[data-sentence-key]")?.dataset.sentenceKey || null;
+        applyHoveredSentenceKey(key);
+    }, [sentenceSelectMode, applyHoveredSentenceKey]);
+
+    const handleSurfaceMouseLeave = useCallback(() => {
+        applyHoveredSentenceKey(null);
+    }, [applyHoveredSentenceKey]);
+
+    useEffect(() => {
+        const surface = surfaceRef.current;
+        if (!surface) return;
+        const selectedSet = new Set(selectedSentenceKeys);
+        surface.querySelectorAll<HTMLElement>("[data-sentence-key]").forEach((el) => {
+            const key = el.dataset.sentenceKey || "";
+            el.classList.toggle("is-selected", sentenceSelectMode && selectedSet.has(key));
+            if (!sentenceSelectMode) {
+                el.classList.remove("is-hovered");
+            }
+        });
+        if (!sentenceSelectMode) {
+            hoveredSentenceKeyRef.current = null;
+        }
+    }, [sentenceSelectMode, selectedSentenceKeys, chapter?.index, spreadStartIdx, resolvedOrientation, isPaged]);
+
     const renderParagraph = useCallback((p: EpubParagraph) => {
         if (p.kind === "separator") {
             return <hr key={p.index} className="epub-separator" data-paragraph-index={p.index} />;
@@ -2201,12 +2443,63 @@ export default function EpubReader({
             && readingPoint.chapterIndex === chapterIndex
             && readingPoint.paragraphIndex === p.index;
         const blockClass = `text-line epub-block epub-block-${p.kind}${isHighlighted ? " is-highlighted" : ""}${isTtsActive ? " is-tts-active" : ""}${isPinnedPoint ? " is-reading-point" : ""}${settingReadingPoint ? " is-pick-point" : ""}`;
+        const paraSentenceEntry = chapterSentenceData.byParagraph.get(p.index);
         const paraHighlights = chapterHighlightsMap.get(p.index);
-        const renderedHtml = paraHighlights && paraHighlights.length > 0
-            ? applyParagraphHighlights(p.html, paraHighlights)
-            : p.html;
+        const renderedHtml = paraSentenceEntry?.html
+            ?? (paraHighlights && paraHighlights.length > 0
+                ? applyParagraphHighlights(p.html, paraHighlights)
+                : p.html);
+
+        if (isMobile && sentenceSelectMode && paraSentenceEntry && paraSentenceEntry.sentences.length > 0) {
+            return (
+                <div
+                    key={p.index}
+                    id={p.id || undefined}
+                    data-paragraph-index={p.index}
+                    data-anchor-ids={p.anchorIds.join(" ") || undefined}
+                    className={blockClass}
+                >
+                    {paraSentenceEntry.sentences.map((sent, sIdx) => (
+                        <span key={sent.key}>
+                            {sIdx > 0 && !isJapaneseBook ? " " : ""}
+                            <EpubSentenceHtmlSpan sentenceKey={sent.key} parity={sent.sentenceIndex % 2} html={sent.html} />
+                        </span>
+                    ))}
+                </div>
+            );
+        }
 
         if (isMobile && onLookupToken) {
+            if (paraSentenceEntry && paraSentenceEntry.sentences.length > 0) {
+                return (
+                    <div
+                        key={p.index}
+                        id={p.id || undefined}
+                        data-paragraph-index={p.index}
+                        data-anchor-ids={p.anchorIds.join(" ") || undefined}
+                        className={blockClass}
+                    >
+                        {paraSentenceEntry.sentences.map((sent, sIdx) => (
+                            <span key={sent.key}>
+                                {sIdx > 0 && !isJapaneseBook ? " " : ""}
+                                <span
+                                    className="epub-sentence"
+                                    data-sentence-key={sent.key}
+                                    data-sentence-parity={String(sent.sentenceIndex % 2)}
+                                >
+                                    <TokenizedLine
+                                        text={sent.text}
+                                        searchQuery=""
+                                        furiganaMode={isJapaneseBook && furiganaMode !== "hide" ? "epub" : "none"}
+                                        epubHtml={sent.html || p.html}
+                                        onLookupToken={handleMobileTokenTap(p.index)}
+                                    />
+                                </span>
+                            </span>
+                        ))}
+                    </div>
+                );
+            }
             return (
                 <div
                     key={p.index}
@@ -2247,7 +2540,9 @@ export default function EpubReader({
         readingPoint,
         chapterIndex,
         settingReadingPoint,
+        chapterSentenceData,
         chapterHighlightsMap,
+        sentenceSelectMode,
         isMobile,
         onLookupToken,
         isJapaneseBook,
@@ -2313,7 +2608,7 @@ export default function EpubReader({
     };
 
     return (
-        <div className="epub-reader-shell" data-epub-eink={einkMode ? "true" : undefined}>
+        <div className={`epub-reader-shell${sentenceSelectMode ? " is-sentence-select" : ""}`} data-epub-eink={einkMode ? "true" : undefined}>
             <div
                 ref={stageRef}
                 className="epub-reader-stage"
@@ -2327,6 +2622,7 @@ export default function EpubReader({
                     <div className="epub-glass-pill epub-glass-pill-main" onClick={(event) => event.stopPropagation()}>
                         <button
                             type="button"
+                            data-coach="epub-back"
                             className="epub-glass-btn"
                             onClick={onBackToLibrary}
                             title={t("epub.backToLibrary")}
@@ -2335,6 +2631,7 @@ export default function EpubReader({
                         </button>
                         <button
                             type="button"
+                            data-coach="epub-toc"
                             className={`epub-glass-btn${tocOpen && drawerTab === "toc" ? " is-active" : ""}`}
                             onClick={() => {
                                 setAppearanceOpen(false);
@@ -2361,7 +2658,7 @@ export default function EpubReader({
                     </div>
 
                     <div className="epub-glass-pill epub-glass-pill-tools" onClick={(event) => event.stopPropagation()}>
-                        <span className="epub-badge" title={isJapaneseBook ? t("epub.languageJa") : t("epub.languageEn")}>
+                        <span className="epub-badge" data-coach="epub-lang" title={isJapaneseBook ? t("epub.languageJa") : t("epub.languageEn")}>
                             {isJapaneseBook ? "JA" : "EN"}
                         </span>
                         {isJapaneseBook ? (
@@ -2381,6 +2678,7 @@ export default function EpubReader({
                                     align="right"
                                     ariaLabel={t("epub.orientationAuto")}
                                     value={activeBookOrientationValue}
+                                    onOpenChange={setOrientationMenuOpen}
                                     onChange={(next) => onChangeBookOrientation(next as EpubOrientationSetting)}
                                     options={[
                                         { value: "auto", label: t("epub.orientationAuto") },
@@ -2397,6 +2695,27 @@ export default function EpubReader({
 
                         <button
                             type="button"
+                            data-coach="epub-sentences"
+                            className={`epub-glass-btn${isMobile ? " epub-glass-circle" : ""}${sentenceSelectMode ? " is-active" : ""}`}
+                            title={language === "en" ? "Select sentences to copy" : "Выбрать предложения для копирования"}
+                            aria-label={language === "en" ? "Select sentences to copy" : "Выбрать предложения для копирования"}
+                            onClick={() => {
+                                setSettingReadingPoint(false);
+                                setSelectionPill(null);
+                                setSentenceCtxMenu(null);
+                                setSentenceCopied(false);
+                                setSentenceSelectMode((prev) => !prev);
+                            }}
+                        >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M10 6h10M10 12h10M10 18h10M3 6l1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17" />
+                            </svg>
+                            {!isMobile && <span>{language === "en" ? "Sentences" : "Предложения"}</span>}
+                        </button>
+
+                        <button
+                            type="button"
+                            data-coach="epub-search"
                             className={`epub-glass-btn epub-glass-circle${searchOpen ? " is-active" : ""}`}
                             title={`${t("epub.searchBook")} (Ctrl+F)`}
                             aria-label={t("epub.searchBook")}
@@ -2416,6 +2735,7 @@ export default function EpubReader({
                         {onChangeBookBookmarks && (
                             <button
                                 type="button"
+                                data-coach="epub-bookmarks"
                                 className={`epub-glass-btn epub-glass-circle${tocOpen && drawerTab === "bookmarks" ? " is-active" : ""}`}
                                 title={`${t("epub.bookmarks")} (B)`}
                                 aria-label={t("epub.bookmarks")}
@@ -2437,6 +2757,7 @@ export default function EpubReader({
                         {(onChangeBookHighlights || onChangeBookNotes) && (
                             <button
                                 type="button"
+                                data-coach="epub-notes"
                                 className={`epub-glass-btn epub-glass-circle${tocOpen && drawerTab === "notes" ? " is-active" : ""}`}
                                 title={t("epub.notes")}
                                 aria-label={t("epub.notes")}
@@ -2458,6 +2779,7 @@ export default function EpubReader({
                         {bookPath && (
                             <button
                                 type="button"
+                                data-coach="epub-gallery"
                                 className={`epub-glass-btn epub-glass-circle${galleryOpen ? " is-active" : ""}`}
                                 title={t("epub.gallery")}
                                 aria-label={t("epub.gallery")}
@@ -2479,6 +2801,7 @@ export default function EpubReader({
                         {onChangeReadingPoint && (
                             <button
                                 type="button"
+                                data-coach="epub-point"
                                 className={`epub-glass-btn epub-glass-circle${settingReadingPoint ? " is-active" : ""}`}
                                 title={t("epub.readingPoint")}
                                 aria-label={t("epub.readingPoint")}
@@ -2490,6 +2813,7 @@ export default function EpubReader({
 
                         <button
                             type="button"
+                            data-coach="epub-audio"
                             className={`epub-glass-btn epub-glass-circle${audioBarOpen ? " is-active" : ""}`}
                             title={t("epub.audioTitle")}
                             aria-label={t("epub.audioTitle")}
@@ -2509,6 +2833,7 @@ export default function EpubReader({
                         {!isMobile && (
                             <button
                                 type="button"
+                                data-coach="epub-zen"
                                 className={`epub-glass-btn epub-glass-circle${zenMode ? " is-active" : ""}`}
                                 title={t("epub.zenMode")}
                                 aria-label={t("epub.zenMode")}
@@ -2521,6 +2846,7 @@ export default function EpubReader({
                         {onUpdateSettings && (
                             <button
                                 type="button"
+                                data-coach="epub-appearance"
                                 className={`epub-glass-btn epub-aa-btn${appearanceOpen ? " is-active" : ""}`}
                                 aria-expanded={appearanceOpen}
                                 title={t("epub.appearance")}
@@ -3034,6 +3360,9 @@ export default function EpubReader({
                             }
                         }}
                         onClick={handleContentClick}
+                        onContextMenu={handleSurfaceContextMenu}
+                        onMouseOver={sentenceSelectMode ? handleSurfaceMouseOver : undefined}
+                        onMouseLeave={sentenceSelectMode ? handleSurfaceMouseLeave : undefined}
                         onMouseUp={handleSurfaceMouseUp}
                         onTouchStart={handleSurfaceTouchStart}
                         onTouchEnd={handleSurfaceTouchEnd}
@@ -3156,6 +3485,134 @@ export default function EpubReader({
                     </div>
                 )}
 
+                {sentenceSelectMode && (
+                    <div className="epub-sentence-bar" onClick={(e) => e.stopPropagation()}>
+                        <div className="epub-sentence-bar-info">
+                            <span className="epub-sentence-bar-dot" aria-hidden="true" />
+                            <span className="epub-sentence-count">
+                                {selectedSentenceKeys.length > 0
+                                    ? (language === "en"
+                                        ? `${selectedSentenceKeys.length} selected`
+                                        : `Выбрано: ${selectedSentenceKeys.length}`)
+                                    : (language === "en"
+                                        ? (isMobile ? "Tap sentences to copy" : "Select sentences")
+                                        : (isMobile ? "Нажимай на предложения" : "Выбери предложения"))}
+                            </span>
+                            {!isMobile && (
+                                <span className="epub-sentence-hint">
+                                    {selectedSentenceKeys.length > 0
+                                        ? (language === "en" ? "Ctrl+C / Enter" : "Ctrl+C или Enter")
+                                        : (language === "en" ? "Shift+click for range" : "Shift+клик — диапазон")}
+                                </span>
+                            )}
+                        </div>
+                        <div className="epub-sentence-actions">
+                            <button
+                                type="button"
+                                className={`epub-sentence-copy-btn${selectedSentenceKeys.length > 0 ? " is-ready" : ""}${sentenceCopied ? " is-copied" : ""}`}
+                                disabled={selectedSentenceKeys.length === 0}
+                                onClick={() => {
+                                    const text = formatSelectedSentencesForCopy(
+                                        selectedSentenceKeys,
+                                        chapterSentenceData.byKey,
+                                        sentenceLanguage,
+                                    );
+                                    if (!text) return;
+                                    void copyPlainText(text).then(() => {
+                                        setSentenceCopied(true);
+                                        window.setTimeout(() => setSentenceCopied(false), 1600);
+                                    });
+                                }}
+                            >
+                                {sentenceCopied ? (
+                                    <span>{language === "en" ? "✓ Copied" : "✓ Скопировано"}</span>
+                                ) : (
+                                    <>
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" />
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                        </svg>
+                                        <span>
+                                            {selectedSentenceKeys.length > 0
+                                                ? (language === "en"
+                                                    ? `Copy (${selectedSentenceKeys.length})`
+                                                    : `Скопировать (${selectedSentenceKeys.length})`)
+                                                : (language === "en" ? "Copy" : "Скопировать")}
+                                        </span>
+                                    </>
+                                )}
+                            </button>
+                            {selectedSentenceKeys.length > 0 && (
+                                <button
+                                    type="button"
+                                    className="epub-glass-btn"
+                                    onClick={() => {
+                                        setSelectedSentenceKeys([]);
+                                        lastPickedSentenceRef.current = null;
+                                    }}
+                                >
+                                    {language === "en" ? "Clear" : "Сбросить"}
+                                </button>
+                            )}
+                            <button
+                                type="button"
+                                className="epub-glass-btn epub-sentence-done-btn"
+                                title="Esc"
+                                onClick={() => {
+                                    setSentenceSelectMode(false);
+                                    setSelectedSentenceKeys([]);
+                                }}
+                            >
+                                {language === "en" ? "Done" : "Готово"}
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {sentenceCtxMenu && (
+                    <div
+                        className="epub-sentence-ctx"
+                        style={{ left: `${sentenceCtxMenu.x}px`, top: `${sentenceCtxMenu.y}px` }}
+                        role="menu"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const text = sentenceCtxMenu.text;
+                                setSentenceCtxMenu(null);
+                                void copyPlainText(text).then(() => {
+                                    setSentenceQuickCopied(true);
+                                    window.setTimeout(() => setSentenceQuickCopied(false), 1500);
+                                });
+                            }}
+                        >
+                            {language === "en" ? "Copy sentence" : "Скопировать предложение"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const key = sentenceCtxMenu.key;
+                                setSentenceCtxMenu(null);
+                                setSettingReadingPoint(false);
+                                setSelectionPill(null);
+                                setSentenceCopied(false);
+                                setSentenceSelectMode(true);
+                                setSelectedSentenceKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+                                lastPickedSentenceRef.current = key;
+                            }}
+                        >
+                            {language === "en" ? "Select multiple sentences…" : "Выбрать несколько предложений…"}
+                        </button>
+                    </div>
+                )}
+
+                {sentenceQuickCopied && (
+                    <div className="epub-quick-copy-toast" role="status">
+                        {language === "en" ? "✓ Sentence copied" : "✓ Предложение скопировано"}
+                    </div>
+                )}
+
                 {selectionPill && (
                     <div
                         className="epub-selection-pill"
@@ -3163,22 +3620,42 @@ export default function EpubReader({
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={(e) => e.stopPropagation()}
                     >
-                        {(["amber", "emerald", "sky", "rose"] as const).map((color) => (
-                            <button
-                                key={color}
-                                type="button"
-                                className={`epub-hl-dot epub-hl-dot-${color}`}
-                                title={t("epub.highlights")}
-                                onClick={() => handleAddHighlight(color, false)}
-                            />
-                        ))}
-                        <span className="epub-pill-divider" aria-hidden="true" />
+                        {onChangeBookHighlights && (
+                            <>
+                                {(["amber", "emerald", "sky", "rose"] as const).map((color) => (
+                                    <button
+                                        key={color}
+                                        type="button"
+                                        className={`epub-hl-dot epub-hl-dot-${color}`}
+                                        title={t("epub.highlights")}
+                                        onClick={() => handleAddHighlight(color, false)}
+                                    />
+                                ))}
+                                <span className="epub-pill-divider" aria-hidden="true" />
+                                <button
+                                    type="button"
+                                    className="epub-glass-btn"
+                                    onClick={() => handleAddHighlight("amber", true)}
+                                >
+                                    {t("epub.notes")}
+                                </button>
+                            </>
+                        )}
                         <button
                             type="button"
                             className="epub-glass-btn"
-                            onClick={() => handleAddHighlight("amber", true)}
+                            onClick={() => {
+                                void copyPlainText(selectionPill.text).then(() => {
+                                    setPillCopied(true);
+                                    window.setTimeout(() => {
+                                        setPillCopied(false);
+                                        setSelectionPill(null);
+                                        window.getSelection()?.removeAllRanges();
+                                    }, 700);
+                                });
+                            }}
                         >
-                            {t("epub.notes")}
+                            {pillCopied ? "✓" : t("common.copy")}
                         </button>
                         <button
                             type="button"
@@ -3611,6 +4088,7 @@ export default function EpubReader({
                                 <span className="epub-pill-divider" aria-hidden="true" />
                                 <button
                                     type="button"
+                                    data-coach="epub-autoscroll"
                                     className={`epub-glass-btn${autoscrollActive ? " is-active" : ""}`}
                                     title={`${t("epub.autoscroll")} (S / A / D)`}
                                     onClick={() => setAutoscrollActive((prev) => !prev)}
@@ -3623,6 +4101,7 @@ export default function EpubReader({
                         {readingPoint && (
                             <button
                                 type="button"
+                                data-coach="epub-return-point"
                                 className="epub-glass-btn epub-glass-circle"
                                 title={t("epub.returnToPoint")}
                                 onClick={() => jumpToLocation(readingPoint.chapterIndex, readingPoint.paragraphIndex)}
@@ -3633,6 +4112,7 @@ export default function EpubReader({
 
                         <button
                             type="button"
+                            data-coach="epub-freeze"
                             className={`epub-glass-btn epub-glass-circle${positionFrozen ? " is-active" : ""}`}
                             title={t("epub.freezePos")}
                             onClick={() => setPositionFrozen((prev) => !prev)}
@@ -3642,6 +4122,7 @@ export default function EpubReader({
 
                         <button
                             type="button"
+                            data-coach="epub-tracking"
                             className={`epub-glass-btn epub-glass-circle${trackingPaused ? " is-active" : ""}`}
                             title={t("epub.pauseTracking")}
                             onClick={() => setTrackingPaused((prev) => !prev)}
@@ -3652,6 +4133,7 @@ export default function EpubReader({
                         {onOpenStats && (
                             <button
                                 type="button"
+                                data-coach="epub-stats"
                                 className="epub-glass-btn epub-goal-pill-btn"
                                 title={`${t("epub.statsTitle")} · ${Math.round(goalSummary.overallPct * 100)}%`}
                                 onClick={onOpenStats}
@@ -3663,7 +4145,7 @@ export default function EpubReader({
                 </div>
 
                 {/* Subtle bottom-right char progress readout & Goal Progress Light when bottom chrome is hidden */}
-                {!zenMode && !bottomChromeVisible && !lookupActive && !escMenuOpen && (totalBookChars > 0 || activeGoals.enabled) && (
+                {!zenMode && !bottomChromeVisible && !lookupActive && !escMenuOpen && !sentenceSelectMode && (totalBookChars > 0 || activeGoals.enabled) && (
                     <button
                         type="button"
                         className="epub-corner-status"

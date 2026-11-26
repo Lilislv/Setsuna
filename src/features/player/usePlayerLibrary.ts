@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMobilePlatform } from "../../utils/platform";
 import { libraryKey, naturalOrder, type LibraryFolder } from "./libraryModel";
+import { chooseAndroidFolder, forgetAndroidFolder, hasAndroidFolders, isAndroidFolderPath, scanAndroidFolder } from "./androidFolders";
 
 type Scan = { folder: LibraryFolder } | { error: string };
 function storedRoots(): string[] {
@@ -22,7 +23,9 @@ export function usePlayerLibrary() {
     const [pending, setPending] = useState(false);
 
     useEffect(() => {
-        if (isMobilePlatform()) return;
+        // Phone: folders picked through the Android system picker; desktop: real paths.
+        const mobile = isMobilePlatform();
+        if (mobile && !hasAndroidFolders()) return;
         let cancelled = false;
         setResults({});
         try {
@@ -31,7 +34,9 @@ export function usePlayerLibrary() {
             /* storage unavailable */
         }
         for (const root of roots) {
-            void invoke<LibraryFolder>("player_scan_folder", { path: root }).then(
+            if (mobile !== isAndroidFolderPath(root)) continue;
+            const scan = mobile ? scanAndroidFolder(root) : invoke<LibraryFolder>("player_scan_folder", { path: root });
+            void scan.then(
                 (folder) => {
                     for (const group of folder.directories)
                         group.episodes.sort((a, b) => naturalOrder(a.path, b.path));
@@ -69,7 +74,13 @@ export function usePlayerLibrary() {
         refresh: () => setRevision((value) => value + 1),
         chooseFolder: () =>
             changeRoots(async () => {
-                if (isMobilePlatform()) return;
+                if (isMobilePlatform()) {
+                    const root = await chooseAndroidFolder();
+                    if (!root) return;
+                    setRoots((roots) => (roots.includes(root) ? roots : [...roots, root]));
+                    setRevision((value) => value + 1);
+                    return root;
+                }
                 const path = await open({ directory: true, recursive: false, multiple: false });
                 if (typeof path !== "string") return;
                 setRoots((roots) => (roots.includes(path) ? roots : [...roots, path]));
@@ -78,7 +89,8 @@ export function usePlayerLibrary() {
             }),
         removeFolder: (path: string) =>
             changeRoots(async () => {
-                if (!isMobilePlatform()) {
+                if (isAndroidFolderPath(path)) forgetAndroidFolder(path);
+                else if (!isMobilePlatform()) {
                     await invoke("player_forget_library_folder", { path });
                 }
                 setRoots((roots) => roots.filter((root) => root !== path));

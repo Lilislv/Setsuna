@@ -85,6 +85,8 @@ export interface EpubChapter {
 }
 export interface Tab {
     id: number;
+    /** Stable unique ID across renames, archives and shared reading sessions. */
+    uid?: string;
     name: string;
     lines: string[];
     /** Optional furigana markup/tokens supplied by a WebSocket source, aligned with lines. */
@@ -102,6 +104,8 @@ export interface Tab {
     lineCount?: number;
     /** True while `lines` holds only the cached tail and the full history is still on disk. */
     historyTail?: boolean;
+    /** Host tab UID remembered on saved viewer copies so later streams can update this tab. */
+    sharedOriginUid?: string;
     /** Shared reading: this tab is broadcast to a room (host) or follows one (viewer). */
     shared?: TabShare;
 }
@@ -113,7 +117,7 @@ export const EMPTY_LINES: string[] = [];
 
 export const DEFAULT_SETTINGS: AppSettings = {
     useClipboard: true,
-    panelPosition: 'bottom', speedMetric: 'chars', speedTimeframe: 'minute',
+    panelPosition: 'top-right', speedMetric: 'chars', speedTimeframe: 'minute',
     autoPauseOnIdle: false,
     autoPauseIdleMinutes: 5,
     allowManualPaste: true, allowManualPasteDuringPause: true,

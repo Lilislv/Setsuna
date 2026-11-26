@@ -8,9 +8,13 @@ import { getDecks } from '../utils/anki';
 import { YATSU_READER_AVAILABLE } from '../utils/featureFlags';
 import AppMenu, { MenuIcons, type AppMenuSource } from './AppMenu';
 import DeckPicker from './DeckPicker';
+import { COACH_ACTIVE_EVENT } from '../features/onboarding/Coachmarks';
+import TourHelpButton from '../features/onboarding/TourHelpButton';
 import { IconBookTab, IconPlayerTab } from './Icons';
 import { useJelly } from '../utils/jelly';
 import { IconSparkle } from './Icons';
+import { sharedBadge, sharedBadgeClass } from './sharedLiveBadge';
+import type { ShareStatus } from '../utils/useSharedReading';
 
 type TabStatus = NonNullable<Tab['status']>;
 
@@ -28,10 +32,11 @@ function LiveMark({ tab, status, isEn }: { tab: Tab; status?: { state: string; v
             </span>
         );
     }
-    const ended = share.ended;
+    // A viewer is LIVE only while it actually hears the host.
+    const badge = sharedBadge(tab, status as ShareStatus | undefined, isEn)!;
     return (
-        <span className={`tab-live ${ended ? 'is-ended' : 'is-viewer'}`} title={ended ? (isEn ? 'The broadcast has ended' : 'Эфир завершён') : (isEn ? `Following ${share.code}` : `Смотришь эфир ${share.code}`)}>
-            {ended ? (isEn ? 'ended' : 'конец') : 'LIVE'}
+        <span className={`tab-live ${sharedBadgeClass(badge)}`} title={badge.title}>
+            {badge.kind === 'ended' ? (isEn ? 'ended' : 'конец') : badge.label}
         </span>
     );
 }
@@ -243,7 +248,7 @@ export const TopBar = ({
                 closeLookup?.();
                 return;
             }
-            if (escMenuBlocked || document.querySelector('.modal-overlay, .settings-window')) return;
+            if (escMenuBlocked || document.querySelector('.modal-overlay, .settings-window, .onb-coach-layer, .onb-backdrop')) return;
             event.preventDefault();
             setIsMenuOpen(true);
         };
@@ -290,14 +295,18 @@ export const TopBar = ({
     const [islandVisible, setIslandVisible] = useState(false);
     const islandVisibleRef = useRef(false);
     const islandHoverRef = useRef(false);
+    // While tips run the island never hides: moving the mouse to a tip used to
+    // count as leaving the island and slid it away from under the tip.
+    const coachActiveRef = useRef(false);
     const islandHideTimer = useRef(0);
     const islandHidePending = useRef(false);
     const hideIslandLater = (delayMs: number) => {
+        if (coachActiveRef.current) return;
         window.clearTimeout(islandHideTimer.current);
         islandHidePending.current = true;
         islandHideTimer.current = window.setTimeout(() => {
             islandHidePending.current = false;
-            if (islandHoverRef.current) return;
+            if (islandHoverRef.current || coachActiveRef.current) return;
             islandVisibleRef.current = false;
             setIslandVisible(false);
         }, delayMs);
@@ -321,11 +330,19 @@ export const TopBar = ({
         const onLeave = () => {
             if (islandVisibleRef.current && !islandHoverRef.current) hideIslandLater(300);
         };
+        // Button tips point at the island: keep it out while a tour runs.
+        const onCoach = (event: Event) => {
+            const active = Boolean((event as CustomEvent<boolean>).detail);
+            coachActiveRef.current = active;
+            if (active) showIsland(null); else hideIslandLater(600);
+        };
         window.addEventListener('pointermove', onMove, { passive: true });
         document.addEventListener('pointerleave', onLeave);
+        window.addEventListener(COACH_ACTIVE_EVENT, onCoach);
         return () => {
             window.removeEventListener('pointermove', onMove);
             document.removeEventListener('pointerleave', onLeave);
+            window.removeEventListener(COACH_ACTIVE_EVENT, onCoach);
             window.clearTimeout(islandHideTimer.current);
         };
     }, []);
@@ -490,6 +507,7 @@ export const TopBar = ({
                 <button
                     type="button"
                     className="reader-island-tab"
+                    data-coach="tab"
                     tabIndex={islandHidden ? -1 : 0}
                     onClick={() => setIsMenuOpen(true)}
                     title={activeTab?.archived
@@ -511,6 +529,7 @@ export const TopBar = ({
                 <button
                     type="button"
                     className={`reader-island-source${sourceConnected ? ' is-active' : ''}${sourcePending ? ' is-pending' : ''}`}
+                    data-coach="source"
                     tabIndex={islandHidden ? -1 : 0}
                     onClick={() => (primaryWs ? toggleWs(primaryWs.id) : toggleClipboard())}
                     title={primaryWs
@@ -523,6 +542,7 @@ export const TopBar = ({
                 <button
                     type="button"
                     className={`reader-island-flow${flowOpen ? ' is-active' : ''}`}
+                    data-coach="flow"
                     tabIndex={islandHidden ? -1 : 0}
                     onClick={() => toggleFlow?.()}
                     aria-pressed={Boolean(flowOpen)}
@@ -537,6 +557,7 @@ export const TopBar = ({
                     <button
                         type="button"
                         className={`reader-island-flow${aiOpen ? ' is-active' : ''}`}
+                        data-coach="ai"
                         tabIndex={islandHidden ? -1 : 0}
                         onClick={() => toggleAi?.()}
                         aria-pressed={Boolean(aiOpen)}
@@ -551,6 +572,7 @@ export const TopBar = ({
                 <button
                     type="button"
                     className="reader-island-menu"
+                    data-coach="menu"
                     tabIndex={islandHidden ? -1 : 0}
                     onClick={() => setIsMenuOpen(true)}
                     aria-label={isEn ? 'Open menu' : 'Открыть меню'}
@@ -558,6 +580,7 @@ export const TopBar = ({
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" /></svg>
                     <kbd>Esc</kbd>
                 </button>
+                <TourHelpButton surface="mode:texthooker" language={isEn ? 'en' : 'ru'} className="reader-island-flow reader-island-help" />
             </div>
 
             <AppMenu

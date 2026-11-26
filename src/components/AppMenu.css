@@ -115,6 +115,9 @@
 }
 
 .app-menu-close:hover { background: var(--menu-raised); color: var(--text-main); }
+/* "?" (replay tips) sits right next to the close button. */
+.app-menu-heading-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.app-menu-help { font-size: 15px; font-weight: 700; }
 
 .app-menu-body {
     display: grid;
@@ -290,10 +293,65 @@
     gap: 8px;
 }
 
+.app-menu-actions-head-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.app-menu-edit-toggle,
+.app-menu-action-text-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 26px;
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.app-menu-edit-toggle {
+    width: 26px;
+    padding: 0;
+}
+
+.app-menu-edit-toggle:hover,
+.app-menu-action-text-btn:hover {
+    background: var(--menu-raised);
+    color: var(--text-main);
+}
+
+.app-menu-edit-toggle.is-active {
+    width: auto;
+    padding: 0 11px;
+    border-color: color-mix(in srgb, var(--accent-blue) 42%, transparent);
+    background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+    color: var(--accent-blue);
+    font-weight: 600;
+}
+
+.app-menu-tile-slot {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    border-radius: 12px;
+}
+
+.app-menu-tile-slot.is-dragging {
+    z-index: 4;
+}
+
 .app-menu-tile {
     display: flex;
     align-items: center;
     gap: 12px;
+    flex: 1 1 auto;
+    width: 100%;
     min-width: 0;
     min-height: 60px;
     padding: 10px 14px;
@@ -304,6 +362,159 @@
     text-align: left;
     cursor: pointer;
     transition: scale var(--dur-press) var(--ease-spring), background-color 0.15s, border-color 0.15s;
+}
+
+.app-menu-tile-slot.is-editing .app-menu-tile {
+    padding-right: 36px;
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--accent-blue) 42%, var(--menu-line));
+    cursor: grab;
+}
+
+.app-menu-tile-slot.is-dragging .app-menu-tile {
+    animation: none;
+    background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-panel));
+    border-color: color-mix(in srgb, var(--accent-blue) 60%, transparent);
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.38);
+    cursor: grabbing;
+}
+
+.app-menu-tile-remove {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 2;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid color-mix(in srgb, #e05a5a 38%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, #e05a5a 16%, var(--bg-panel));
+    color: #ff8282;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s, scale var(--dur-press) var(--ease-spring);
+}
+
+.app-menu-tile-remove:hover {
+    background: #e05a5a;
+    color: #fff;
+}
+
+.app-menu-tile-remove:active {
+    scale: 0.92;
+}
+
+.app-menu-hidden-tray {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px dashed var(--menu-line);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--text-main) 2.5%, transparent);
+}
+
+.app-menu-hidden-label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.app-menu-hidden-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.app-menu-hidden-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 10px 0 8px;
+    border: 1px solid var(--menu-line);
+    border-radius: 999px;
+    background: var(--menu-raised);
+    color: var(--text-main);
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s;
+}
+
+.app-menu-hidden-chip:hover {
+    border-color: color-mix(in srgb, var(--accent-blue) 48%, var(--menu-line));
+    background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-panel));
+}
+
+.app-menu-hidden-plus {
+    font-weight: 700;
+    color: var(--accent-blue);
+}
+
+.app-menu-hidden-chip-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--accent-blue);
+    opacity: 0.9;
+}
+
+.app-menu-hidden-chip-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.app-menu-actions-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 18px 14px;
+    border: 1px dashed var(--menu-line);
+    border-radius: 12px;
+    color: var(--text-muted);
+    font-size: 13px;
+    text-align: center;
+}
+
+.app-menu-actions-empty p {
+    margin: 0;
+}
+
+.app-menu-actions-empty-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.app-menu-actions-empty-buttons button {
+    height: 30px;
+    padding: 0 12px;
+    border: 1px solid var(--menu-line);
+    border-radius: 8px;
+    background: var(--menu-raised);
+    color: var(--text-main);
+    font-size: 12.5px;
+    cursor: pointer;
+}
+
+.app-menu-actions-empty-buttons button.is-primary {
+    border-color: color-mix(in srgb, var(--accent-blue) 42%, transparent);
+    background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+    color: var(--accent-blue);
+    font-weight: 600;
+}
+
+.app-menu-actions-hint {
+    margin: 10px 0 0;
+    font-size: 11px;
+    color: var(--text-muted);
+    opacity: 0.75;
 }
 
 .app-menu-tile:hover {
@@ -454,7 +665,7 @@
     .app-menu-backdrop { padding: 10px; }
     .app-menu { padding: 14px 16px 10px; border-radius: 18px; }
     .app-menu-heading { padding-bottom: 10px; margin-bottom: 10px; }
-    .app-menu-subtitle, .app-menu-tabs-hint { display: none; }
+    .app-menu-subtitle, .app-menu-tabs-hint, .app-menu-actions-hint { display: none; }
     .app-menu-body { gap: 16px; overflow: hidden; }
     .app-menu-column { overflow-y: auto; }
     .app-menu-tabs { max-height: none; }

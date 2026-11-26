@@ -6,6 +6,7 @@ import { isMobilePlatform } from "../../utils/platform";
 import { fileName, subtitleExtensions } from "./localMedia";
 import { decodeSubtitleBytes, parseSubtitleFile, type Cue } from "./model";
 import { isMobileMediaPath, mobileFileFor } from "./mobileMedia";
+import { isAndroidFolderPath, readAndroidFileBytes } from "./androidFolders";
 
 type Track = { index: number; tags?: { title?: string; language?: string } };
 type Props = {
@@ -60,7 +61,9 @@ export function SubtitleTracks({
                 const picked = isMobileMediaPath(path) ? mobileFileFor(path) : undefined;
                 const bytes = picked
                     ? await picked.arrayBuffer()
-                    : await invoke<ArrayBuffer>("player_read_local_subtitle", { path });
+                    : isAndroidFolderPath(path)
+                      ? readAndroidFileBytes(path)
+                      : await invoke<ArrayBuffer>("player_read_local_subtitle", { path });
                 cues = parseSubtitleFile(decodeSubtitleBytes(new Uint8Array(bytes)), path);
             } else if (choice.startsWith("web:")) {
                 const track = webTracks[Number(choice.slice(4))];
@@ -91,7 +94,7 @@ export function SubtitleTracks({
             if (index < 0) index = 0;
             void load(0, "web:" + index);
         }
-        if (source && !isMobilePlatform() && !source.startsWith("blob:") && !isMobileMediaPath(source))
+        if (source && !isMobilePlatform() && !source.startsWith("blob:") && !isMobileMediaPath(source) && !isAndroidFolderPath(source))
             void invoke<Track[]>("player_subtitle_tracks", { source })
                 .then((list) => {
                     if (!live) return;

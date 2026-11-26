@@ -346,7 +346,10 @@ export const ensureSetsunaAnkiSetup = async (): Promise<AnkiSetup> => {
         // AnkiDroid creates a missing target deck when the first note is
         // inserted, so a blank profile can still use Setsuna immediately.
         const defaultDeck = decks[0] || SETSUNA_DEFAULT_DECK;
-        const defaultModel = models.find((model) => /lapis/i.test(model)) || models[0] || "";
+        const defaultModel = models.find((model) => model === SETSUNA_DEFAULT_MODEL)
+            || findLapisModel(models)
+            || models[0]
+            || "";
         const fields = defaultModel ? await getModelFields(defaultModel, true) : [];
         return { decks, models, defaultDeck, defaultModel, fields, createdDeck, createdModel };
     }
@@ -367,19 +370,21 @@ export const ensureSetsunaAnkiSetup = async (): Promise<AnkiSetup> => {
     // A clean Anki has Basic and Cloze, which can't hold a mining card: without
     // Lapis, Setsuna's own note type is created (it used to wait for a profile
     // with no note types at all, which never happens).
-    if (!findLapisModel(models) && !models.includes(SETSUNA_DEFAULT_MODEL)) {
+    // Setsuna Japanese is the recommended default, so it is created even when
+    // Lapis is installed; a note type the user already picked is kept by callers.
+    if (!models.includes(SETSUNA_DEFAULT_MODEL)) {
         createdModel = await createSetsunaModel();
         clearAnkiMetaCache();
         models = await getModels(true);
-    } else if (models.includes(SETSUNA_DEFAULT_MODEL)) {
+    } else {
         await upgradeSetsunaModel();
     }
 
     const defaultDeck = decks.includes(SETSUNA_DEFAULT_DECK)
         ? SETSUNA_DEFAULT_DECK
         : (decks[0] || "");
-    const defaultModel = findLapisModel(models)
-        || models.find((model) => model === SETSUNA_DEFAULT_MODEL)
+    const defaultModel = models.find((model) => model === SETSUNA_DEFAULT_MODEL)
+        || findLapisModel(models)
         || models[0]
         || "";
     const fields = defaultModel ? await getModelFields(defaultModel, true) : [];
@@ -400,18 +405,36 @@ export const ensureSetsunaAnkiSetup = async (): Promise<AnkiSetup> => {
 export const findLapisModel = (models: string[]) =>
     models.find((model) => /^lapis$/i.test(model.trim())) || models.find((model) => /lapis/i.test(model)) || "";
 
+/** The note types Setsuna fills reliably: its own and Lapis (not every Lapis copy). */
+export const recommendedNoteTypes = (models: string[]): string[] =>
+    [SETSUNA_DEFAULT_MODEL, findLapisModel(models)].filter((model, index, list) =>
+        model && models.includes(model) && list.indexOf(model) === index);
+
+/** Recommended note types first, the rest of Anki's list after them, in Anki's order. */
+export const sortNoteTypes = (models: string[]): string[] => {
+    const recommended = recommendedNoteTypes(models);
+    return [...recommended, ...models.filter((model) => !recommended.includes(model))];
+};
+
+export const noteTypeLabel = (model: string, models: string[], en: boolean): string => {
+    if (!recommendedNoteTypes(models).includes(model)) return model;
+    const tag = model === SETSUNA_DEFAULT_MODEL
+        ? (en ? "recommended, default" : "рекомендуется, по умолчанию")
+        : (en ? "recommended" : "рекомендуется");
+    return `${model} · ${tag}`;
+};
+
 /**
  * Picks the note type for the first-run wizard: the one already chosen if it
- * still exists, else Lapis, else Setsuna's own simple type (created if needed).
- * It never replaces Lapis with the simple type: that sent cards to the wrong
- * note type for people who had Lapis set up.
+ * still exists, else Setsuna Japanese (created if needed; the recommended
+ * default since 2026-11-26), else Lapis on AnkiDroid. A note type the user
+ * already picked is never replaced.
  */
 export const ensureSetsunaNoteType = async (current = ""): Promise<{ model: string; fields: string[]; models: string[] }> => {
     let models = await getModels(true);
     const keep = current && models.includes(current) && current !== SETSUNA_DEFAULT_MODEL ? current : "";
-    const preferred = keep || findLapisModel(models);
-    if (preferred) {
-        return { model: preferred, fields: await getModelFields(preferred, true), models };
+    if (keep) {
+        return { model: keep, fields: await getModelFields(keep, true), models };
     }
     if (!models.includes(SETSUNA_DEFAULT_MODEL) && !getAnkiDroidBridge()) {
         await createSetsunaModel();
@@ -420,13 +443,18 @@ export const ensureSetsunaNoteType = async (current = ""): Promise<{ model: stri
     } else {
         await upgradeSetsunaModel();
     }
-    const model = models.includes(SETSUNA_DEFAULT_MODEL) ? SETSUNA_DEFAULT_MODEL : (models[0] || "");
+    // AnkiDroid cannot create note types: fall back to Lapis, then anything.
+    const model = models.includes(SETSUNA_DEFAULT_MODEL)
+        ? SETSUNA_DEFAULT_MODEL
+        : (findLapisModel(models) || models[0] || "");
     const fields = model ? await getModelFields(model, true) : [];
     return { model, fields, models };
 };
 
+// \u3005 (repeat mark), \u3006 and the small \u30f5/\u30f6 counters are read as part of the
+// kanji run: \u795e\u3005\u3057\u3055 is \u795e\u3005[\u3053\u3046\u3054\u3046]\u3057\u3055, not \u795e[\u3053\u3046\u3054\u3046\u3057\u3055]\u3005\u3057\u3055.
 const isKanjiChar = (char: string): boolean => {
-    return /[\u3400-\u9fff\uf900-\ufaff]/.test(char);
+    return /[\u3400-\u9fff\uf900-\ufaff\u3005\u3006\u30f5\u30f6]/.test(char);
 };
 
 type FuriganaChunk = {

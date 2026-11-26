@@ -5,6 +5,132 @@
 
 ---
 
+## 2026-11-26 (late night) — EPUB Sentence Splitting & Selection Dock Polish (PC + Mobile)
+- Fixed ruby/furigana sentence fragmentation and Japanese/English sentence boundaries in `src/features/epub/epubSentences.ts`:
+  - Rewrote `wrapParagraphHtmlSentences` to classify balanced inline tags (`<ruby>…</ruby>`, `<em>`, emphasis `<span>`, etc.) and keep them **inside** a single contiguous `<span class="epub-sentence" data-sentence-key="P:S" data-sentence-parity="0|1">` instead of wrapping inside `<ruby>` and breaking highlights at every furigana word.
+  - Upgraded `splitTextIntoSentenceRanges` to keep Japanese inline quotes (`「待って！」と彼女は叫んだ。`), double-bracket thoughts (`『痛み？』と思った。`), parentheticals (`（本当に！？）`), and English dialogue tags (`"Wait!" she shouted.`) intact, and to split `<br/>` line breaks cleanly.
+  - Expanded `tests/epub-sentences.test.mjs` covering contiguous `<ruby>` wrapping, `<br/>` splitting, JA inline quotes/thoughts/parens, and EN dialogue attribution.
+- Redesigned sentence & bubble selection UI in `src/features/epub/EpubReader.tsx`, `src/features/epub/epub.css`, `src/features/manga/MangaReader.tsx`, and `src/features/manga/manga.css`:
+  - Docked `.epub-sentence-bar` and `.manga-select-bar` cleanly at **bottom center** (hiding `bottomChromeVisible` and `.epub-corner-status` while selecting) so the bar never covers vertical or horizontal book text.
+  - Replaced noisy dotted underlines with clean alternating sentence tints (`data-sentence-parity="0"` / `"1"`), imperative unified `.is-hovered` highlighting across all fragments of a `data-sentence-key`, crisp `.is-selected` borders, and a prominent primary blue `Скопировать (N)` / `Copy (N)` CTA.
+  - Added `Ctrl+C` and `Enter` copy shortcuts and fixed stale `Escape` closure dependencies in both `EpubReader` and `MangaReader`.
+
+---
+
+## 2026-11-26 (late night) — Visible EPUB Sentence & Manga Bubble Copy (PC + Mobile)
+- Updated `src/features/epub/epubSentences.ts` (`EpubSentenceItem.html` + balanced inline tag slicing `buildPerSentenceHtml`) so each split JA/EN sentence keeps its own `<ruby>`/`<rt>`/`<mark>` HTML while `.text` stays clean without furigana; expanded `tests/epub-sentences.test.mjs`.
+- Updated `src/features/epub/EpubReader.tsx` and `src/features/epub/epub.css`:
+  - Moved the sentence selection toggle (`data-coach="epub-sentences"`) to the front of `.epub-glass-pill-tools` with a visible `"Предложения"` / `"Sentences"` label on PC.
+  - Preserved `<ruby>` via `EpubSentenceHtmlSpan` in mobile selection mode and wrapped mobile lookup paragraphs by individual sentences (`paraSentenceEntry.sentences`) so tapping a word passes only its sentence to lookup/Anki.
+  - Added PC right-click context menu (`.epub-sentence-ctx`: `"Copy sentence"` / `"Select multiple sentences…"`) and toast feedback, plus mobile responsive `.epub-sentence-bar`.
+- Updated `src/features/manga/MangaReader.tsx` and `src/features/manga/manga.css`:
+  - Moved the multi-bubble toggle (`data-coach="manga-bubbles"`) to the front of `.epub-glass-pill-tools` with a visible `"Баблы"` / `"Bubbles"` label on PC.
+  - Added PC right-click menu on bubbles (`Copy bubble`, `Select multiple bubbles…`, `Fix OCR text`), moved `.manga-bubble-actions` inside the corner (`bottom: 2px; left: 2px`) with larger touch targets, activated the bubble on mobile lookup tap, and adapted `.manga-select-bar` for mobile.
+- Added a 1-tap Copy button (`.dict-mobile-context-copy`) inside `.dict-mobile-context` in `src/components/Lookuper.tsx` + `src/components/MobileShell.css`.
+- Added `epub.sentences` and `manga.bubbles` onboarding steps/details in `src/features/onboarding/readerTips.ts` and `src/features/onboarding/tipDetails.ts`, and updated `docs/session-handoff-2026-11-26.md`.
+- Verified: `npm run build` (252 modules), `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (**119 / 119** passed).
+
+---
+
+## 2026-11-26 (late night) — Mobile Feature Parity Port (Shared Reading, Mobile Settings, Tab Controls)
+- Created `src/components/MobileSettingsSections.tsx` with modular RU/EN mobile UI sections:
+  - `MobileWsDiscoveryBlock`: LAN WebSocket auto-discovery via `discover_websocket_sources` (already in `src-tauri/src/lib.rs`) with 1-tap Connect.
+  - `MobileAppearanceAndTextSettings`: theme (`dark`/`light`/`amoled`), language, font size, furigana, text direction (`horizontal`/`vertical`), autoscroll offset, speed metrics/timeframe, auto-pause on idle, text filters, and compact replacement rules editor.
+  - `MobileLookupAppearanceSettings`: lookup font size, tag size, tags/audio toggles, auto-play audio.
+  - `MobileAnkiExtendedSettings`: deck mode (`shared`/`contextual`), remaining AnkiDroid fields (`reading`, `sentenceFurigana`, `dict`, `audio`, `pitch`, `freq`), button visibility, duplicate policies, and card status colors.
+  - `MobileReaderSettings`: EPUB reader settings + embedded `SettingsMangaOcr` (`isMobile={true}`) so Android users can download/manage ONNX Manga-OCR and configure PC Wi-Fi OCR.
+  - `MobilePlayerSettings`: Android-supported Video Player settings (Anki deck, clip format/quality, padding, subtitle visibility/blur/regex/offset/font/backdrop, auto-pause resume mode).
+  - `MobileUpdatesSettings`: current version display, startup auto-check toggle, and manual update check trigger.
+- Adapted `src/components/SharedReadingDialog.tsx`, `src/components/SharedReadingBar.css`, `src/components/SharedReadingDialog.css`, and `src/components/MobileShell.css` for touch screens (responsive widths, Tauri clipboard fallback, hiding PC-only game-window screenshot host toggle on Android while keeping guest screenshot reception).
+- Updated `src/components/AppLayout.tsx` (`MobileLayout` + `SearchBar`) and `src/App.tsx`:
+  - Wired Shared Reading into `MobileLayout`: `<SharedReadingBar>`, island live dot, empty-state/tabs-sheet «Read together», spotlight line highlight/jump, manual timer sync break, and Android Back handlers (`endedPromptTabId`, `sharedDialogTabId`, `isSearchOpen`).
+  - Added mobile tab status cycling, inline rename, archiving + collapsible Archive list, Search button, TXT/JSON import, tab export (clipboard + JSON download), Player launcher, and `EpubWorkspace` / `PlayerWorkspace` mobile settings return navigation (`mobileSettingsReturnRef` widened to `'hub' | 'epub' | 'player' | null`).
+- Verified cleanly: `npm run build` (251 modules), `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (113 passed, 0 failed). No `src-tauri/` changes required.
+
+---
+
+## 2026-11-26 (late night) — Shared Reading Persistent Tab Identity, End Prompt & Smart Update
+- Added persistent `Tab.uid` and `Tab.sharedOriginUid` in `src/utils/constants.ts`, `TabShare.originUid` and `originUid` signaling in `src/utils/sharedReading.ts`, plus `createTabUid`, `mergeSharedLines` (longest suffix-prefix overlap deduplication + anchor fallback), and `findMatchingSavedTab` (survives tab renames on both host and guest, prefers active tabs over archived).
+- Updated `src/utils/useSharedReading.ts`: host rooms publish stable `originUid`; `keepCopy` preserves `sharedOriginUid` for future streams; added `mergeViewerIntoTab` (preserves guest's custom tab name, adds reading time & speed sample, updates stats/history cleanly); triggers `onViewerStreamEnded` when a non-empty viewer broadcast finishes.
+- Added `SharedStreamEndedModal` in `src/components/SharedReadingDialog.tsx` (+ `.css`), plus matching **Update «…» / Save as new** actions in both `SharedReadingDialog` and `SharedReadingBar`. Closing/dismissing the modal keeps the viewer tab as a temporary ended tab for later recovery.
+- Wired `endedPromptTabId`, full-history tail hydration before merging (`handleMergeViewerIntoSaved`), and `uid: createTabUid()` on new tabs in `src/App.tsx`.
+- Expanded `tests/shared-reading.test.mjs` and verified: `npm run build`, `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (113 passed, 0 failed).
+
+---
+
+## 2026-11-26 (late night) — EPUB Orientation Menu Fix, Sentence Segmentation & Manga Bubble Copy
+- Fixed EPUB orientation dropdown (`EpubGlassSelect`) hiding as the cursor moved down into options outside the 76px top hover zone: added `onOpenChange` prop to `src/features/epub/EpubGlassSelect.tsx`, tracked `orientationMenuOpen` in `src/features/epub/EpubReader.tsx` to keep `topChromeVisible` true and suppress edge hover hints while open, and treated pointer events over `.epub-floating-top, .epub-glass-select-menu` as inside the top zone.
+- Created `src/features/epub/epubSentences.ts` with JA & EN sentence segmentation (`splitTextIntoSentenceRanges`, `wrapParagraphHtmlSentences`, `formatSelectedSentencesForCopy`) excluding `<rt>`/`<rp>` furigana readings and preserving `<ruby>` and `<mark>` tags cleanly.
+- Added sentence selection & clipboard copy mode to `src/features/epub/EpubReader.tsx` + `src/features/epub/epub.css`: toolbar toggle, click / `Shift+click` range selection across paragraphs/pages, imperative `.is-selected` sync without disrupting DOM memoization, floating copy bar (`.epub-sentence-bar`), and one-click ruby-clean `Copy` button on `.epub-selection-pill`.
+- Added single-bubble (`Copy` next to `✎`) and multi-bubble ordered selection/copy mode (`is-bubble-select`, `.manga-bubble-order-badge`, `.manga-select-bar`) to `src/features/manga/MangaReader.tsx` + `src/features/manga/manga.css`.
+- Added `tests/epub-sentences.test.mjs` and verified: `npm run build`, `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (110 passed, 0 failed).
+
+---
+
+## 2026-11-26 (night) — Shared Reading v2 (Presence, Wait/Ready, Spotlight, Timer Sync & Anki Screenshots)
+- Upgraded P2P Shared Reading in `src/utils/sharedReading.ts`, `src/utils/useSharedReading.ts`, and `src/components/SharedReadingDialog.tsx`/`.css`:
+  - Added participant profiles (nickname + color saved in `setsuna_shared_reading_profile_v1`), live roster list, auto `lookup` activity detection when dictionary is open, and `wait` / `ready` signals (`Alt+W` shortcut or floating bar toggle).
+  - Added line spotlighting («Показать всем в комнате» button on lines in `TextContainer.tsx` + jump-to-line banner in `SharedReadingBar.tsx` + colored highlight badge).
+  - Added host history scope (`new` / `recent` last 50 lines / `all`), room locking (`locked`), participant kick (`kickViewer`), relay health count (`Relays: open/total`), and Discord invite copy.
+  - Added optional host-to-guest compressed JPEG game screenshot sharing over chunked WebRTC (`shot-req` / `shot-chunk` via `LookupScreenshotSource` `callback` mode in `Lookuper.tsx` and `App.tsx`).
+  - Added collapsible `src/components/SharedReadingBar.tsx`/`.css` HUD inside `.reader-stage` and unread-lines `+N` badge on scroll-to-bottom in `TextContainer.tsx`.
+  - Implemented synced host→guest reading timer with manual guest opt-out (`syncTimer`), auto-pause when host goes offline/ends broadcast, idle-activity tracking on dictionary lookup & incoming viewer lines, and `applyViewerStatsDelta` so initial snapshot history doesn't inflate reading speed.
+  - Fixed viewer `title` op handling and replaced outdated PeerJS error text with Nostr/WebRTC messages.
+- Verified: `npm run build`, `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (105 passed, 0 failed, including 6 new tests in `tests/shared-reading.test.mjs`).
+
+---
+
+## 2026-11-26 (night) — Customizable Esc-Menu Action Tiles (All Modes)
+- Added `src/utils/escMenuLayout.ts` (`localStorage` key `setsuna_esc_menu_layout_v1`, event `setsuna:esc-menu-layout-changed`) to persist per-menu action tile order and hidden IDs across `texthooker`, `epub`, and `player`, preserving slots of temporarily absent context tiles (e.g. `library` in Player library view) and newly added tiles.
+- Created shared `src/components/EscActionGrid.tsx` using `@dnd-kit/core` + `@dnd-kit/sortable` (`rectSortingStrategy`) + `useJelly` for drag-and-drop reordering, an edit toggle (`✎` / `Done`) with per-tile `×` remove buttons, a restore tray for hidden chips (`+ <label>`), an empty-state restore banner, a right-click context menu (`Remove from menu`, `Customize buttons`, `Reset to default`), and `Escape`/outside-click dismissal.
+- Integrated `EscActionGrid` into `src/components/AppMenu.tsx` (TextHooker), `src/features/epub/EpubWorkspace.tsx` (Reader), and `src/features/player/PlayerWorkspace.tsx` (Video Player), keeping all `data-coach` onboarding attributes intact. Added styling in `src/components/AppMenu.css` and unit tests in `tests/esc-menu-layout.test.mjs`.
+- Verified: `npm run build`, `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (99 passed, 0 failed).
+
+---
+
+## 2026-11-26 (evening) — Player Folders Modal Window
+- Converted the Video Player's **Library folders («Папки видеотеки»)** strip in `src/features/player/PlayerLibrary.tsx` from an inline expandable block into a floating `<LibraryDialog>` modal overlay (`LibraryDialog` in `PosterPicker.tsx`), complete with folder count/unavailability badge, `+ Add folder` / `Refresh` actions, scrollable folder list (`Remove from library`), and empty state.
+- Added outside-backdrop click dismissal (`onMouseDown` coordinate bounds check) and optional `showHelp` prop to `LibraryDialog` in `src/features/player/PosterPicker.tsx`.
+- Added `PLAYER_FOLDERS` onboarding steps (`player.folders-refresh`, `player.folders-list`) in `src/features/onboarding/readerTips.ts` and updated `tipDetails.ts` (`player.folders`, `player.folders-refresh`, `player.folders-list`) in RU/EN.
+- Verified: `npm run build`, `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs` (93 passed, 0 failed).
+
+---
+
+## 2026-11-26 (later) — Onboarding Fixes (Esc, Layout, Order), EPUB/Player Tours & Deck Pill
+
+- **Coachmarks & Esc Menu Races (`Coachmarks.tsx`, `CoachTour.tsx`, `TipDetail.tsx`, `ModeIntro.tsx`, `onboarding.css`, `ReaderChrome.tsx`, `EpubWorkspace.tsx`, `PlayerWorkspace.tsx`):**
+  - Stopped `Escape` propagation (`stopImmediatePropagation`) in `Coachmarks` and `ModeIntro`, plus added `.onb-coach-layer, .onb-backdrop` guards to all three workspace Esc-menu handlers so closing a tip or mode intro with Esc never opens the Esc menu underneath.
+  - Updated `isCovered` and `Coachmarks` loop to treat elements behind open modals/dialogs (`dialog[open]`, `.app-menu-backdrop.is-open`, etc.) as covered (even when `pointer-events: none`), closing background tours immediately instead of floating over an Esc menu or dialog.
+  - Portaled `Coachmarks` and `TipDetail` into the active `dialog[open]` when targeting elements inside native top-layer `<dialog>` modals (such as Video Player PosterPicker, episode details, and playback settings).
+  - Moved the step counter (`N из M`) into `.onb-coach-head` (`CARD_WIDTH = 324`, `white-space: nowrap`) beside the title so footer buttons never squeeze or wrap it onto two lines.
+  - Replaced `Math.round(rect.top / 32)` sorting in `CoachTour.tsx` with center-Y greedy row clustering (28 px threshold) then strictly left-to-right sorting per row.
+- **EPUB Library, Reader & Reader Esc Menu (`EpubLibrary.tsx`, `EpubReader.tsx`, `EpubWorkspace.tsx`, `readerTips.ts`, `surfaceTips.ts`, `tipDetails.ts`):**
+  - Switched library/reader tips to exact `data-coach` targets (`lib-sync`, `lib-stats`, `lib-mokuro`, `lib-select`, `lib-display`, `lib-folder`, `lib-open`, `lib-shelves`, `lib-search`, `lib-filters`, `epub-lang`, `.epub-orientation-glass-select`, `epub-notes`, `epub-gallery`, `epub-point`, `epub-autoscroll`, `epub-return-point`, `epub-freeze`, `epub-tracking`) so `library.open` no longer hits the cloud button and all reader controls have tips & "More" details.
+  - Added `<TourHelpButton surface="epub-menu" />` and `<CoachTour steps={epubMenuTips(...)} />` to the Reader Esc menu (`EpubWorkspace.tsx`).
+- **Video Player Deck Button, Manual Card Removal & Player Esc Tour (`PlayerWorkspace.tsx`, `PlayerLibrary.tsx`, `PosterPicker.tsx`, `player.css`, `library.css`, `SettingsModal.tsx`):**
+  - Redesigned both player Anki deck buttons (`sp-deck` and `sp-deck-pill`) with `DeckIcon` + `Колода: <name>` / `Колода Anki` styling.
+  - Removed manual Anki card creation (`✎` button, `playerKeyMine` / `M` shortcut, `PlayerCardEditor` mount, `player.manual` tip/detail, and Settings keybind entry).
+  - Added `<TourHelpButton surface="player-menu" />` + `playerMenuTips` to the Player Esc menu (and fixed subtitle `"Аниме-плеер"` → `"Видео-плеер"`), added `<TourHelpButton surface="mode:player" />` to `LibraryDialog` header, scoped `PLAYER_SCREEN` to `.sp-body`, and added `player.sort`, `player.side-steps`, `player.side-close`.
+- **Verification:** `npm run build`, `node scripts/verify-public-build.mjs`, and `node --test tests/*.test.mjs` (**93 / 93** passed).
+
+---
+
+## 2026-11-26 — Completion of Remaining `claude-opus-5-5` Batch Items
+
+- **WebSocket LAN Auto-Search (`src-tauri/src/ws_discover.rs`, `main.rs`, `lib.rs`, `SettingsModal.tsx`, `SettingsModal.css`):**
+  - Added Rust command `discover_websocket_sources` (registered in both `main.rs` and `lib.rs`): probes `127.0.0.1`, own LAN IP, configured hosts, and the private `/24` LAN subnet using raw RFC 6455 HTTP/1.1 Upgrade handshakes across Agent/Textractor (`/`) and LunaTranslator (`/api/text/origin`) ports with a 96-thread pool and deduplication against `127.0.0.1`.
+  - Updated `autoFindWebSocket` in `SettingsModal.tsx` to collect **all** discovered servers (with non-Tauri browser fallback) and render `.ws-discover-results` showing `Этот ПК` / `LAN` badges, names, URLs, «Добавить», «Добавить все», and «Добавлено» states.
+- **Anki Settings Card Order (`src/components/Settings/SettingsAnki.tsx`):**
+  - Moved `<SettingsAudio />` after `#anki-cards` (before `#anki-hooks`) when Anki is connected, matching the sidebar order (`Cards -> Audio -> Screenshots`). Added `#anki-connection` (`data-anki-state`) and `#anki-dupes`.
+- **Connection-State-Aware Onboarding & Fuller Drive Guide (`SettingsCloud.tsx`, `SettingsModal.tsx`, `surfaceTips.ts`, `tipDetails.ts`, `tests/onboarding.test.mjs`):**
+  - Added `#cloud-connection` (`data-drive-state`), `#cloud-quota`, `#cloud-backup`, `#cloud-archive`, `#cloud-dict` IDs and enabled `watch` on Settings `CoachTour` for `anki` and `cloud` so tours react immediately when Anki or Google Drive finishes loading or connects.
+  - Replaced static tips with disconnected/connected tips for Anki and Google Drive (`settings.anki-connect`, `settings.anki-connected`, `settings.anki-dupes`, `settings.cloud-connect`, `settings.cloud-connected`, `settings.cloud-quota`, `settings.cloud-backup`, `settings.cloud-archive`, `settings.cloud-dict`), updated source Auto-find descriptions for LAN search, and expanded Google Drive "More" details (`appDataFolder` privacy, automatic Reader sync vs manual snapshots/`dictionary.db` transfer, PC+phone setup).
+- **Bug Report Redesign (`src/components/Settings/SettingsFeedback.tsx`, `SettingsFeedback.css`):**
+  - Redesigned the Feedback panel (`#feedback-main`) in the LiquidGlass Settings style with bug/feature selector cards, required-field indicators + live character counters, responsive 2-column repro/expected inputs, styled environment bar with version/OS pills and desktop `get_diagnostics_log_path` copy button, formatted report copy action, and clear-draft button while keeping `buildFeedback`/`DRAFT_KEY` tests intact.
+- **Verification:** `npm run build`, `node scripts/verify-public-build.mjs`, `node --test tests/*.test.mjs`, `cargo check --no-default-features` (desktop bin & lib), and `cargo test --no-default-features --lib ws_discover` (3/3 Rust tests passed). No commits or pushes made.
+
+---
+
 ## 2026-11-25 — Mobile `0.6.0-beta` Hotfix Tracker (Live Handoff Log for Claude / Next Agent)
 
 > **Purpose:** Tracks fixes for the 5 bugs + 2 enhancements reported right after `v0.6.0` on Android. Any agent continuing this work should read the checklists below first.

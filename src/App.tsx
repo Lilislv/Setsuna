@@ -52,13 +52,17 @@ import { IconPin, IconSearch } from "./components/Icons";
 import { DEFAULT_SETTINGS, defaultStats, EMPTY_LINES, EpubBookmark, Tab, themes, ReadingSpeedSample, isTabLocked, type CaptureSourceBinding } from "./utils/constants";
 import { lookupStats } from "./utils/lookupStats";
 import { useSharedReading } from "./utils/useSharedReading";
-import SharedReadingDialog from "./components/SharedReadingDialog";
+import { createTabUid, findMatchingSavedTab } from "./utils/sharedReading";
+import SharedReadingDialog, { SharedStreamEndedModal } from "./components/SharedReadingDialog";
+import SharedReadingBar from "./components/SharedReadingBar";
 import { registerCaptureSourceRequest } from "./utils/captureRequest";
 import { getTranslator } from "./utils/i18n";
 import { ConfirmDialogModal, ImportProgressModal, ExportModal, NoticeModal } from "./components/AppModals";
 import SetupWizard from "./components/SetupWizard";
 import StartupSplash from "./components/StartupSplash";
 import HomeScreen from "./components/HomeScreen";
+import OnboardingLayer from "./features/onboarding/OnboardingLayer";
+import { ONBOARDING_SAMPLE_LINES } from "./features/onboarding/guides";
 import { YATSU_READER_AVAILABLE } from './utils/featureFlags';
 import PlayerWorkspace from "./features/player/PlayerWorkspace";
 import { appVersionLabel } from "./utils/appVersion";
@@ -359,7 +363,8 @@ export default function App() {
                 }
             } catch {}
         }
-        return [{ id: 1, name: t('tabs.defaultName'), lines: [], stats: defaultStats }];
+        // A clean install starts with two lines to try the lookup on (Umineko, EP4).
+        return [{ id: 1, name: t('tabs.defaultName'), lines: [...ONBOARDING_SAMPLE_LINES], stats: defaultStats }];
     });
 
     const [activeTabId, setActiveTabId] = useState(() => {
@@ -717,6 +722,32 @@ export default function App() {
         if (active && !isTabLocked(active)) liveTabIdRef.current = active.id;
     }, [tabs, activeTabId]);
 
+    // The text tab the user was last on: opening a book or a video makes the
+    // book's tab active, and coming back must return here, not to the first tab.
+    const lastTextTabIdRef = useRef<number | null>((() => {
+        try {
+            const saved = Number(localStorage.getItem("setsuna-last-text-tab"));
+            return Number.isFinite(saved) && saved > 0 ? saved : null;
+        } catch {
+            return null;
+        }
+    })());
+    useEffect(() => {
+        const active = tabs.find((tab) => tab.id === activeTabId);
+        if (!active || active.archived || (active.mode && active.mode !== "text")) return;
+        if (lastTextTabIdRef.current === active.id) return;
+        lastTextTabIdRef.current = active.id;
+        try {
+            localStorage.setItem("setsuna-last-text-tab", String(active.id));
+        } catch {
+            /* storage unavailable */
+        }
+    }, [tabs, activeTabId]);
+    const preferredTextTab = useCallback((list: Tab[]) => {
+        const isOpenText = (tab: Tab) => !tab.archived && (!tab.mode || tab.mode === "text");
+        return list.find((tab) => tab.id === lastTextTabIdRef.current && isOpenText(tab)) ?? list.find(isOpenText);
+    }, []);
+
     const switchTab = useCallback((id: number) => {
         setActiveTabId(id);
         activeTabIdRef.current = id;
@@ -729,6 +760,12 @@ export default function App() {
         setSettingsInitialSection(section || null);
         setIsSettingsOpen(true);
     }, []);
+    // The lookup's "no dictionaries" card links straight to Settings → Dictionaries.
+    useEffect(() => {
+        const onOpen = (event: Event) => openSettingsPanel(String((event as CustomEvent<string>).detail || '') || null);
+        window.addEventListener('setsuna:open-settings', onOpen);
+        return () => window.removeEventListener('setsuna:open-settings', onOpen);
+    }, [openSettingsPanel]);
 
     const [editingTabId, setEditingTabId] = useState<number | null>(null);
     const [isFlashing, setIsFlashing] = useState(false);
@@ -740,7 +777,7 @@ export default function App() {
     const sentenceLookupRequestRef = useRef(0);
     const [mobileLookupNotice, setMobileLookupNotice] = useState('');
     const [mobileSettingsRequest, setMobileSettingsRequest] = useState({ id: 0, section: 'reading' });
-    const mobileSettingsReturnRef = useRef<{ workspace: 'hub' | 'epub' | null; tabId: number | null }>({ workspace: null, tabId: null });
+    const mobileSettingsReturnRef = useRef<{ workspace: 'hub' | 'epub' | 'player' | null; tabId: number | null }>({ workspace: null, tabId: null });
     const [jsonImportProgress, setJsonImportProgress] = useState<{ current: number; total: number } | null>(null);
     const [dictImportProgress, setDictImportProgress] = useState<{
         dict_name: string;
@@ -779,6 +816,10 @@ export default function App() {
     );
     useMobileBackHandler(isMobileLayout && lookupStack.length > 0, MOBILE_BACK_PRIORITY.POPUP, () => {
         closeLookupStack();
+    });
+    useMobileBackHandler(isMobileLayout && isSearchOpen, MOBILE_BACK_PRIORITY.SUBVIEW + 3, () => {
+        setIsSearchOpen(false);
+        setSearchQuery("");
     });
     useMobileBackHandler(isMobileLayout && isSettingsOpen, MOBILE_BACK_PRIORITY.MODAL, () => {
         setIsSettingsOpen(false);
@@ -2320,13 +2361,13 @@ export default function App() {
                 const keepEpubIds = remainingTabs.filter((tab) => tab.mode === "epub").map((tab) => tab.id);
                 setTabs(remainingTabs);
                 if (idSet.has(activeTabIdRef.current)) {
-                    const nextText = remainingTabs.find((tab) => !tab.archived && (!tab.mode || tab.mode === "text"));
+                    const nextText = preferredTextTab(remainingTabs);
                     if (nextText) switchTab(nextText.id);
                 }
                 pruneEpubFiles(keepEpubIds).catch(() => {});
             },
         });
-    }, [switchTab, t, settings.appLanguage]);
+    }, [switchTab, preferredTextTab, t, settings.appLanguage]);
 
     const handleRemoveEpubBook = useCallback((tabId: number) => {
         const target = tabsRef.current.find((tab) => tab.id === tabId && tab.mode === "epub");
@@ -2340,7 +2381,7 @@ export default function App() {
                 const keepEpubIds = remainingTabs.filter((tab) => tab.mode === "epub").map((tab) => tab.id);
                 setTabs(remainingTabs);
                 if (activeTabIdRef.current === tabId) {
-                    const nextText = remainingTabs.find((tab) => !tab.archived && (!tab.mode || tab.mode === "text"));
+                    const nextText = preferredTextTab(remainingTabs);
                     if (nextText) switchTab(nextText.id);
                 }
                 pruneEpubFiles(keepEpubIds).catch(() => {});
@@ -3178,17 +3219,123 @@ export default function App() {
 
     const addNewTab = () => {
         const newId = allocateTabId();
-        setTabs((prev) => [...prev, { id: newId, name: t('tabs.newName', { id: prev.length + 1 }), lines: [], stats: defaultStats, speedSamples: [] }]);
+        setTabs((prev) => [...prev, { id: newId, uid: createTabUid(), name: t('tabs.newName', { id: prev.length + 1 }), lines: [], stats: defaultStats, speedSamples: [] }]);
         switchTab(newId);
     };
+
+    const compressDataUrlForWebRtc = (dataUrl: string, maxWidth = 1024, quality = 0.8): Promise<string> =>
+        new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+                const w = Math.max(1, Math.round(img.width * scale));
+                const h = Math.max(1, Math.round(img.height * scale));
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    resolve(dataUrl);
+                    return;
+                }
+                ctx.drawImage(img, 0, 0, w, h);
+                try {
+                    const compressed = canvas.toDataURL('image/jpeg', quality);
+                    resolve(compressed && compressed.length < dataUrl.length ? compressed : dataUrl);
+                } catch {
+                    resolve(dataUrl);
+                }
+            };
+            img.onerror = () => resolve(dataUrl);
+            img.src = dataUrl;
+        });
+
+    const captureHostScreenshot = useCallback(async (tabId: number): Promise<string | null> => {
+        const tab = tabsRef.current.find((t) => t.id === tabId);
+        const procs: any[] = [];
+        if (tab?.captureSource?.name) {
+            procs.push({
+                name: tab.captureSource.name,
+                path: tab.captureSource.path || '',
+                pid: tab.captureSource.pid,
+                sourceType: tab.captureSource.sourceType || 'local',
+                remoteUrl: tab.captureSource.remoteUrl,
+                remoteToken: tab.captureSource.remoteToken,
+            });
+        } else if (Array.isArray(settings.hookProcesses)) {
+            procs.push(
+                ...settings.hookProcesses
+                    .filter((p: any) => p.active)
+                    .map((p: any) => ({ name: p.name, path: p.path || '', pid: p.pid })),
+            );
+        }
+        if (!procs.length) return null;
+        const remoteSource = procs.find((p) => p.sourceType === 'remote' && p.remoteUrl && p.remoteToken && p.pid);
+        const raw = remoteSource
+            ? await invoke<string | null>('take_remote_capture_screenshot', {
+                  url: remoteSource.remoteUrl,
+                  token: remoteSource.remoteToken,
+                  pid: remoteSource.pid,
+              }).catch(() => null)
+            : await invoke<string | null>('take_smart_screenshot', { processes: procs }).catch(() => null);
+        if (!raw) return null;
+        return compressDataUrlForWebRtc(raw);
+    }, [settings.hookProcesses]);
+
+    const [endedPromptTabId, setEndedPromptTabId] = useState<number | null>(null);
 
     // Shared reading: broadcast a tab to a room, or follow someone's room.
     const sharedReading = useSharedReading({
         tabs,
         setTabs,
+        activeTabId,
+        isPaused,
+        lookupOpen: lookupStack.length > 0,
+        en: settings.appLanguage === 'en',
         countStats: (text) => calculateStats(text, settings.appLanguage),
+        onViewerTimerSync: (running) => setIsPaused(!running),
+        onViewerActivity: () => { lastReadingActivityRef.current = Date.now(); },
+        onViewerStreamEnded: (id) => setEndedPromptTabId(id),
+        captureHostScreenshot,
     });
+    const handleMergeViewerIntoSaved = useCallback(async (viewerTabId: number, targetTabId: number) => {
+        const targetTab = tabsRef.current.find((t) => t.id === targetTabId);
+        let fullLines: string[] | undefined;
+        if (targetTab?.historyTail) {
+            const history = await loadTabHistory(targetTabId);
+            if (history) fullLines = mergeTabHistory(targetTab, history).lines;
+        }
+        sharedReading.mergeViewerIntoTab(viewerTabId, targetTabId, fullLines);
+        switchTab(targetTabId);
+        setEndedPromptTabId((prev) => (prev === viewerTabId ? null : prev));
+    }, [sharedReading.mergeViewerIntoTab, switchTab]);
+    useEffect(() => {
+        if (lookupStack.length > 0) lastReadingActivityRef.current = Date.now();
+    }, [lookupStack.length]);
+    const [sharedScrollReq, setSharedScrollReq] = useState<{ index: number; token: number } | null>(null);
+    const jumpToSharedLine = useCallback((lineIndex: number) => {
+        setSharedScrollReq({ index: lineIndex, token: Date.now() });
+    }, []);
+    useEffect(() => {
+        if (resolvedWorkspace !== 'texthooker' || activeTab?.shared?.role !== 'viewer' || activeTab.shared.ended) return;
+        const onKey = (event: KeyboardEvent) => {
+            if (!event.altKey || event.ctrlKey || event.metaKey) return;
+            if (event.code !== 'KeyW' && event.key.toLowerCase() !== 'w') return;
+            const tag = (event.target as HTMLElement | null)?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            event.preventDefault();
+            sharedReading.toggleViewerWait(activeTab.id);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [resolvedWorkspace, activeTab?.id, activeTab?.shared?.role, activeTab?.shared?.ended, sharedReading.toggleViewerWait]);
     const [sharedDialogTabId, setSharedDialogTabId] = useState<number | null>(null);
+    useMobileBackHandler(isMobileLayout && endedPromptTabId !== null, MOBILE_BACK_PRIORITY.MODAL + 3, () => {
+        setEndedPromptTabId(null);
+    });
+    useMobileBackHandler(isMobileLayout && sharedDialogTabId !== null, MOBILE_BACK_PRIORITY.MODAL + 2, () => {
+        setSharedDialogTabId(null);
+    });
     const openSharedReading = useCallback((tabId?: number) => {
         setSharedDialogTabId(tabId ?? activeTabIdRef.current);
     }, []);
@@ -3218,6 +3365,7 @@ export default function App() {
 
     /** Leaves a followed room: the tab goes away (keep a copy first to hold on to it). */
     const leaveSharedRoom = (id: number) => {
+        setEndedPromptTabId((prev) => (prev === id ? null : prev));
         const rest = tabsRef.current.filter((tab) => tab.id !== id);
         const visible = rest.filter((tab) => !tab.archived && (!tab.mode || tab.mode === 'text'));
         let nextId = visible[0]?.id;
@@ -3234,7 +3382,7 @@ export default function App() {
         const current = tabs.find((tab) => tab.id === activeTabIdRef.current);
         const currentIsTextHooker = Boolean(current && (!current.mode || current.mode === "text"));
         if (!currentIsTextHooker) {
-            const existing = tabs.find((tab) => !tab.archived && (!tab.mode || tab.mode === "text"));
+            const existing = preferredTextTab(tabs);
             if (existing) {
                 switchTab(existing.id);
             } else {
@@ -3254,12 +3402,12 @@ export default function App() {
     };
 
     const openMobileSettingsPanel = (section: string = '') => {
-        const currentWorkspace = activeWorkspace === "epub" || activeWorkspace === "hub" ? activeWorkspace : null;
+        const currentWorkspace = activeWorkspace === "epub" || activeWorkspace === "player" || activeWorkspace === "hub" ? activeWorkspace : null;
         mobileSettingsReturnRef.current = {
             workspace: currentWorkspace,
             tabId: activeTabIdRef.current,
         };
-        if (currentWorkspace !== "epub") {
+        if (currentWorkspace !== "epub" && currentWorkspace !== "player") {
             openTextHookerWorkspace();
         } else {
             setActiveWorkspace("texthooker");
@@ -3273,6 +3421,8 @@ export default function App() {
         if (ret.workspace === "epub") {
             if (ret.tabId !== null) switchTab(ret.tabId);
             setActiveWorkspace("epub");
+        } else if (ret.workspace === "player") {
+            setActiveWorkspace("player");
         } else if (ret.workspace === "hub") {
             setActiveWorkspace("hub");
         }
@@ -4279,6 +4429,9 @@ export default function App() {
                 })}
                 onAnkiDeckChange={(deck) => setSettings((prev) => ({ ...prev, ankiDeck: deck }))}
             />
+            {isAppLoaded && resolvedWorkspace !== "hub" && (
+                <OnboardingLayer mode={resolvedWorkspace} language={settings.appLanguage || "ru"} tips />
+            )}
             {floatingBtn && lookupStack.length === 0 && (
                 <button
                     onClick={(e) => {
@@ -4448,18 +4601,47 @@ export default function App() {
                 </div>
             )}
 
-            <SharedReadingDialog
-                open={sharedDialogTabId !== null}
-                tab={tabs.find((tab) => tab.id === sharedDialogTabId) || null}
-                status={sharedDialogTabId !== null ? sharedReading.status[sharedDialogTabId] : undefined}
-                en={settings.appLanguage === 'en'}
-                onStart={sharedReading.startHosting}
-                onStop={sharedReading.stopHosting}
-                onJoin={joinSharedRoom}
-                onKeep={sharedReading.keepCopy}
-                onLeave={leaveSharedRoom}
-                onClose={() => setSharedDialogTabId(null)}
-            />
+            {(() => {
+                const dialogTab = tabs.find((tab) => tab.id === sharedDialogTabId) || null;
+                const endedTab = tabs.find((tab) => tab.id === endedPromptTabId) || null;
+                return (
+                    <>
+                        <SharedReadingDialog
+                            open={sharedDialogTabId !== null}
+                            tab={dialogTab}
+                            status={sharedDialogTabId !== null ? sharedReading.status[sharedDialogTabId] : undefined}
+                            profile={sharedReading.profile}
+                            en={settings.appLanguage === 'en'}
+                            matchingSavedTab={findMatchingSavedTab(tabs, dialogTab)}
+                            onUpdateProfile={sharedReading.updateProfile}
+                            onStart={sharedReading.startHosting}
+                            onStop={sharedReading.stopHosting}
+                            onJoin={joinSharedRoom}
+                            onKeep={sharedReading.keepCopy}
+                            onMergeIntoSaved={(viewerId, targetId) => void handleMergeViewerIntoSaved(viewerId, targetId)}
+                            onLeave={leaveSharedRoom}
+                            onSetLocked={sharedReading.setRoomLocked}
+                            onSetShareScreenshots={sharedReading.setShareScreenshots}
+                            onKick={sharedReading.kickViewer}
+                            onSetSyncTimer={sharedReading.setViewerSyncTimer}
+                            onClose={() => setSharedDialogTabId(null)}
+                        />
+                        <SharedStreamEndedModal
+                            viewerTab={endedTab && endedTab.shared?.role === 'viewer' ? endedTab : null}
+                            matchingSavedTab={findMatchingSavedTab(tabs, endedTab)}
+                            kickedReason={endedTab ? sharedReading.status[endedTab.id]?.kickedReason : undefined}
+                            en={settings.appLanguage === 'en'}
+                            onMergeIntoSaved={(viewerId, targetId) => void handleMergeViewerIntoSaved(viewerId, targetId)}
+                            onKeepAsNew={(viewerId) => {
+                                sharedReading.keepCopy(viewerId);
+                                setEndedPromptTabId(null);
+                            }}
+                            onDiscard={(viewerId) => leaveSharedRoom(viewerId)}
+                            onDismiss={() => setEndedPromptTabId(null)}
+                        />
+                    </>
+                );
+            })()}
 
             {isCaptureSourcePickerOpen && (
                 <div
@@ -4713,7 +4895,7 @@ export default function App() {
                         onCloseLookup={closeLookupStack}
                         escMenuBlocked={isSettingsOpen || Boolean(updateDialog) || Boolean(confirmDialog) || Boolean(catalogPrompt)}
                         onHome={() => setActiveWorkspace("hub")}
-                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('') : openSettingsPanel("epub-reader")}
+                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('reader') : openSettingsPanel("epub-reader")}
                         onOpenFile={openEpubFilePicker}
                         onImportFolder={!isMobileLayout ? openEpubFolderPicker : undefined}
                         onImportBackup={handleImportEpubBackup}
@@ -4754,7 +4936,7 @@ export default function App() {
                         onCloseLookup={closeLookupStack}
                         escMenuBlocked={isSettingsOpen || Boolean(confirmDialog) || Boolean(updateDialog)}
                         onHome={() => setActiveWorkspace("hub")}
-                        onSettings={() => openSettingsPanel('player-main')}
+                        onSettings={() => isMobileLayout ? openMobileSettingsPanel('player') : openSettingsPanel('player-main')}
                         onUpdateSettings={(patch) => setSettings((prev) => ({ ...prev, ...patch }))}
                         onDeckChange={(deck) => setSettings((prev) => ({ ...prev, playerAnkiDeck: deck || undefined }))}
                         shortcutsBlocked={isSettingsOpen || lookupStack.length > 0 || Boolean(confirmDialog) || Boolean(updateDialog)}
@@ -4822,6 +5004,63 @@ export default function App() {
                         onOpenCloudSettings={() => openMobileSettingsPanel('drive')}
                         onHome={() => setActiveWorkspace("hub")}
                         onCloseMobileSettings={handleCloseMobileSettings}
+                        openSharedReading={openSharedReading}
+                        sharedStatus={sharedReading.status}
+                        viewerActivity={sharedReading.viewerActivity}
+                        matchingSavedSharedTabName={activeTab?.shared ? (findMatchingSavedTab(tabs, activeTab)?.name || null) : null}
+                        onMergeSharedIntoSaved={activeTab?.shared ? ((viewerTabId: number) => {
+                            const vt = tabs.find((tab) => tab.id === viewerTabId);
+                            const matching = vt ? findMatchingSavedTab(tabs, vt) : null;
+                            if (matching) void handleMergeViewerIntoSaved(viewerTabId, matching.id);
+                        }) : undefined}
+                        onToggleSharedWait={(tabId: number) => sharedReading.toggleViewerWait(tabId)}
+                        onToggleSharedSyncTimer={(tabId: number) => {
+                            const target = tabs.find((tab) => tab.id === tabId);
+                            sharedReading.setViewerSyncTimer(tabId, target?.shared?.syncTimer === false);
+                        }}
+                        onKeepSharedCopy={(tabId: number) => sharedReading.keepCopy(tabId)}
+                        onStopSharedReading={(tabId: number) => leaveSharedRoom(tabId)}
+                        onJumpToSharedLine={jumpToSharedLine}
+                        onDismissSharedSpotlight={(tabId: number) => sharedReading.dismissSpotlight(tabId)}
+                        onSpotlightLine={activeTab?.shared && !activeTab.shared.ended ? (lineIdx: number, text: string) => sharedReading.sendSpotlight(activeTab.id, lineIdx, text) : undefined}
+                        spotlightLineIndex={activeTab?.shared ? (sharedReading.status[activeTab.id]?.spotlight?.lineIndex ?? null) : null}
+                        spotlightAuthor={activeTab?.shared && sharedReading.status[activeTab.id]?.spotlight ? {
+                            name: sharedReading.status[activeTab.id]!.spotlight!.byName,
+                            color: sharedReading.status[activeTab.id]!.spotlight!.byColor,
+                        } : null}
+                        scrollToLineRequest={sharedScrollReq}
+                        onUserManualTimerToggle={() => {
+                            if (activeTab?.shared?.role === 'viewer' && !activeTab.shared.ended && activeTab.shared.syncTimer !== false) {
+                                sharedReading.setViewerSyncTimer(activeTab.id, false);
+                            }
+                        }}
+                        onOpenSearch={() => {
+                            setIsSearchOpen(true);
+                            setTimeout(() => searchInputRef.current?.focus(), 100);
+                        }}
+                        onArchiveTab={(id: number) => {
+                            const visibleTextTabs = tabs.filter((tab) => !tab.archived && (!tab.mode || tab.mode === 'text'));
+                            if (visibleTextTabs.length <= 1) return;
+                            setTabs((prev) => prev.map((tab) => (tab.id === id ? { ...tab, archived: true } : tab)));
+                            if (activeTabIdRef.current === id) {
+                                const next = visibleTextTabs.find((tab) => tab.id !== id) || visibleTextTabs[0];
+                                if (next) switchTab(next.id);
+                            }
+                        }}
+                        onUnarchiveTab={(id: number) => setTabs((prev) => prev.map((tab) => (tab.id === id ? { ...tab, archived: false } : tab)))}
+                        onCycleTabStatus={(id: number) => {
+                            const order: NonNullable<Tab['status']>[] = ['planned', 'reading', 'paused', 'completed'];
+                            setTabs((prev) => prev.map((tab) => {
+                                if (tab.id !== id) return tab;
+                                const currentIndex = Math.max(0, order.indexOf(tab.status || 'planned'));
+                                return { ...tab, status: order[(currentIndex + 1) % order.length] };
+                            }));
+                        }}
+                        onRenameTab={(id: number, name: string) => setTabs((prev) => prev.map((tab) => (tab.id === id ? { ...tab, name: name.trim() || tab.name } : tab)))}
+                        onImportJsonFile={handleImportJson}
+                        onOpenPlayerWorkspace={openPlayerWorkspace}
+                        onCheckForUpdates={checkForUpdates}
+                        updateChecking={isCheckingUpdate}
                     />
                 ) : (
                 <>
@@ -4888,6 +5127,26 @@ export default function App() {
 
                 <div className="reader-row">
                 <div className="reader-stage">
+                {activeTab?.shared && (() => {
+                    const matching = findMatchingSavedTab(tabs, activeTab);
+                    return (
+                        <SharedReadingBar
+                            tab={activeTab}
+                            status={sharedReading.status[activeTab.id]}
+                            viewerActivity={sharedReading.viewerActivity[activeTab.id] || 'reading'}
+                            en={settings.appLanguage === 'en'}
+                            matchingSavedTabName={matching?.name || null}
+                            onMergeIntoSaved={matching ? () => void handleMergeViewerIntoSaved(activeTab.id, matching.id) : undefined}
+                            onOpenDialog={() => openSharedReading(activeTab.id)}
+                            onToggleWait={() => sharedReading.toggleViewerWait(activeTab.id)}
+                            onToggleSyncTimer={() => sharedReading.setViewerSyncTimer(activeTab.id, activeTab.shared?.syncTimer === false)}
+                            onKeepCopy={() => sharedReading.keepCopy(activeTab.id)}
+                            onLeave={() => leaveSharedRoom(activeTab.id)}
+                            onJumpToLine={jumpToSharedLine}
+                            onDismissSpotlight={() => sharedReading.dismissSpotlight(activeTab.id)}
+                        />
+                    );
+                })()}
                 <main ref={mainContentRef} className="main-content" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                     <TextContainer
                         contentKey={activeTab?.id ?? activeTabId}
@@ -4900,20 +5159,32 @@ export default function App() {
                         searchQuery={searchQuery}
                         activeSearchLineIdx={searchResults[currentSearchIdx]?.lineIdx ?? -1}
                         searchTrigger={searchTrigger}
-                        panelPosition={settings.panelPosition}
+                        panelPosition="top-right"
                         language={settings.appLanguage}
                         textOrientation={settings.textOrientation}
                         onExplainLines={aiReady && settings.aiLineButtons !== false ? explainLinesWithAi : undefined}
                         readOnly={isTabLocked(activeTab)}
+                        onSpotlightLine={activeTab?.shared && !activeTab.shared.ended ? (lineIdx: number, text: string) => sharedReading.sendSpotlight(activeTab.id, lineIdx, text) : undefined}
+                        spotlightLineIndex={activeTab?.shared ? (sharedReading.status[activeTab.id]?.spotlight?.lineIndex ?? null) : null}
+                        spotlightAuthor={activeTab?.shared && sharedReading.status[activeTab.id]?.spotlight ? {
+                            name: sharedReading.status[activeTab.id]!.spotlight!.byName,
+                            color: sharedReading.status[activeTab.id]!.spotlight!.byColor,
+                        } : null}
+                        scrollToLineRequest={sharedScrollReq}
                     />
                 </main>
 
                 <StatsPanel
                     isPaused={isPaused}
-                    onTogglePause={() => setIsPaused(!isPaused)}
+                    onTogglePause={() => {
+                        if (activeTab?.shared?.role === 'viewer' && !activeTab.shared.ended && activeTab.shared.syncTimer !== false) {
+                            sharedReading.setViewerSyncTimer(activeTab.id, false);
+                        }
+                        setIsPaused(!isPaused);
+                    }}
                     stats={activeTabForDisplay?.stats || defaultStats}
                     speedSamples={activeTab?.speedSamples || []}
-                    position={settings.panelPosition}
+                    position="top-right" /* the docked bottom bar was removed; the floating panel is the only layout */
                     speedMetric={settings.speedMetric}
                     speedTimeframe={settings.speedTimeframe}
                     language={settings.appLanguage}
@@ -4965,7 +5236,19 @@ export default function App() {
                         onSlice={sliceLookupStack}
                         settings={settings}
                         captureSource={resolvedWorkspace === "texthooker" ? (activeTab?.captureSource || null) : null}
-                        screenshotSource={resolvedWorkspace === "epub" && mangaAnkiScreenshot ? { kind: "region", dataUrl: mangaAnkiScreenshot } : undefined}
+                        screenshotSource={
+                            resolvedWorkspace === "epub" && mangaAnkiScreenshot
+                                ? { kind: "region", dataUrl: mangaAnkiScreenshot }
+                                : resolvedWorkspace === "texthooker" && activeTab?.shared?.role === "viewer" && !activeTab.shared.ended && sharedReading.status[activeTab.id]?.shareScreenshots
+                                  ? {
+                                        kind: "callback",
+                                        capture: () => sharedReading.requestScreenshot(activeTab.id),
+                                        unavailableMessage: settings.appLanguage === "en"
+                                            ? "Could not capture the game window from the host."
+                                            : "Не удалось получить скриншот игры от хоста.",
+                                    }
+                                  : undefined
+                        }
                         ankiDeck={resolvedWorkspace === "player" ? (settings.playerAnkiDeck || settings.ankiDeck)
                             : (resolvedWorkspace === "texthooker" || resolvedWorkspace === "epub") ? (activeTab?.ankiDeck || settings.ankiDeck) : settings.ankiDeck}
                         onClose={() => setLookupStack([])}

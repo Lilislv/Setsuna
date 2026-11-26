@@ -8,7 +8,7 @@ import {
     listDictionaryParts,
     getAccessTokenInfo,
     listDictionaryShares,
-    loadStoredGoogleRefreshToken,
+    resolveGoogleRefreshToken,
     type DictionaryShareFile,
 } from "../../utils/gdrive";
 import "./DictionaryShare.css";
@@ -25,6 +25,8 @@ interface DictionaryShareProps {
     initialTab?: Tab;
     onClose: () => void;
     syncDictionaries: () => Promise<void>;
+    /** Android keeps the Google refresh token in settings instead of the OS keychain. */
+    refreshToken?: string;
 }
 
 const formatSize = (bytes?: number | string) => {
@@ -36,7 +38,7 @@ const formatSize = (bytes?: number | string) => {
 
 const copy = (text: string) => writeText(text).catch(() => navigator.clipboard?.writeText(text));
 
-export default function DictionaryShare({ language, dictionaries, initialSelection = [], initialTab = "share", onClose, syncDictionaries }: DictionaryShareProps) {
+export default function DictionaryShare({ language, dictionaries, initialSelection = [], initialTab = "share", onClose, syncDictionaries, refreshToken }: DictionaryShareProps) {
     const en = language === "en";
     const [tab, setTab] = useState<Tab>(initialTab);
     const [selected, setSelected] = useState<string[]>(initialSelection.length ? initialSelection : []);
@@ -74,7 +76,7 @@ export default function DictionaryShare({ language, dictionaries, initialSelecti
     };
 
     const driveToken = async () => {
-        const refresh = await loadStoredGoogleRefreshToken().catch(() => null);
+        const refresh = await resolveGoogleRefreshToken(refreshToken);
         if (!refresh) {
             throw new Error(en
                 ? "Connect Google Drive first: Settings → Google Drive → Sign in."

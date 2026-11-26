@@ -13,6 +13,7 @@ mod manga_import;
 mod manga_catalog;
 mod manga_ocr_server;
 mod mokuro_setup;
+mod ws_discover;
 mod lookup_normalization;
 mod japanese_deinflector;
 mod local_audio;
@@ -1187,6 +1188,24 @@ async fn account_list_devices(api_base_url: String, token: String) -> Result<Val
     read_json_response(response, "Device list").await
 }
 
+// Android has no OS keychain command: the Google refresh token stays in
+// `settings.gdriveRefreshToken` (see `resolveGoogleRefreshToken` in gdrive.ts).
+// `store` fails on purpose so desktop-style migrations keep the settings copy.
+#[tauri::command]
+fn store_google_refresh_token(_refresh_token: String) -> Result<(), String> {
+    Err("Secure Google credential storage is not available on mobile yet".to_string())
+}
+
+#[tauri::command]
+fn load_google_refresh_token() -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+#[tauri::command]
+fn delete_google_refresh_token() -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     Builder::default()
@@ -1281,6 +1300,7 @@ pub fn run() {
             manga_import::manga_extract_archive,
             manga_import::manga_mokuro_status,
             mokuro_setup::manga_install_mokuro,
+            ws_discover::discover_websocket_sources,
             manga_import::manga_run_mokuro,
             manga_import::manga_export_mobile_cbz,
             manga_import::manga_convert_to_cbz,
@@ -1306,7 +1326,10 @@ pub fn run() {
             account_login,
             account_register,
             account_register_device,
-            account_list_devices
+            account_list_devices,
+            store_google_refresh_token,
+            load_google_refresh_token,
+            delete_google_refresh_token
         ])
         .run(generate_context!())
         .expect("error while running tauri application");
@@ -1657,6 +1680,23 @@ mod deinflect_tests {
         }
         let result = scan_cursor_in_db(&conn, "あ、いたいた", 2).expect("いた must resolve");
         assert_eq!(result.match_len, 2, "the scan must stay on the first いた");
+    }
+
+    #[test]
+    fn scan_takes_the_whole_mimetic_adverb() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_mobile_db(&mut conn).unwrap();
+        for (term, reading) in [("いそいそ", "いそいそ"), ("いそ", "いそ")] {
+            conn.execute(
+                "INSERT INTO entries (term, reading, definition, dict_name, tags)
+                 VALUES (?1, ?2, '[\"test\"]', 'Scan test', '')",
+                params![term, reading],
+            )
+            .unwrap();
+        }
+        let result = scan_cursor_in_db(&conn, "より、いそいそと中へ", 3).expect("いそいそ must resolve");
+        assert_eq!(result.word, "いそいそ");
+        assert_eq!(result.match_len, 4);
     }
 
     #[test]

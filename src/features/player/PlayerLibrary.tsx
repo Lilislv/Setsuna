@@ -186,13 +186,19 @@ export function PlayerLibrary({
                     <div className="sp-library-actions">
                         {actions}
                         {!!library.roots.length && (
-                            <button aria-expanded={foldersOpen} onClick={() => setFoldersOpen((value) => !value)}>
+                            <button
+                                data-coach="player-folders"
+                                aria-haspopup="dialog"
+                                aria-expanded={foldersOpen}
+                                onClick={() => setFoldersOpen((value) => !value)}
+                            >
                                 {en ? "Folders" : "Папки"}
                                 {failures.length > 0 && " · !"}
                             </button>
                         )}
                         {!!library.roots.length && (
                             <button
+                                data-coach="player-addfolder"
                                 className="sp-library-primary"
                                 disabled={library.pending}
                                 onClick={() => void addFolder()}
@@ -207,42 +213,9 @@ export function PlayerLibrary({
                         {library.error}
                     </p>
                 )}
-                {foldersOpen && !!library.roots.length && (
-                    <section
-                        className="sp-library-folders"
-                        aria-label={en ? "Library folders" : "Папки видеотеки"}
-                    >
-                        <div className="sp-folders-head">
-                            <strong>{en ? "Library folders" : "Папки видеотеки"}</strong>
-                            <button onClick={library.refresh} disabled={scanning || library.pending}>
-                                <IconRefresh /> {en ? "Refresh" : "Обновить"}
-                            </button>
-                        </div>
-                        {library.roots.map((root) => {
-                            const scan = library.results[root];
-                            return (
-                                <div key={root} className="sp-folder-row">
-                                    <div>
-                                        <strong title={root}>{fileName(root)}</strong>
-                                        <span title={root}>{root}</span>
-                                        {scan && "error" in scan && (
-                                            <p className="sp-library-notice">{scan.error}</p>
-                                        )}
-                                    </div>
-                                    <button
-                                        disabled={library.pending || !scan}
-                                        onClick={() => void library.removeFolder(root)}
-                                    >
-                                        {en ? "Remove from library" : "Убрать из видеотеки"}
-                                    </button>
-                                </div>
-                            );
-                        })}
-                    </section>
-                )}
                 {shows.length > 0 && (
                     <div className="sp-library-filter-row">
-                        <div className="sp-library-tabs" aria-label={en ? "Playback status" : "Статус просмотра"}>
+                        <div className="sp-library-tabs" data-coach="player-filter" aria-label={en ? "Playback status" : "Статус просмотра"}>
                             {(
                                 [
                                     ["all", en ? "All" : "Все"],
@@ -260,7 +233,7 @@ export function PlayerLibrary({
                             ))}
                         </div>
                         <div className="sp-library-filters">
-                            <label className="sp-library-search">
+                            <label className="sp-library-search" data-coach="player-search">
                                 <IconSearch />
                                 <input
                                     type="search"
@@ -271,6 +244,7 @@ export function PlayerLibrary({
                                 />
                             </label>
                             <select
+                                data-coach="player-sort"
                                 value={sort}
                                 onChange={(event) => setSort(event.target.value)}
                                 aria-label={en ? "Sort" : "Сортировка"}
@@ -460,6 +434,72 @@ export function PlayerLibrary({
                     onClose={() => setPanel(undefined)}
                     onChoose={(poster) => savePoster(current, poster)}
                 />
+            )}
+            {foldersOpen && (
+                <LibraryDialog
+                    title={en ? "Library folders" : "Папки видеотеки"}
+                    en={en}
+                    onClose={() => setFoldersOpen(false)}
+                >
+                    <div className="sp-folders-dialog">
+                        <div className="sp-folders-head">
+                            <span className="sp-folders-count">
+                                {en
+                                    ? `${library.roots.length} folder${library.roots.length === 1 ? "" : "s"}`
+                                    : `Папок: ${library.roots.length}`}
+                                {failures.length > 0 &&
+                                    (en ? ` · ${failures.length} unavailable` : ` · недоступно: ${failures.length}`)}
+                            </span>
+                            <div className="sp-folders-head-actions">
+                                <button
+                                    className="sp-library-primary"
+                                    disabled={library.pending}
+                                    onClick={() => void addFolder()}
+                                >
+                                    {en ? "+ Add folder" : "+ Добавить папку"}
+                                </button>
+                                <button
+                                    data-coach="player-folders-refresh"
+                                    onClick={library.refresh}
+                                    disabled={scanning || library.pending || !library.roots.length}
+                                >
+                                    <IconRefresh /> {en ? "Refresh" : "Обновить"}
+                                </button>
+                            </div>
+                        </div>
+                        <div className="sp-folders-list" data-coach="player-folders-list">
+                            {library.roots.length ? (
+                                library.roots.map((root) => {
+                                    const scan = library.results[root];
+                                    return (
+                                        <div key={root} className="sp-folder-row">
+                                            <div>
+                                                <strong title={root}>{fileName(root)}</strong>
+                                                <span title={root}>{root}</span>
+                                                {scan && "error" in scan && (
+                                                    <p className="sp-library-notice">{scan.error}</p>
+                                                )}
+                                            </div>
+                                            <button
+                                                className="sp-folder-remove"
+                                                disabled={library.pending || !scan}
+                                                onClick={() => void library.removeFolder(root)}
+                                            >
+                                                {en ? "Remove from library" : "Убрать из видеотеки"}
+                                            </button>
+                                        </div>
+                                    );
+                                })
+                            ) : (
+                                <p className="sp-folders-empty">
+                                    {en
+                                        ? "No folders connected yet. Add a folder with video files."
+                                        : "Пока нет подключённых папок. Добавь папку с видеофайлами."}
+                                </p>
+                            )}
+                        </div>
+                    </div>
+                </LibraryDialog>
             )}
             {current && panel.kind === "info" && (
                 <ShowDetails

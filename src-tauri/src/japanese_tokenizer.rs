@@ -163,6 +163,12 @@ fn split_reduplicated_kana(token: TextToken) -> Vec<TextToken> {
     if chars[..half] != chars[half..] {
         return vec![token];
     }
+    // Mimetic adverbs (いそいそ, わくわく, そわそわ) are dictionary words in
+    // IPADIC: their lemma is the surface itself. Only a misread form such as
+    // いたいた (lemma いたい) is split.
+    if token.lemma.as_deref() == Some(token.text.as_str()) {
+        return vec![token];
+    }
     let text: String = chars[..half].iter().collect();
     // Analyse the half on its own so it gets a real lemma (いた -> いる).
     let analysed = segment_text(&text).ok().filter(|tokens| !tokens.is_empty());
@@ -575,6 +581,15 @@ mod tests {
         assert!(tokens
             .iter()
             .any(|token| token.text == "lookup" && token.lookup));
+    }
+
+    #[test]
+    fn keeps_mimetic_adverbs_whole() {
+        assert_eq!(surfaces("いそいそと中へ")[0], "いそいそ");
+        assert_eq!(surfaces("わくわくする")[0], "わくわく");
+        assert_eq!(surfaces("そわそわして")[0], "そわそわ");
+        // The misread いたいた (痛い + た) is still split.
+        assert_eq!(surfaces("あ、いたいた")[2..], ["いた", "いた"]);
     }
 
     #[test]

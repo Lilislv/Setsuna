@@ -12,6 +12,7 @@ import {
 } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { TokenizedLine } from "../../components/TextContainer";
 import type { AppSettings } from "../../components/SettingsModal";
 import { IconBookTab, IconClose, IconSearch, IconSettings } from "../../components/Icons";
@@ -348,11 +349,34 @@ export default function MangaReader({
     const [cacheEpoch, setCacheEpoch] = useState(0);
     const [overrides, setOverrides] = useState<Record<number, Record<number, string>>>({});
     const [activeBubble, setActiveBubble] = useState<{ pageIndex: number; blockIndex: number } | null>(null);
+    const [copiedBubbleKey, setCopiedBubbleKey] = useState<string | null>(null);
+    const [bubbleSelectMode, setBubbleSelectMode] = useState(false);
+    const [selectedBubbles, setSelectedBubbles] = useState<Array<{ key: string; text: string }>>([]);
+    const [multiCopiedToast, setMultiCopiedToast] = useState(false);
+    const [bubbleCtxMenu, setBubbleCtxMenu] = useState<{
+        x: number;
+        y: number;
+        key: string;
+        text: string;
+        pageIndex: number;
+        blockIndex: number;
+        editText: string;
+    } | null>(null);
+    const [bubbleQuickCopied, setBubbleQuickCopied] = useState(false);
     const [editingBubble, setEditingBubble] = useState<{
         pageIndex: number;
         blockIndex: number;
         text: string;
     } | null>(null);
+
+    const copyText = useCallback(async (text: string) => {
+        if (!text) return;
+        try {
+            await writeText(text);
+        } catch {
+            await navigator.clipboard.writeText(text);
+        }
+    }, []);
 
     // Mokuro CLI integration (Desktop)
     const [mokuroStatus, setMokuroStatus] = useState<MangaMokuroStatus | null>(null);
@@ -511,6 +535,9 @@ export default function MangaReader({
         setOcrResult(null);
         setOcrError(null);
         setCropToolActive(false);
+        setBubbleSelectMode(false);
+        setSelectedBubbles([]);
+        setBubbleCtxMenu(null);
         setPageJumpEditing(false);
         setZoom(1);
         clearMangaOverlaySelection();
@@ -539,8 +566,8 @@ export default function MangaReader({
 
     // Report overlays to Workspace (for Android Back handling)
     useEffect(() => {
-        onOverlayStateChange?.(drawerOpen || controlsOpen || mokuroModalOpen || Boolean(editingBubble));
-    }, [drawerOpen, controlsOpen, mokuroModalOpen, editingBubble, onOverlayStateChange]);
+        onOverlayStateChange?.(drawerOpen || controlsOpen || mokuroModalOpen || bubbleSelectMode || Boolean(bubbleCtxMenu) || Boolean(editingBubble));
+    }, [drawerOpen, controlsOpen, mokuroModalOpen, bubbleSelectMode, bubbleCtxMenu, editingBubble, onOverlayStateChange]);
 
     useEffect(() => {
         if (!closeOverlaySignal) return;
@@ -549,13 +576,18 @@ export default function MangaReader({
         if (!mokuroRunning) setMokuroModalOpen(false);
         setEditingBubble(null);
         setCropToolActive(false);
+        setBubbleSelectMode(false);
+        setSelectedBubbles([]);
+        setBubbleCtxMenu(null);
     }, [closeOverlaySignal, mokuroRunning]);
 
     useMobileBackHandler(
         isMobile
             && (Boolean(editingBubble)
+                || Boolean(bubbleCtxMenu)
                 || (mokuroModalOpen && !mokuroRunning)
                 || cropToolActive
+                || bubbleSelectMode
                 || Boolean(ocrResult)
                 || pageJumpEditing
                 || controlsOpen
@@ -566,12 +598,21 @@ export default function MangaReader({
                 setEditingBubble(null);
                 return;
             }
+            if (bubbleCtxMenu) {
+                setBubbleCtxMenu(null);
+                return;
+            }
             if (mokuroModalOpen && !mokuroRunning) {
                 setMokuroModalOpen(false);
                 return;
             }
             if (cropToolActive) {
                 setCropToolActive(false);
+                return;
+            }
+            if (bubbleSelectMode) {
+                setBubbleSelectMode(false);
+                setSelectedBubbles([]);
                 return;
             }
             if (ocrResult) {
@@ -756,6 +797,7 @@ export default function MangaReader({
         !zenMode
         && !lookupActive
         && !escMenuOpen
+        && !bubbleSelectMode
         && ((isMobile && chromeVisible) || bottomHover || pageJumpEditing || positionFrozen);
 
     // Smart reading timer with lookup-aware idle auto-pause
@@ -1079,10 +1121,38 @@ export default function MangaReader({
             const target = event.target as HTMLElement | null;
             if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
 
+            const isCtrl = event.ctrlKey || event.metaKey;
+            const keyLower = event.key.toLowerCase();
+            if (isCtrl && !event.altKey && bubbleSelectMode && selectedBubbles.length > 0 && (event.code === "KeyC" || keyLower === "c" || keyLower === "с")) {
+                const sel = window.getSelection();
+                if (!sel || sel.isCollapsed) {
+                    const joined = selectedBubbles.map((item) => item.text.trim()).filter(Boolean).join("\n");
+                    if (joined) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void copyText(joined).then(() => {
+                            setMultiCopiedToast(true);
+                            window.setTimeout(() => setMultiCopiedToast(false), 1600);
+                        });
+                        return;
+                    }
+                }
+            }
+
             if (event.key === "Escape") {
-                if (cropToolActive) {
+                if (bubbleCtxMenu) {
                     event.preventDefault();
+                    event.stopPropagation();
+                    setBubbleCtxMenu(null);
+                } else if (cropToolActive) {
+                    event.preventDefault();
+                    event.stopPropagation();
                     setCropToolActive(false);
+                } else if (bubbleSelectMode) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setBubbleSelectMode(false);
+                    setSelectedBubbles([]);
                 } else if (controlsOpen || drawerOpen) {
                     event.preventDefault();
                     setControlsOpen(false);
@@ -1095,6 +1165,19 @@ export default function MangaReader({
                 return;
             }
             if (escMenuOpen || mokuroModalOpen) return;
+
+            if (!event.ctrlKey && !event.metaKey && !event.altKey && bubbleSelectMode && event.key === "Enter" && selectedBubbles.length > 0) {
+                const joined = selectedBubbles.map((item) => item.text.trim()).filter(Boolean).join("\n");
+                if (joined) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void copyText(joined).then(() => {
+                        setMultiCopiedToast(true);
+                        window.setTimeout(() => setMultiCopiedToast(false), 1600);
+                    });
+                    return;
+                }
+            }
 
             if (event.key === "ArrowLeft") {
                 event.preventDefault();
@@ -1158,6 +1241,9 @@ export default function MangaReader({
         return () => window.removeEventListener("keydown", onKeyDown);
     }, [
         editingBubble,
+        bubbleCtxMenu,
+        bubbleSelectMode,
+        selectedBubbles,
         cropToolActive,
         controlsOpen,
         drawerOpen,
@@ -1577,7 +1663,10 @@ export default function MangaReader({
 
     const handleStageClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
         const target = event.target as HTMLElement | null;
-        if (target?.closest(".manga-bubble, .manga-bubble-edit-btn, .epub-glass-pill, .epub-appearance-popover, .epub-toc-drawer, .manga-modal, .manga-ocr-result-bar, button, input, textarea")) {
+        if (!target?.closest(".epub-sentence-ctx")) {
+            setBubbleCtxMenu(null);
+        }
+        if (target?.closest(".manga-bubble, .manga-bubble-actions, .manga-bubble-edit-btn, .manga-bubble-copy-btn, .manga-select-bar, .epub-sentence-ctx, .epub-glass-pill, .epub-appearance-popover, .epub-toc-drawer, .manga-modal, .manga-ocr-result-bar, button, input, textarea")) {
             return;
         }
         setActiveBubble(null);
@@ -1721,7 +1810,7 @@ export default function MangaReader({
                 />
                 {renderBlocks.length > 0 && (
                     <div
-                        className={`manga-overlay-layer mode-${prefs.overlayMode}`}
+                        className={`manga-overlay-layer mode-${prefs.overlayMode}${bubbleSelectMode ? " is-bubble-select" : ""}`}
                         style={{ ["--manga-font-scale" as string]: String(prefs.fontScale) } as CSSProperties}
                     >
                         {renderBlocks.map((block, bIdx) => {
@@ -1734,6 +1823,11 @@ export default function MangaReader({
                             const placedLines = placeBubbleLines(block);
                             const displayLines = placedLines || prepareBubbleDisplayLines(block.lines);
                             const paraGaps = detectBubbleParagraphGaps(block);
+                            const bubbleKey = `${pageIdx}:${bIdx}`;
+                            const selectionOrder = bubbleSelectMode
+                                ? selectedBubbles.findIndex((item) => item.key === bubbleKey)
+                                : -1;
+                            const isSelected = selectionOrder >= 0;
                             const isActive =
                                 activeBubble?.pageIndex === pageIdx && activeBubble?.blockIndex === bIdx;
                             const fittedBasePx = computeFittedBubbleFontPx(block);
@@ -1748,7 +1842,7 @@ export default function MangaReader({
                             return (
                                 <div
                                     key={bIdx}
-                                    className={`manga-bubble${block.vertical ? " is-vertical" : " is-horizontal"}${placedLines ? " is-placed" : ""}${isActive ? " is-active" : ""}`}
+                                    className={`manga-bubble${block.vertical ? " is-vertical" : " is-horizontal"}${placedLines ? " is-placed" : ""}${isActive ? " is-active" : ""}${isSelected ? " is-selected" : ""}`}
                                     style={{
                                         left: `${leftPct}%`,
                                         top: `${topPct}%`,
@@ -1772,8 +1866,33 @@ export default function MangaReader({
                                     }}
                                     onClick={(e) => {
                                         e.stopPropagation();
+                                        setBubbleCtxMenu(null);
+                                        if (bubbleSelectMode) {
+                                            setMultiCopiedToast(false);
+                                            setSelectedBubbles((prev) =>
+                                                prev.some((item) => item.key === bubbleKey)
+                                                    ? prev.filter((item) => item.key !== bubbleKey)
+                                                    : [...prev, { key: bubbleKey, text: sentence }],
+                                            );
+                                            return;
+                                        }
                                         setActiveBubble({ pageIndex: pageIdx, blockIndex: bIdx });
                                         prepareAnkiPanelCrop(payload, block);
+                                    }}
+                                    onContextMenu={(e) => {
+                                        if (isMobile) return;
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setActiveBubble({ pageIndex: pageIdx, blockIndex: bIdx });
+                                        setBubbleCtxMenu({
+                                            x: Math.max(12, Math.min(e.clientX, window.innerWidth - 250)),
+                                            y: Math.max(12, Math.min(e.clientY, window.innerHeight - 150)),
+                                            key: bubbleKey,
+                                            text: sentence,
+                                            pageIndex: pageIdx,
+                                            blockIndex: bIdx,
+                                            editText: displayLines.map((l) => l.text).join("\n") || sentence,
+                                        });
                                     }}
                                 >
                                     <div className="manga-bubble-text text-line">
@@ -1784,8 +1903,9 @@ export default function MangaReader({
                                                     text={line.appendSpace ? `${line.text} ` : line.text}
                                                     searchQuery=""
                                                     furiganaMode="none"
-                                                    onLookupToken={onLookupToken
+                                                    onLookupToken={!bubbleSelectMode && onLookupToken
                                                         ? (token, _lineSent, cursor, boundaries, lemma) => {
+                                                            setActiveBubble({ pageIndex: pageIdx, blockIndex: bIdx });
                                                             prepareAnkiPanelCrop(payload, block);
                                                             return onLookupToken(
                                                                 token,
@@ -1825,22 +1945,48 @@ export default function MangaReader({
                                             );
                                         })}
                                     </div>
-                                    {isActive && (
-                                        <button
-                                            type="button"
-                                            className="manga-bubble-edit-btn"
-                                            title={isEn ? "Fix OCR text" : "Исправить опечатку OCR"}
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                setEditingBubble({
-                                                    pageIndex: pageIdx,
-                                                    blockIndex: bIdx,
-                                                    text: displayLines.map((l) => l.text).join("\n") || sentence,
-                                                });
-                                            }}
-                                        >
-                                            ✎
-                                        </button>
+                                    {bubbleSelectMode && isSelected && (
+                                        <span className="manga-bubble-order-badge">{selectionOrder + 1}</span>
+                                    )}
+                                    {!bubbleSelectMode && isActive && (
+                                        <div className="manga-bubble-actions">
+                                            <button
+                                                type="button"
+                                                className={`manga-bubble-copy-btn${copiedBubbleKey === bubbleKey ? " is-copied" : ""}`}
+                                                title={isEn ? "Copy bubble text" : "Скопировать текст бабла"}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    void copyText(sentence).then(() => {
+                                                        setCopiedBubbleKey(bubbleKey);
+                                                        window.setTimeout(() => {
+                                                            setCopiedBubbleKey((curr) => (curr === bubbleKey ? null : curr));
+                                                        }, 1500);
+                                                    });
+                                                }}
+                                            >
+                                                {copiedBubbleKey === bubbleKey ? "✓" : (
+                                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                                        <rect x="9" y="9" width="13" height="13" rx="2" />
+                                                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                                    </svg>
+                                                )}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="manga-bubble-edit-btn"
+                                                title={isEn ? "Fix OCR text" : "Исправить опечатку OCR"}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setEditingBubble({
+                                                        pageIndex: pageIdx,
+                                                        blockIndex: bIdx,
+                                                        text: displayLines.map((l) => l.text).join("\n") || sentence,
+                                                    });
+                                                }}
+                                            >
+                                                ✎
+                                            </button>
+                                        </div>
                                     )}
                                 </div>
                             );
@@ -1984,6 +2130,25 @@ export default function MangaReader({
                     <div className="epub-glass-pill epub-glass-pill-tools" onClick={(e) => e.stopPropagation()}>
                         <button
                             type="button"
+                            data-coach="manga-bubbles"
+                            className={`epub-glass-btn${isMobile ? " epub-glass-circle" : ""}${bubbleSelectMode ? " is-active" : ""}`}
+                            onClick={() => {
+                                setBubbleCtxMenu(null);
+                                setMultiCopiedToast(false);
+                                setCropToolActive(false);
+                                setBubbleSelectMode((v) => !v);
+                            }}
+                            title={isEn ? "Select bubbles to copy" : "Выбрать баблы для копирования"}
+                            aria-label={isEn ? "Select bubbles to copy" : "Выбрать баблы для копирования"}
+                        >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M10 6h10M10 12h10M10 18h10M3 6l1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17" />
+                            </svg>
+                            {!isMobile && <span>{isEn ? "Bubbles" : "Баблы"}</span>}
+                        </button>
+
+                        <button
+                            type="button"
                             className={`epub-glass-btn epub-glass-circle${cropToolActive ? " is-active" : ""}`}
                             onClick={() => setCropToolActive((v) => !v)}
                             title={isEn ? "Select bubble area to OCR (S)" : "Обвести бабл для OCR (S)"}
@@ -2073,6 +2238,135 @@ export default function MangaReader({
                         </button>
                     </div>
                 </div>
+
+                {bubbleSelectMode && (
+                    <div className="manga-select-bar" onClick={(e) => e.stopPropagation()}>
+                        <div className="epub-sentence-bar-info">
+                            <span className="epub-sentence-bar-dot" aria-hidden="true" />
+                            <span className="epub-sentence-count">
+                                {selectedBubbles.length > 0
+                                    ? (isEn ? `${selectedBubbles.length} selected` : `Выбрано: ${selectedBubbles.length}`)
+                                    : (isEn
+                                        ? (isMobile ? "Tap bubbles in order" : "Select bubbles in order")
+                                        : (isMobile ? "Нажимай на баблы по порядку" : "Выбирай баблы по порядку"))}
+                            </span>
+                            {!isMobile && selectedBubbles.length > 0 && (
+                                <span className="epub-sentence-hint">
+                                    {isEn ? "Ctrl+C / Enter" : "Ctrl+C или Enter"}
+                                </span>
+                            )}
+                        </div>
+                        <div className="epub-sentence-actions">
+                            <button
+                                type="button"
+                                className={`epub-sentence-copy-btn${selectedBubbles.length > 0 ? " is-ready" : ""}${multiCopiedToast ? " is-copied" : ""}`}
+                                disabled={selectedBubbles.length === 0}
+                                onClick={() => {
+                                    const joined = selectedBubbles.map((item) => item.text.trim()).filter(Boolean).join("\n");
+                                    if (!joined) return;
+                                    void copyText(joined).then(() => {
+                                        setMultiCopiedToast(true);
+                                        window.setTimeout(() => setMultiCopiedToast(false), 1600);
+                                    });
+                                }}
+                            >
+                                {multiCopiedToast ? (
+                                    <span>{isEn ? "✓ Copied" : "✓ Скопировано"}</span>
+                                ) : (
+                                    <>
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" />
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                        </svg>
+                                        <span>
+                                            {selectedBubbles.length > 0
+                                                ? (isEn ? `Copy (${selectedBubbles.length})` : `Скопировать (${selectedBubbles.length})`)
+                                                : (isEn ? "Copy" : "Скопировать")}
+                                        </span>
+                                    </>
+                                )}
+                            </button>
+                            {selectedBubbles.length > 0 && (
+                                <button
+                                    type="button"
+                                    className="epub-glass-btn"
+                                    onClick={() => setSelectedBubbles([])}
+                                >
+                                    {isEn ? "Clear" : "Сбросить"}
+                                </button>
+                            )}
+                            <button
+                                type="button"
+                                className="epub-glass-btn epub-sentence-done-btn"
+                                title="Esc"
+                                onClick={() => {
+                                    setBubbleSelectMode(false);
+                                    setSelectedBubbles([]);
+                                }}
+                            >
+                                {isEn ? "Done" : "Готово"}
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {bubbleCtxMenu && (
+                    <div
+                        className="epub-sentence-ctx"
+                        style={{ left: `${bubbleCtxMenu.x}px`, top: `${bubbleCtxMenu.y}px` }}
+                        role="menu"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const text = bubbleCtxMenu.text;
+                                setBubbleCtxMenu(null);
+                                void copyText(text).then(() => {
+                                    setBubbleQuickCopied(true);
+                                    window.setTimeout(() => setBubbleQuickCopied(false), 1500);
+                                });
+                            }}
+                        >
+                            {isEn ? "Copy bubble" : "Скопировать бабл"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const picked = { key: bubbleCtxMenu.key, text: bubbleCtxMenu.text };
+                                setBubbleCtxMenu(null);
+                                setCropToolActive(false);
+                                setMultiCopiedToast(false);
+                                setBubbleSelectMode(true);
+                                setSelectedBubbles((prev) =>
+                                    prev.some((item) => item.key === picked.key) ? prev : [...prev, picked],
+                                );
+                            }}
+                        >
+                            {isEn ? "Select multiple bubbles…" : "Выбрать несколько баблов…"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const target = bubbleCtxMenu;
+                                setBubbleCtxMenu(null);
+                                setEditingBubble({
+                                    pageIndex: target.pageIndex,
+                                    blockIndex: target.blockIndex,
+                                    text: target.editText,
+                                });
+                            }}
+                        >
+                            {isEn ? "Fix OCR text" : "Исправить опечатку OCR"}
+                        </button>
+                    </div>
+                )}
+
+                {bubbleQuickCopied && (
+                    <div className="epub-quick-copy-toast" role="status">
+                        {isEn ? "✓ Bubble copied" : "✓ Бабл скопирован"}
+                    </div>
+                )}
 
                 {/* LiquidGlass Appearance & Settings Popover */}
                 {controlsOpen && (
@@ -2789,7 +3083,7 @@ export default function MangaReader({
                 </div>
 
                 {/* Subtle bottom-right page readout & Goal light when bottom chrome is hidden */}
-                {!zenMode && !bottomChromeVisible && !lookupActive && !escMenuOpen && (
+                {!zenMode && !bottomChromeVisible && !lookupActive && !escMenuOpen && !bubbleSelectMode && (
                     <button
                         type="button"
                         className="epub-corner-status"

@@ -632,7 +632,7 @@ export default function SettingsCloud({
 
     return (
         <div className="tab-content-anim drive-settings" id="cloud-main">
-            <section className={`drive-connection ${highlightedSection === 'cloud-main' ? 'card-highlighted' : ''}`}>
+            <section id="cloud-connection" data-drive-state={initializing ? 'loading' : refreshToken ? 'connected' : 'disconnected'} className={`drive-connection ${highlightedSection === 'cloud-main' ? 'card-highlighted' : ''}`}>
                 <div>
                     <span className={`drive-status-dot ${refreshToken ? 'is-online' : ''}`} aria-hidden="true" />
                     <strong>{refreshToken ? t.connected : t.disconnected}</strong>
@@ -664,7 +664,7 @@ export default function SettingsCloud({
 
             {refreshToken && (
                 <>
-                    <section className="drive-quota-section">
+                    <section id="cloud-quota" className="drive-quota-section">
                         <div className="drive-section-heading">
                             <div><h3>{t.quota}</h3><p>{quota?.unlimited ? t.unlimited : `${formatBytes(driveAvailable)} ${t.available}`}</p></div>
                             <strong>{quota ? `${formatBytes(quota.usage)} ${t.used}` : '—'}</strong>
@@ -672,7 +672,7 @@ export default function SettingsCloud({
                         <div className="drive-quota-track" aria-label={`${quotaPercent.toFixed(0)}%`}><span style={{ width: `${quotaPercent}%` }} /></div>
                     </section>
 
-                    <section className="drive-section">
+                    <section id="cloud-backup" className="drive-section">
                         <div className="drive-section-heading"><div><h3>{t.backupTitle}</h3><p>{t.backupHint}</p></div></div>
                         <label className={`drive-settings-toggle${includeSettings ? ' is-checked' : ''}`}>
                             <input type="checkbox" checked={includeSettings} onChange={(event) => setIncludeSettings(event.target.checked)} />
@@ -684,7 +684,7 @@ export default function SettingsCloud({
                         </button>
                     </section>
 
-                    <section className="drive-section">
+                    <section id="cloud-archive" className="drive-section">
                         <div className="drive-section-heading"><div><h3>{t.archive}</h3><p>{t.archiveHint}</p></div><span className="drive-count">{backups.length}</span></div>
                         <div className="drive-archive-list">
                             {backups.length === 0 && <div className="drive-empty">{t.noBackups}</div>}
@@ -712,7 +712,7 @@ export default function SettingsCloud({
                         )}
                     </section>
 
-                    <section className="drive-section drive-dictionary-section">
+                    <section id="cloud-dict" className="drive-section drive-dictionary-section">
                         <div className="drive-section-heading"><div><h3>{t.dictionary}</h3><p>{t.dictionaryWarning}</p></div></div>
                         <div className="drive-storage-comparison">
                             <div><span>{t.local}</span><strong>{formatBytes(dictionaryLocal?.size)}</strong><small>{dictionaryLocal?.availableBytes != null ? `${formatBytes(dictionaryLocal.availableBytes)} ${t.available}` : '—'}</small></div>

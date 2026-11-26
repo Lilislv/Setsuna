@@ -83,6 +83,7 @@ mod manga_import;
 mod manga_catalog;
 mod manga_ocr_server;
 mod mokuro_setup;
+mod ws_discover;
 #[cfg(target_os = "windows")]
 mod global_lookup;
 #[cfg(target_os = "linux")]
@@ -6109,6 +6110,7 @@ fn main() {
             manga_ocr_server::manga_ocr_set_remote_mokuro_state,
             manga_ocr_server::manga_ocr_remote_mokuro_request,
             manga_ocr_server::manga_ocr_remote_mokuro_status,
+            ws_discover::discover_websocket_sources,
             get_diagnostics_log_path,
             log_frontend_diagnostics,
             dictionary_engine::lookup_word,

@@ -63,10 +63,35 @@
     flex-basis: 100%;
 }
 .sp-source .sp-deck {
-    max-width: min(36vw, 170px);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: min(36vw, 220px);
+    padding-inline: 11px;
+    background: rgba(79, 166, 255, 0.14) !important;
+    border-color: rgba(79, 166, 255, 0.34) !important;
+    color: var(--text-main);
+    font-weight: 600;
+}
+.sp-source .sp-deck:hover:not(:disabled) {
+    background: rgba(79, 166, 255, 0.24) !important;
+    border-color: rgba(79, 166, 255, 0.6) !important;
+}
+.sp-deck svg,
+.sp-deck-pill svg {
+    flex-shrink: 0;
+    opacity: 0.9;
+}
+.sp-deck-label {
+    opacity: 0.72;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+.sp-deck-name {
+    min-width: 0;
     overflow: hidden;
-    white-space: nowrap;
     text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* Edge-to-edge cinema layout */
@@ -232,6 +257,7 @@
 .sp-workspace .sp-top-hud .sp-deck-pill {
     padding: 4px 10px;
     min-height: 28px;
+    max-width: min(34vw, 220px);
     border-radius: 999px;
     font-size: 12px;
     font-weight: 600;

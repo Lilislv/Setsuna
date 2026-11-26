@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -10,9 +10,14 @@ import {
     requestAnkiDroidPermission,
     invokeAnki,
     ensureSetsunaAnkiSetup,
+    noteTypeLabel,
+    sortNoteTypes,
 } from "../../utils/anki";
 import { AppSettings } from "../SettingsModal";
 import SettingsAudio from './SettingsAudio';
+
+/** What Setsuna can put into a card field; each maps to the `ankiField<Source>` setting. */
+const ANKI_FIELD_SOURCES = ["Word", "Reading", "Meaning", "Sentence", "SentenceFurigana", "Dict", "Audio", "Pitch", "Freq", "Screenshot"] as const;
 
 interface SettingsAnkiProps {
     settings: AppSettings;
@@ -50,12 +55,14 @@ const labels = {
         deck: "Колода:",
         model: "Модель:",
         cardFormat: "Формат карточки",
-        cardFormatHint: "Поля подбираются по названиям выбранной модели. Lapis/Lapis++++ поддерживается, но для работы не обязателен.",
+        cardFormatHint: "Рекомендуются Setsuna Japanese (по умолчанию) и Lapis: с ними все поля заполняются сами. Для других типов из твоего Anki поля подбираются по названиям, проверь их вручную.",
         lapisPreset: "Автоподбор полей",
-        showFields: "Открыть ручные настройки",
-        hideFields: "Скрыть поля",
+        showFields: "Для опытных",
+        hideFields: "Скрыть настройки для опытных",
+        advancedHint: "Для каждого поля карточки выбери, что Setsuna в него положит. Одно и то же нельзя положить в два поля. «Автоподбор полей» вернёт стандартную раскладку.",
+        notInCard: "Не попадёт в карточку",
         activeModel: "Активная модель",
-        modelHint: "Поля подбираются автоматически для Lapis и обычных моделей Anki. Если карточка добавляется неправильно, открой ручные настройки и проверь поля.",
+        modelHint: "Поля подбираются автоматически для Lapis и обычных моделей Anki. Если карточка добавляется неправильно, открой «Для опытных» и проверь поля.",
         notSelected: "не выбрана",
         none: "-- пусто --",
         fields: {
@@ -123,12 +130,14 @@ const labels = {
         deck: "Deck:",
         model: "Model:",
         cardFormat: "Card format",
-        cardFormatHint: "Fields are selected from the chosen model automatically. Lapis/Lapis++++ is supported but not required.",
+        cardFormatHint: "Setsuna Japanese (default) and Lapis are recommended: every field is filled automatically. For other note types from your Anki, fields are matched by name, so check them by hand.",
         lapisPreset: "Auto-map fields",
-        showFields: "Open manual settings",
-        hideFields: "Hide fields",
+        showFields: "Advanced",
+        hideFields: "Hide advanced settings",
+        advancedHint: "For each field of the note type, choose what Setsuna puts into it. One source fills one field. “Auto-map fields” restores the standard layout.",
+        notInCard: "Not added to the card",
         activeModel: "Active model",
-        modelHint: "Fields are mapped automatically for Lapis and ordinary Anki models. If cards are added incorrectly, open manual settings and check the fields.",
+        modelHint: "Fields are mapped automatically for Lapis and ordinary Anki models. If cards are added incorrectly, open “Advanced” and check the fields.",
         notSelected: "not selected",
         none: "-- none --",
         fields: {
@@ -472,7 +481,7 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
 
     return (
         <div className="tab-content-anim">
-            <div className="modern-card" style={{ background: "var(--bg-panel)", border: `1px solid ${ankiConnected ? "#4CAF50" : isConnecting ? "var(--accent-blue)" : "var(--border-main)"}` }}>
+            <div id="anki-connection" data-anki-state={isConnecting ? "connecting" : ankiConnected ? "connected" : "disconnected"} className="modern-card" style={{ background: "var(--bg-panel)", border: `1px solid ${ankiConnected ? "#4CAF50" : isConnecting ? "var(--accent-blue)" : "var(--border-main)"}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                         <span style={{ width: 10, height: 10, flex: "0 0 10px", borderRadius: "50%", background: ankiConnected ? "#4CAF50" : isConnecting ? "var(--accent-blue)" : "#777" }} />
@@ -533,14 +542,14 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
                 )}
             </div>
 
-            <SettingsAudio settings={settings} updateSetting={updateSetting} />
+            {!ankiConnected && <SettingsAudio settings={settings} updateSetting={updateSetting} />}
             {ankiConnected && (
                 <>
                     <div id="anki-cards" className={`modern-card ${highlightedSection === "anki-cards" ? "card-highlighted" : ""}`} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>
                         <div className="card-label" style={{ color: "var(--text-main)" }}>{t.cardSettings}</div>
                         <div style={{ display: "flex", gap: "15px", marginBottom: "20px" }}>
                             <div style={{ flex: 1 }}><div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px" }}>{t.deck}</div><select className="modern-select" value={settings.ankiDeck} onChange={(e) => updateSetting("ankiDeck", e.target.value)}>{ankiDecks.map((d) => <option key={d} value={d}>{d}</option>)}</select></div>
-                            <div style={{ flex: 1 }}><div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px" }}>{t.model}</div><select className="modern-select" value={settings.ankiModel} onChange={(e) => updateSetting("ankiModel", e.target.value)}>{ankiModels.map((m) => <option key={m} value={m}>{m}</option>)}</select></div>
+                            <div style={{ flex: 1 }}><div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px" }}>{t.model}</div><select className="modern-select" value={settings.ankiModel} onChange={(e) => updateSetting("ankiModel", e.target.value)}>{sortNoteTypes(ankiModels).map((m) => <option key={m} value={m}>{noteTypeLabel(m, ankiModels, settings.appLanguage === "en")}</option>)}</select></div>
                         </div>
 
                         <div style={{ borderTop: "1px solid var(--border-main)", paddingTop: "15px", marginBottom: "18px" }}>
@@ -594,23 +603,49 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
 
                         {!showAdvancedFields && <div style={{ marginTop: "14px", padding: "12px", borderRadius: "8px", background: "var(--bg-side)", color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.5 }}>{t.activeModel}: <b style={{ color: "var(--text-main)" }}>{settings.ankiModel || t.notSelected}</b>. {t.modelHint}</div>}
 
-                        {showAdvancedFields && (
-                            <div style={{ marginTop: "15px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "15px" }}>
-                                {["Word", "Reading", "Meaning", "Sentence", "SentenceFurigana", "Dict", "Audio", "Pitch", "Freq", "Screenshot"].map((type) => {
-                                    const settingKey = `ankiField${type}` as keyof AppSettings;
-                                    return (
-                                        <div key={type} style={{ display: "flex", alignItems: "center" }}>
-                                            <div style={{ width: "110px", color: "var(--text-muted)", fontSize: "12px" }}>{t.fields[type]}:</div>
-                                            <select className="modern-select" style={{ flex: 1, marginTop: 0 }} value={(settings[settingKey] as string) || "none"} onChange={(e) => updateSetting(settingKey, e.target.value)}>
-                                                <option value="none">{t.none}</option>
-                                                {ankiFields.map((field) => <option key={field} value={field}>{field}</option>)}
-                                            </select>
+                        {showAdvancedFields && (() => {
+                            // As in JL: every field of the note type gets a source. Stored in the
+                            // same per-source settings (ankiFieldWord, …), so a source fills one field.
+                            const sourceOf = (field: string) =>
+                                ANKI_FIELD_SOURCES.find((type) => settings[`ankiField${type}` as keyof AppSettings] === field) || "none";
+                            const setSource = (field: string, source: string) => {
+                                const patch: Partial<AppSettings> = {};
+                                ANKI_FIELD_SOURCES.forEach((type) => {
+                                    if (settings[`ankiField${type}` as keyof AppSettings] === field) (patch as any)[`ankiField${type}`] = "none";
+                                });
+                                if (source !== "none") (patch as any)[`ankiField${source}`] = field;
+                                if (updateMultipleSettings) updateMultipleSettings(patch);
+                                else Object.entries(patch).forEach(([key, value]) => updateSetting(key as keyof AppSettings, value as any));
+                            };
+                            const unused = ANKI_FIELD_SOURCES.filter((type) => {
+                                const value = settings[`ankiField${type}` as keyof AppSettings] as string | undefined;
+                                return !value || value === "none" || !ankiFields.includes(value);
+                            });
+                            return (
+                                <div style={{ marginTop: "15px" }}>
+                                    <div style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: 1.5, marginBottom: "12px" }}>{t.advancedHint}</div>
+                                    <div style={{ display: "grid", gridTemplateColumns: "minmax(120px, 1fr) 1.4fr", gap: "8px 12px", alignItems: "center" }}>
+                                        {ankiFields.map((field) => (
+                                            <Fragment key={field}>
+                                                <div style={{ color: "var(--text-main)", fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={field}>{field}</div>
+                                                <select className="modern-select" style={{ marginTop: 0 }} value={sourceOf(field)} onChange={(e) => setSource(field, e.target.value)}>
+                                                    <option value="none">{t.none}</option>
+                                                    {ANKI_FIELD_SOURCES.map((type) => <option key={type} value={type}>{t.fields[type]}</option>)}
+                                                </select>
+                                            </Fragment>
+                                        ))}
+                                    </div>
+                                    {unused.length > 0 && ankiFields.length > 0 && (
+                                        <div style={{ marginTop: "12px", color: "var(--text-muted)", fontSize: "12px" }}>
+                                            {t.notInCard}: {unused.map((type) => t.fields[type]).join(", ")}
                                         </div>
-                                    );
-                                })}
-                            </div>
-                        )}
+                                    )}
+                                </div>
+                            );
+                        })()}
                     </div>
+
+                    <SettingsAudio settings={settings} updateSetting={updateSetting} />
 
                     <div id="anki-hooks" className={`modern-card ${highlightedSection === "anki-hooks" ? "card-highlighted" : ""}`} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>
                         <div className="card-label" style={{ color: "var(--text-main)" }}>{t.screenshots}</div>
@@ -711,7 +746,7 @@ export default function SettingsAnki({ settings, updateSetting, updateMultipleSe
                         </div>
                     )}
 
-                    <div className="modern-card" style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>
+                    <div id="anki-dupes" className="modern-card" style={{ background: "var(--bg-panel)", border: "1px solid var(--border-main)" }}>
                         <div className="card-label" style={{ color: "var(--text-main)" }}>{t.duplicateCheck}</div>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "10px", marginBottom: "15px" }}>
                             <div><div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>{t.newCard}</div><input type="color" value={settings.ankiColorNew || "#4CAF50"} onChange={(e) => updateSetting("ankiColorNew", e.target.value)} style={{ width: "100%", height: "30px", border: "none", cursor: "pointer", background: "transparent" }} /></div>

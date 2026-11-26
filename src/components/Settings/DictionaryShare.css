@@ -53,7 +53,10 @@
 }
 .dshare-tabs button {
     flex: 1;
-    height: 30px;
+    min-width: 0;
+    min-height: 30px;
+    padding: 4px 6px;
+    line-height: 1.2;
     border: none;
     border-radius: 8px;
     background: transparent;

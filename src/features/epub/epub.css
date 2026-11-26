@@ -139,6 +139,9 @@
 }
 
 .epub-library-head {
+    /* Above the filter row (z-index 12): its popovers ("Вид", backup) must cover the filters and cards. */
+    position: relative;
+    z-index: 20;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -2637,7 +2640,10 @@
     z-index: 42;
     display: flex;
     align-items: center;
-    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px 12px;
+    max-width: calc(100% - 28px);
     padding: 8px 14px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
@@ -2645,6 +2651,218 @@
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
     backdrop-filter: blur(14px);
     font-size: 13px;
+}
+
+.epub-sentence-bar {
+    position: absolute;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 44;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    max-width: calc(100% - 28px);
+    padding: 8px 10px 8px 16px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-blue) 45%, var(--border-main));
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    backdrop-filter: blur(18px) saturate(1.25);
+    font-size: 13px;
+}
+
+.epub-sentence-bar-info {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.epub-sentence-bar-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-blue, #4fa6ff);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 24%, transparent);
+    flex-shrink: 0;
+}
+
+.epub-sentence-hint {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.epub-sentence-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--text-main) 14%, transparent);
+    background: color-mix(in srgb, var(--text-main) 8%, transparent);
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: not-allowed;
+    white-space: nowrap;
+    transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease, transform 0.12s ease;
+}
+
+.epub-sentence-copy-btn.is-ready {
+    background: var(--accent-blue, #4fa6ff);
+    border-color: transparent;
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--accent-blue) 38%, transparent);
+}
+
+.epub-sentence-copy-btn.is-ready:hover {
+    filter: brightness(1.08);
+}
+
+.epub-sentence-copy-btn.is-ready:active {
+    transform: scale(0.97);
+}
+
+.epub-sentence-copy-btn.is-copied {
+    background: #1f9d63;
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(31, 157, 99, 0.35);
+}
+
+.epub-sentence-done-btn {
+    height: 32px;
+    padding: 0 13px;
+    border-radius: 999px;
+}
+
+.epub-reader-shell.is-sentence-select .epub-sentence {
+    cursor: pointer;
+    border-radius: 4px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    background: color-mix(in srgb, var(--text-main) 7%, transparent);
+    transition: background-color 0.13s ease, box-shadow 0.13s ease;
+}
+
+.epub-reader-shell.is-sentence-select .epub-sentence[data-sentence-parity="1"] {
+    background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+}
+
+.epub-reader-shell.is-sentence-select .epub-sentence.is-hovered,
+.epub-reader-shell.is-sentence-select .epub-sentence:hover {
+    background: color-mix(in srgb, var(--accent-blue) 22%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-blue) 50%, transparent);
+}
+
+.epub-reader-shell.is-sentence-select .epub-sentence.is-selected,
+.epub-reader-shell.is-sentence-select .epub-sentence.is-selected.is-hovered,
+.epub-reader-shell.is-sentence-select .epub-sentence.is-selected:hover {
+    background: color-mix(in srgb, var(--accent-blue) 34%, transparent);
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent-blue) 85%, transparent);
+}
+
+.epub-sentence-count {
+    font-weight: 600;
+    color: var(--text-main);
+    white-space: nowrap;
+}
+
+.epub-sentence-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.epub-sentence-ctx {
+    position: fixed;
+    z-index: 60;
+    min-width: 224px;
+    padding: 6px;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--bg-panel) 96%, transparent);
+    border: 1px solid var(--epub-glass-border, var(--border-main));
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(18px) saturate(1.3);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.epub-sentence-ctx button {
+    width: 100%;
+    text-align: left;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text-main);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.epub-sentence-ctx button:hover {
+    background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
+}
+
+.epub-quick-copy-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 65;
+    padding: 7px 15px;
+    border-radius: 999px;
+    background: #1a2d24;
+    border: 1px solid rgba(62, 207, 142, 0.55);
+    color: #93f4c5;
+    font-size: 12.5px;
+    font-weight: 600;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+}
+
+.epub-reader-shell.is-sentence-select .epub-quick-copy-toast {
+    bottom: 76px;
+}
+
+@media (max-width: 720px) {
+    .epub-point-banner {
+        top: calc(max(10px, env(safe-area-inset-top)) + 48px);
+        left: 10px;
+        right: 10px;
+        transform: none;
+        max-width: none;
+        border-radius: 16px;
+        padding: 8px 12px;
+        justify-content: space-between;
+    }
+    .epub-sentence-bar {
+        bottom: max(12px, env(safe-area-inset-bottom));
+        left: 10px;
+        right: 10px;
+        transform: none;
+        max-width: none;
+        border-radius: 18px;
+        padding: 10px 12px;
+        gap: 8px 10px;
+    }
+    .epub-sentence-count {
+        white-space: normal;
+        font-size: 12.5px;
+    }
+    .epub-sentence-actions {
+        margin-left: auto;
+    }
 }
 
 /* ============================================================================
