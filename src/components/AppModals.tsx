@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Tab } from '../utils/constants';
 import { getTranslator, type AppLanguage } from '../utils/i18n';
 
@@ -52,6 +53,7 @@ const IMPORT_STATUS_RU: Record<string, string> = {
     'Opening database...': 'Открываю базу словарей…',
     'Optimizing dictionary database (one time)...': 'Оптимизирую базу словарей (один раз)…',
     'Preparing dictionary...': 'Готовлю словарь…',
+    'Rebuilding dictionary indexes...': 'Восстанавливаю индексы словарей…',
     'Reading JSON dictionary...': 'Читаю словарь JSON…',
     'Reading dictionary archive...': 'Читаю архив словаря…',
     'Reading text dictionary...': 'Читаю текстовый словарь…',
@@ -110,18 +112,21 @@ export const ImportProgressModal = ({ jsonProgress, dictProgress, language = 'ru
         percent = count > 1 ? ((index - 1) + Math.min(100, local) / 100) / count * 100 : local;
         if (count > 1) badge = `${index}/${count}`;
         title = count > 1 ? t('modal.importCollection', { count }) : t('modal.importDictionary');
-        label = p.operation === 'share'
+        label = p.operation === 'repair'
+            ? (en ? 'Repairing' : 'Восстановление')
+            : p.operation === 'share'
             ? (en ? 'Sharing' : 'Раздача')
             : p.operation === 'download'
                 ? (en ? 'Downloading' : 'Скачивание')
                 : (en ? 'Importing' : 'Импорт');
         if (p.operation === 'share') title = en ? 'Sharing dictionaries' : 'Раздача словарей';
         if (p.operation === 'download') title = en ? 'Downloading shared dictionaries' : 'Скачивание словарей по коду';
+        if (p.operation === 'repair') title = en ? 'Repairing dictionary indexes' : 'Восстановление индексов словаря';
         status = String(p.status || '').replace(/^\[\d+\/\d+\]\s*/, '');
         if (!en) status = IMPORT_STATUS_RU[status] || status;
-        details = p.operation === 'share' || p.operation === 'download'
+        details = p.operation === 'share' || p.operation === 'download' || p.operation === 'repair'
             ? [
-                [p.operation === 'share' ? (en ? 'Pack' : 'Пакет') : (en ? 'Source' : 'Источник'), String(p.dict_name || '')],
+                [p.operation === 'share' ? (en ? 'Pack' : 'Пакет') : p.operation === 'repair' ? (en ? 'Database' : 'База') : (en ? 'Source' : 'Источник'), String(p.dict_name || '')],
                 [en ? 'Progress' : 'Готово', `${Math.floor(Math.max(0, Math.min(100, local)))}%`],
             ]
             : [
@@ -137,7 +142,9 @@ export const ImportProgressModal = ({ jsonProgress, dictProgress, language = 'ru
     const radius = 11;
     const circumference = 2 * Math.PI * radius;
 
-    return (
+    // Portal to <body>: inside the app tree the pill shared compositing with the
+    // blurred settings overlay and vanished/reappeared while pages scrolled.
+    return createPortal(
         <div className={`import-pill-wrap${expanded ? ' is-expanded' : ''}`} role="status" aria-live="polite">
             {expanded && (
                 <div className="import-pill-card">
@@ -152,7 +159,9 @@ export const ImportProgressModal = ({ jsonProgress, dictProgress, language = 'ru
                             <div key={key}><dt>{key}</dt><dd title={value}>{value}</dd></div>
                         ))}
                     </dl>
-                    <p>{en ? 'You can keep reading: lookups keep working during the import.' : 'Можно читать дальше: поиск по словам работает и во время импорта.'}</p>
+                    <p>{dictProgress?.operation === 'repair'
+                        ? (en ? 'The last import was interrupted. Keep Setsuna open until the indexes are rebuilt; lookups may be slow meanwhile.' : 'Прошлый импорт был прерван. Не закрывай Setsuna, пока индексы не соберутся; до этого поиск может работать медленно.')
+                        : (en ? 'You can keep reading: lookups keep working during the import. Keep Setsuna open until it finishes.' : 'Можно читать дальше: поиск по словам работает и во время импорта. Не закрывай Setsuna до его окончания.')}</p>
                 </div>
             )}
             <button type="button" className="import-pill" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}
@@ -166,7 +175,8 @@ export const ImportProgressModal = ({ jsonProgress, dictProgress, language = 'ru
                 <span className="import-pill-percent">{Math.floor(shown)}%</span>
                 {badge && <span className="import-pill-badge">{badge}</span>}
             </button>
-        </div>
+        </div>,
+        document.body,
     );
 };
 

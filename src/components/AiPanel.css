@@ -117,9 +117,6 @@
     color: #f59e0b;
     flex-shrink: 0;
 }
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
 
 .aip-icon-btn {
     flex: 0 0 auto;

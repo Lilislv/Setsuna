@@ -56,3 +56,29 @@ test('native resumable upload preserves the Location header and exact binary fil
     globalThis.driveHttp = async () => new Response('{}');
     await assert.rejects(drive.startDictionaryResumableUpload('test-token', 'file-id', 100), /did not return/);
 });
+
+test('manifest file IDs are reused for pull/push, refreshed after deletion, and scoped to the access token', async () => {
+    let currentId = 'first';
+    const lookups = [];
+    const media = [];
+    globalThis.driveHttp = async (url, options) => {
+        const path = new URL(url);
+        if (path.searchParams.has('q')) {
+            lookups.push(options.headers.Authorization);
+            assert.match(path.searchParams.get('q'), /name='manifest.json'/);
+            return json({ files: [{ id: currentId }] });
+        }
+        const id = path.pathname.split('/').at(-1);
+        media.push(id);
+        if (id !== currentId) return json({}, 404);
+        return json(options.method === 'PATCH' ? {} : { id });
+    };
+    assert.deepEqual(await drive.downloadAppDataJson('account-a', 'manifest.json', {}), { id: 'first' });
+    assert.equal(await drive.uploadAppDataJson('account-a', 'manifest.json', {}), 'first');
+    currentId = 'replacement';
+    assert.deepEqual(await drive.downloadAppDataJson('account-a', 'manifest.json', {}), { id: 'replacement' });
+    currentId = 'other-account';
+    assert.equal(await drive.uploadAppDataJson('account-b', 'manifest.json', {}), 'other-account');
+    assert.deepEqual(lookups, ['Bearer account-a', 'Bearer account-a', 'Bearer account-b']);
+    assert.deepEqual(media, ['first', 'first', 'first', 'replacement', 'other-account']);
+});

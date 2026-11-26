@@ -1607,26 +1607,17 @@ fn detect_mokuro_runner() -> Option<(String, Vec<String>, Option<String>)> {
     // Fast metadata-only probe (~30ms, never loads PyTorch/CUDA DLLs just to check presence!)
     const PROBE_SCRIPT: &str = "import importlib.metadata as m; print(m.version('mokuro'))";
 
-    let python_candidates: &[(&str, &[&str])] = &[
-        ("py", &["-3.12"]),
-        ("py", &["-3.11"]),
-        ("py", &["-3.10"]),
-        ("python", &[]),
-        ("python3", &[]),
-        ("py", &[]),
-    ];
-
-    for (prog, py_args) in python_candidates {
-        let mut cmd = new_quiet_command(prog);
-        cmd.args(*py_args).arg("-c").arg(PROBE_SCRIPT);
+    for (prog, py_args) in crate::mokuro_setup::python_candidates() {
+        let mut cmd = new_quiet_command(&prog);
+        cmd.args(&py_args).arg("-c").arg(PROBE_SCRIPT);
         if let Ok(output) = cmd.output() {
             if output.status.success() {
                 let ver = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let mut run_args: Vec<String> = py_args.iter().map(|s| (*s).to_string()).collect();
+                let mut run_args = py_args.clone();
                 run_args.push("-m".to_string());
                 run_args.push("mokuro".to_string());
                 return Some((
-                    (*prog).to_string(),
+                    prog,
                     run_args,
                     if ver.is_empty() { None } else { Some(ver) },
                 ));
@@ -1803,6 +1794,9 @@ pub async fn manga_run_mokuro(app: AppHandle, path: String) -> Result<MangaMeta,
         let original_path_str = path.clone();
 
         tokio::task::spawn_blocking(move || -> Result<MangaMeta, String> {
+            // Desktop and remote actions share the same archive extraction workspace.
+            static RUN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _run = RUN_LOCK.try_lock().map_err(|_| "Another Mokuro job is running on this PC.")?;
             let mut temp_dir_to_clean: Option<PathBuf> = None;
             let (work_dir, target_archive_key) = match &source {
                 MangaSource::Folder(dir) => (dir.clone(), None),
@@ -1895,9 +1889,11 @@ pub async fn manga_run_mokuro(app: AppHandle, path: String) -> Result<MangaMeta,
                 }
             });
 
-            if let Some(stdout) = child.stdout.take() {
-                let _ = read_cr_lf_stream(stdout, &app_clone, &original_path_str);
-            }
+            let out_tail = child
+                .stdout
+                .take()
+                .map(|stdout| read_cr_lf_stream(stdout, &app_clone, &original_path_str))
+                .unwrap_or_default();
 
             let status = child
                 .wait()
@@ -1916,6 +1912,7 @@ pub async fn manga_run_mokuro(app: AppHandle, path: String) -> Result<MangaMeta,
             }
 
             // If we ran mokuro on an extracted archive, copy generated `.mokuro` into Setsuna's sidecar store
+            let mut missing_output: Option<PathBuf> = None;
             if let Some(arc_key) = target_archive_key {
                 if let (Some(parent), Some(vol_name)) = (
                     work_dir.parent(),
@@ -1927,8 +1924,11 @@ pub async fn manga_run_mokuro(app: AppHandle, path: String) -> Result<MangaMeta,
                             if let Some(sp) = sidecar.parent() {
                                 let _ = fs::create_dir_all(sp);
                             }
-                            let _ = fs::copy(&generated, &sidecar);
+                            fs::copy(&generated, &sidecar)
+                                .map_err(|e| format!("Failed to save the Mokuro OCR file: {e}"))?;
                         }
+                    } else {
+                        missing_output = Some(generated);
                     }
                 }
             }
@@ -1939,6 +1939,21 @@ pub async fn manga_run_mokuro(app: AppHandle, path: String) -> Result<MangaMeta,
 
             invalidate_manga_page_cache();
             let meta = manga_open(app_clone.clone(), original_path_str.clone())?;
+            // mokuro can exit with status 0 without writing an OCR file (wrong
+            // interpreter, nothing recognised, other output folder). Reporting that
+            // as success only closed the dialog with no overlay and no reason.
+            if !meta.has_mokuro {
+                let tail = [err_tail.as_str(), out_tail.as_str()]
+                    .into_iter()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("no output");
+                let expected = missing_output
+                    .map(|p| format!(" (expected {})", p.display()))
+                    .unwrap_or_default();
+                return Err(format!(
+                    "mokuro finished but produced no OCR file{expected}. Last mokuro output: {tail}"
+                ));
+            }
             let _ = app_clone.emit(
                 "manga_mokuro_progress",
                 serde_json::json!({
@@ -2084,6 +2099,8 @@ fn pack_manga_to_cbz(
     out_path: &Path,
     cover_data_uri: Option<&str>,
 ) -> Result<MangaExportResult, String> {
+    static PACK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _packing = PACK_LOCK.lock().map_err(|_| "CBZ conversion unavailable.")?;
     let raw = PathBuf::from(path.trim());
     let (source, explicit_mokuro) = resolve_manga_source(&raw)?;
     let mokuro = find_mokuro_for_source(app, &source, explicit_mokuro.as_deref());
@@ -2228,9 +2245,6 @@ fn pack_manga_to_cbz(
         }
     };
 
-    if out_path.exists() {
-        let _ = fs::remove_file(out_path);
-    }
     fs::rename(&tmp_path, out_path).map_err(|e| {
         let _ = fs::remove_file(&tmp_path);
         format!("Failed to finalize CBZ archive: {e}")

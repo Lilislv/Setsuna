@@ -67,6 +67,77 @@ pub async fn import_dictionaries(
     .map_err(|e| format!("Dictionary import worker failed: {}", e))?
 }
 
+/// Finishes schema/index work an import left undone (the app was closed while it was
+/// "Building lookup indexes..."). Before, the first lookup did this silently on a
+/// multi-GB database and every lookup looked dead for minutes. Runs once at startup
+/// and shows the import pill. Returns true when something was repaired.
+#[tauri::command]
+pub async fn repair_dictionary_database(app: tauri::AppHandle) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || repair_dictionary_database_blocking(&app))
+        .await
+        .map_err(|e| format!("Dictionary repair worker failed: {}", e))?
+}
+
+fn repair_dictionary_database_blocking(app: &tauri::AppHandle) -> Result<bool, String> {
+    // An import running right now finishes the indexes itself.
+    let Ok(_import_guard) = DICTIONARY_IMPORT_LOCK.get_or_init(|| Mutex::new(())).try_lock() else {
+        return Ok(false);
+    };
+    struct MaintenanceGuard;
+    impl Drop for MaintenanceGuard {
+        fn drop(&mut self) {
+            super::core::database::IMPORT_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    // Set before opening: open_db must not start the same repair silently, and
+    // lookups meanwhile read without trying schema maintenance.
+    super::core::database::IMPORT_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _maintenance = MaintenanceGuard;
+    let mut db = super::open_db(app)?;
+    repair_schema(&mut db, &mut |percent, status| emit_repair_step(app, percent, status))
+}
+
+/// Shared by the command and its test. `report` is only called for databases that
+/// already hold dictionary data (a fresh install gets its schema silently).
+fn repair_schema(
+    db: &mut rusqlite::Connection,
+    report: &mut dyn FnMut(f64, &str),
+) -> Result<bool, String> {
+    if super::core::database::schema_is_current(db) {
+        return Ok(false);
+    }
+    let visible = super::core::database::table_exists(db, "entries")?;
+    let mut progress = |percent: f64| {
+        if visible {
+            report(percent, "Rebuilding dictionary indexes...");
+        }
+    };
+    super::core::database::apply_canonical_schema(db, &mut progress)?;
+    db.execute_batch("PRAGMA optimize;").ok();
+    if visible {
+        report(100.0, "Done");
+    }
+    Ok(true)
+}
+
+fn emit_repair_step(app: &tauri::AppHandle, percent: f64, status: &str) {
+    let _ = app.emit(
+        "import_progress",
+        serde_json::json!({
+            "operation": "repair",
+            "dict_name": "dictionary.db",
+            "total_dicts": 1,
+            "dict_index": 1,
+            "dict_count": 1,
+            "current_file": 0,
+            "total_files": 1,
+            "words_added": 0,
+            "percent": percent.clamp(0.0, 100.0),
+            "status": status,
+        }),
+    );
+}
+
 #[cfg(target_os = "windows")]
 fn lower_import_thread_priority() {
     unsafe {
@@ -3122,5 +3193,34 @@ mod tests {
         release.join().unwrap();
         drop(db);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn startup_repair_rebuilds_indexes_an_interrupted_import_left_out() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::core::database::ensure_canonical_schema(&mut db).unwrap();
+        db.execute("INSERT INTO entries (term, reading, definition, dict_name) VALUES ('冴える', 'さえる', '[]', 'JMdict')", []).unwrap();
+        db.execute_batch("DROP INDEX idx_term; DROP INDEX idx_pitch_reading;").unwrap();
+        assert!(!crate::core::database::schema_is_current(&db));
+
+        let mut steps = Vec::new();
+        assert!(repair_schema(&mut db, &mut |percent, status| steps.push((percent, status.to_string()))).unwrap());
+        assert!(crate::core::database::schema_is_current(&db));
+        assert_eq!(steps.last().unwrap(), &(100.0, "Done".to_string()));
+        assert!(steps.windows(2).all(|w| w[0].0 <= w[1].0), "progress only grows");
+
+        // Healthy database: nothing to do, nothing shown.
+        let mut again = Vec::new();
+        assert!(!repair_schema(&mut db, &mut |percent, status| again.push((percent, status.to_string()))).unwrap());
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn startup_repair_of_an_empty_database_is_silent() {
+        let mut db = Connection::open_in_memory().unwrap();
+        let mut steps = 0;
+        assert!(repair_schema(&mut db, &mut |_, _| steps += 1).unwrap());
+        assert_eq!(steps, 0);
+        assert!(crate::core::database::schema_is_current(&db));
     }
 }

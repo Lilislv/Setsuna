@@ -1,8 +1,9 @@
 const STORAGE_KEY = "setsuna-epub-cover-thumbs-v1";
 const MAX_CACHED_COVERS = 120;
 const MAX_TOTAL_CHARS = 2_400_000;
-const THUMB_MAX_W = 300;
-const THUMB_MAX_H = 450;
+const THUMB_MAX_W = 200;
+const THUMB_MAX_H = 300;
+const MAX_SYNC_THUMB_CHARS = 42_000;
 
 interface StoredEntry {
     src: string;
@@ -100,7 +101,7 @@ export function setMemoryCover(path: string, src: string | null): void {
         return;
     }
     void downscaleDataUrl(src).then((compact) => {
-        if (!compact) return;
+        if (!compact || memoryCache.get(path) !== src) return;
         memoryCache.set(path, compact);
         loadDiskMap()[path] = { src: compact, at: Date.now() };
         schedulePersist();
@@ -110,9 +111,9 @@ export function setMemoryCover(path: string, src: string | null): void {
 export async function compactCoverDataUrl(src: string): Promise<string | null> {
     const clean = src.trim();
     if (!clean.startsWith("data:image/")) return null;
-    if (clean.length <= 45_000) return clean;
+    if (clean.length <= MAX_SYNC_THUMB_CHARS) return clean;
     const downscaled = await downscaleDataUrl(clean);
-    if (!downscaled || downscaled.length > 45_000) return null;
+    if (!downscaled || downscaled.length > MAX_SYNC_THUMB_CHARS) return null;
     return downscaled;
 }
 
@@ -121,19 +122,27 @@ function downscaleDataUrl(dataUrl: string): Promise<string | null> {
         const img = new Image();
         img.onload = () => {
             try {
-                const scale = Math.min(1, THUMB_MAX_W / img.width, THUMB_MAX_H / img.height);
-                const w = Math.max(1, Math.round(img.width * scale));
-                const h = Math.max(1, Math.round(img.height * scale));
-                const canvas = document.createElement("canvas");
-                canvas.width = w;
-                canvas.height = h;
-                const ctx = canvas.getContext("2d");
-                if (!ctx) {
-                    resolve(null);
-                    return;
+                let scale = Math.min(1, THUMB_MAX_W / img.width, THUMB_MAX_H / img.height);
+                for (const quality of [0.74, 0.56, 0.4]) {
+                    const w = Math.max(1, Math.round(img.width * scale));
+                    const h = Math.max(1, Math.round(img.height * scale));
+                    const canvas = document.createElement("canvas");
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext("2d");
+                    if (!ctx) {
+                        resolve(null);
+                        return;
+                    }
+                    ctx.drawImage(img, 0, 0, w, h);
+                    const out = canvas.toDataURL("image/jpeg", quality);
+                    if (out.length <= MAX_SYNC_THUMB_CHARS) {
+                        resolve(out);
+                        return;
+                    }
+                    scale *= 0.8;
                 }
-                ctx.drawImage(img, 0, 0, w, h);
-                resolve(canvas.toDataURL("image/jpeg", 0.8));
+                resolve(null);
             } catch {
                 resolve(null);
             }

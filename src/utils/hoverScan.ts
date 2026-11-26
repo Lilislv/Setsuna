@@ -57,7 +57,10 @@ export function sameHoverTextPoint(a: HoverTextPoint, b: HoverTextPoint): boolea
 }
 
 /** One active lookup and one newest pending character; obsolete replies never publish. */
-export function createHoverScanQueue<T>(same: (a: T, b: T) => boolean, search: (target: T, isCurrent: () => boolean) => Promise<void>) {
+// A scan that has not answered after `stallMs` (dictionary database busy, e.g. right
+// after a large import) no longer blocks the queue: newer requests run meanwhile and
+// the stalled reply is dropped by its version check.
+export function createHoverScanQueue<T>(same: (a: T, b: T) => boolean, search: (target: T, isCurrent: () => boolean) => Promise<void>, stallMs = 4000) {
     let version = 0; let last: T | null = null; let pending: { target: T; version: number } | null = null;
     let running = false; let disposed = false;
     const drain = async () => {
@@ -66,8 +69,12 @@ export function createHoverScanQueue<T>(same: (a: T, b: T) => boolean, search: (
         try {
             while (pending && !disposed) {
                 const next = pending; pending = null;
-                try { await search(next.target, () => !disposed && version === next.version); }
-                catch (error) { console.warn('Hover scan failed', error); }
+                const run = search(next.target, () => !disposed && version === next.version)
+                    .catch((error) => { console.warn('Hover scan failed', error); });
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                const stalled = new Promise<void>((resolve) => { timer = setTimeout(resolve, stallMs); });
+                await Promise.race([run, stalled]);
+                clearTimeout(timer);
             }
         } finally { running = false; }
     };

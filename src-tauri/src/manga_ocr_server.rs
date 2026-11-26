@@ -5,7 +5,29 @@
 //! - Provides cross-platform `manga_ocr_remote_health` and `manga_ocr_remote_recognize` Tauri commands.
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteMokuroJobState {
+    pub job_id: u64,
+    pub state: String,
+    pub title: String,
+    pub book_key: Option<String>,
+    pub message: Option<String>,
+    pub error: Option<String>,
+    pub current: Option<u32>,
+    pub total: Option<u32>,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -55,9 +77,10 @@ mod desktop {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream, UdpSocket};
     use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::thread::JoinHandle;
+    use tauri::Emitter;
 
     pub const DEFAULT_OCR_PORT: u16 = 47123;
     const MAX_HTTP_BODY_BYTES: usize = 12 * 1024 * 1024;
@@ -116,6 +139,54 @@ for line in sys.stdin:
     static WORKER_LOCK: OnceLock<Mutex<Option<PythonOcrWorker>>> = OnceLock::new();
     static LAST_DEVICE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     static SERVER_LOCK: OnceLock<Mutex<Option<ServerHandle>>> = OnceLock::new();
+    static REMOTE_MOKURO_LOCK: OnceLock<Mutex<RemoteMokuroJobState>> = OnceLock::new();
+    static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(1);
+
+    fn remote_mokuro_mutex() -> &'static Mutex<RemoteMokuroJobState> {
+        REMOTE_MOKURO_LOCK.get_or_init(|| Mutex::new(RemoteMokuroJobState {
+            state: "idle".to_string(),
+            updated_at: now_unix_ms(),
+            ..Default::default()
+        }))
+    }
+
+    fn active_job(job: &RemoteMokuroJobState) -> bool {
+        matches!(job.state.as_str(), "queued" | "running" | "converting")
+    }
+
+    fn expire_disconnected_job(job: &mut RemoteMokuroJobState) {
+        if active_job(job) && now_unix_ms().saturating_sub(job.updated_at) > 120_000 {
+            job.state = "error".into();
+            job.error = Some("Lost contact with the Setsuna window on the PC.".into());
+        }
+    }
+
+    pub fn set_remote_mokuro_state(next: RemoteMokuroJobState) -> Result<(), String> {
+        let mut job = remote_mokuro_mutex().lock().map_err(|e| e.to_string())?;
+        if job.job_id != next.job_id || !active_job(&job) {
+            return Err("Mokuro request expired.".into());
+        }
+        job.state = next.state;
+        job.message = next.message;
+        job.current = next.current;
+        job.total = next.total;
+        job.error = next.error;
+        job.updated_at = now_unix_ms();
+        Ok(())
+    }
+
+    pub fn get_remote_mokuro_state() -> RemoteMokuroJobState {
+        remote_mokuro_mutex()
+            .lock()
+            .map(|mut job| {
+                expire_disconnected_job(&mut job);
+                job.clone()
+            })
+            .unwrap_or_else(|_| RemoteMokuroJobState {
+                state: "idle".to_string(),
+                ..Default::default()
+            })
+    }
 
     fn worker_mutex() -> &'static Mutex<Option<PythonOcrWorker>> {
         WORKER_LOCK.get_or_init(|| Mutex::new(None))
@@ -142,23 +213,12 @@ for line in sys.stdin:
 
     pub fn detect_manga_ocr_python() -> Option<(String, Vec<String>)> {
         const PROBE: &str = "import importlib.metadata as m; print(m.version('manga-ocr'))";
-        let candidates: &[(&str, &[&str])] = &[
-            ("py", &["-3.12"]),
-            ("py", &["-3.11"]),
-            ("py", &["-3.10"]),
-            ("python", &[]),
-            ("python3", &[]),
-            ("py", &[]),
-        ];
-        for (prog, prefix) in candidates {
-            let mut cmd = new_quiet_command(prog);
-            cmd.args(*prefix).arg("-c").arg(PROBE);
+        for (prog, prefix) in crate::mokuro_setup::python_candidates() {
+            let mut cmd = new_quiet_command(&prog);
+            cmd.args(&prefix).arg("-c").arg(PROBE);
             if let Ok(out) = cmd.output() {
                 if out.status.success() {
-                    return Some((
-                        (*prog).to_string(),
-                        prefix.iter().map(|s| (*s).to_string()).collect(),
-                    ));
+                    return Some((prog, prefix));
                 }
             }
         }
@@ -436,7 +496,7 @@ for line in sys.stdin:
         false
     }
 
-    fn handle_client(mut stream: TcpStream, expected_token: &str) {
+    fn handle_client(mut stream: TcpStream, expected_token: &str, app: &tauri::AppHandle) {
         let _ = stream.set_nonblocking(false);
         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(15)));
@@ -477,7 +537,14 @@ for line in sys.stdin:
             return;
         }
 
-        if !has_valid_token(&header_text, raw_path, expected_token) {
+        let mokuro_route = matches!(route, "/mokuro/request" | "/mokuro/status");
+        if mokuro_route && expected_token.is_empty() {
+            write_http_response(&mut stream, "403 Forbidden",
+                r#"{"error":"Set a matching OCR access token on the PC and phone, then restart the PC OCR server."}"#);
+            return;
+        }
+        // Credentials for whole-volume jobs travel only in the Authorization header.
+        if !has_valid_token(&header_text, if mokuro_route { route } else { raw_path }, expected_token) {
             write_http_response(
                 &mut stream,
                 "401 Unauthorized",
@@ -526,6 +593,73 @@ for line in sys.stdin:
             })
             .to_string();
             write_http_response(&mut stream, "200 OK", &json);
+            return;
+        }
+
+        if method.eq_ignore_ascii_case("GET") && route == "/mokuro/status" {
+            let st = get_remote_mokuro_state();
+            write_http_response(&mut stream, "200 OK", &serde_json::json!(st).to_string());
+            return;
+        }
+
+        if method.eq_ignore_ascii_case("POST") && route == "/mokuro/request" {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct MokuroReqBody {
+                title: Option<String>,
+                book_key: Option<String>,
+                auto_convert_cbz: Option<bool>,
+            }
+            let parsed: Result<MokuroReqBody, _> = serde_json::from_slice(&body);
+            let req = match parsed {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = serde_json::json!({ "ok": false, "error": format!("Invalid JSON body: {e}") }).to_string();
+                    write_http_response(&mut stream, "400 Bad Request", &msg);
+                    return;
+                }
+            };
+            let title = req.title.unwrap_or_default().trim().to_string();
+            let book_key = req.book_key.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            if title.is_empty() || book_key.is_none() || title.len() > 4096 || book_key.as_ref().is_some_and(|k| k.len() > 4096) {
+                write_http_response(&mut stream, "400 Bad Request", r#"{"error":"Invalid library title or bookKey"}"#);
+                return;
+            }
+            let Ok(mut job) = remote_mokuro_mutex().lock() else {
+                write_http_response(&mut stream, "500 Internal Server Error", r#"{"error":"Job state unavailable"}"#);
+                return;
+            };
+            expire_disconnected_job(&mut job);
+            if active_job(&job) {
+                drop(job);
+                write_http_response(&mut stream, "409 Conflict", r#"{"error":"A Mokuro job is already in progress on this PC"}"#);
+                return;
+            }
+            let queued = RemoteMokuroJobState {
+                job_id: NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed),
+                state: "queued".to_string(),
+                title: title.clone(),
+                book_key: book_key.clone(),
+                message: Some("Queued on PC…".to_string()),
+                error: None,
+                current: None,
+                total: None,
+                updated_at: now_unix_ms(),
+            };
+            *job = queued.clone();
+            drop(job);
+            if app.emit_to("main", "setsuna://remote-mokuro-request", serde_json::json!({
+                "jobId": queued.job_id,
+                "bookKey": book_key,
+                "autoConvertCbz": req.auto_convert_cbz.unwrap_or(true),
+            })).is_err() {
+                let _ = set_remote_mokuro_state(RemoteMokuroJobState {
+                    state: "error".into(), error: Some("PC app window unavailable.".into()), ..queued
+                });
+                write_http_response(&mut stream, "503 Service Unavailable", r#"{"error":"PC app window unavailable"}"#);
+                return;
+            }
+            write_http_response(&mut stream, "202 Accepted", &serde_json::json!(queued).to_string());
             return;
         }
 
@@ -620,7 +754,7 @@ for line in sys.stdin:
         }
     }
 
-    pub fn start_server(port: Option<u16>, token: Option<String>) -> Result<MangaOcrServerStatus, String> {
+    pub fn start_server(app: tauri::AppHandle, port: Option<u16>, token: Option<String>) -> Result<MangaOcrServerStatus, String> {
         let requested_port = port.filter(|p| *p > 0).unwrap_or(DEFAULT_OCR_PORT);
         let clean_token = token.unwrap_or_default().trim().to_string();
 
@@ -647,8 +781,9 @@ for line in sys.stdin:
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let tok = token_clone.clone();
+                        let app = app.clone();
                         std::thread::spawn(move || {
-                            handle_client(stream, &tok);
+                            handle_client(stream, &tok, &app);
                         });
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -732,18 +867,19 @@ pub async fn manga_ocr_server_status() -> MangaOcrServerStatus {
 
 #[tauri::command]
 pub async fn manga_ocr_server_start(
+    app: tauri::AppHandle,
     port: Option<u16>,
     token: Option<String>,
 ) -> Result<MangaOcrServerStatus, String> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        return tokio::task::spawn_blocking(move || desktop::start_server(port, token))
+        return tokio::task::spawn_blocking(move || desktop::start_server(app, port, token))
             .await
             .map_err(|e| format!("Failed to start OCR server: {e}"))?;
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
-        let _ = (port, token);
+        let _ = (app, port, token);
         Err("Hosting a LAN OCR server is only supported on Desktop.".to_string())
     }
 }
@@ -869,4 +1005,89 @@ pub async fn manga_ocr_remote_recognize(
         device: parsed.device,
         elapsed_ms: parsed.elapsed_ms.unwrap_or(0),
     })
+}
+
+#[tauri::command]
+pub async fn manga_ocr_set_remote_mokuro_state(state: RemoteMokuroJobState) -> Result<(), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        desktop::set_remote_mokuro_state(state)?;
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = state;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn manga_ocr_remote_mokuro_request(
+    url: String,
+    token: Option<String>,
+    title: String,
+    book_key: Option<String>,
+    auto_convert_cbz: Option<bool>,
+) -> Result<RemoteMokuroJobState, String> {
+    let base = normalize_remote_base(&url)?;
+    let endpoint = format!("{base}/mokuro/request");
+    let client = crate::http_client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let body = serde_json::json!({
+        "title": title,
+        "bookKey": book_key,
+        "autoConvertCbz": auto_convert_cbz.unwrap_or(true),
+    })
+    .to_string();
+    let mut req = client
+        .post(&endpoint)
+        .header("Content-Type", "application/json; charset=UTF-8")
+        .body(body);
+    if let Some(tok) = token.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        req = req.bearer_auth(tok);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("PC Mokuro request failed: {}", e.without_url()))?;
+    let status = resp.status();
+    let raw = resp.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("PC OCR server returned HTTP {status}: {raw}"));
+    }
+    serde_json::from_str::<RemoteMokuroJobState>(&raw)
+        .map_err(|e| format!("Invalid Mokuro job JSON ({status}): {e}"))
+}
+
+#[tauri::command]
+pub async fn manga_ocr_remote_mokuro_status(
+    url: String,
+    token: Option<String>,
+) -> Result<RemoteMokuroJobState, String> {
+    let base = normalize_remote_base(&url)?;
+    let endpoint = format!("{base}/mokuro/status");
+    let client = crate::http_client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req = client.get(&endpoint);
+    if let Some(tok) = token.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        req = req.bearer_auth(tok);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("PC Mokuro status check failed: {}", e.without_url()))?;
+    let status = resp.status();
+    let raw = resp.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("PC OCR server returned HTTP {status}: {raw}"));
+    }
+    serde_json::from_str::<RemoteMokuroJobState>(&raw)
+        .map_err(|e| format!("Invalid Mokuro status JSON ({status}): {e}"))
 }

@@ -25,6 +25,8 @@ import { evaluateGoalProgress, loadEpubGoals, type EpubReadingGoals } from "../e
 import {
     attachMokuroOverlay,
     checkMokuroStatus,
+    installMokuro,
+    type MokuroInstallProgress,
     exportMangaMobileCbz,
     loadMangaOverrides,
     loadMangaPage,
@@ -41,8 +43,10 @@ import {
     DEFAULT_MANGA_PREFS,
     detectBubbleParagraphGaps,
     findSpreadIndexForPage,
+    fitMangaPage,
     joinMokuroLines,
     loadMangaPrefs,
+    placeBubbleLines,
     prepareBubbleDisplayLines,
     saveMangaPrefs,
     type MangaBgTheme,
@@ -64,6 +68,7 @@ import {
     recognizeMangaCrop,
 } from "./mangaOcr";
 import "./manga.css";
+import RemoteMokuroControls from "./RemoteMokuroControls";
 
 const MAX_CACHED_PAGES = 18;
 const CHROME_TOP_ZONE_PX = 76;
@@ -337,6 +342,8 @@ export default function MangaReader({
     const [noteBodyInput, setNoteBodyInput] = useState("");
 
     const [pagesByIndex, setPagesByIndex] = useState<Record<number, MangaPagePayload>>({});
+    const [naturalDimsByPage, setNaturalDimsByPage] = useState<Record<number, { width: number; height: number }>>({});
+    const [stageSize, setStageSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
     const [pageErrors, setPageErrors] = useState<Record<number, string>>({});
     const [cacheEpoch, setCacheEpoch] = useState(0);
     const [overrides, setOverrides] = useState<Record<number, Record<number, string>>>({});
@@ -360,6 +367,8 @@ export default function MangaReader({
         line: string;
     } | null>(null);
     const [mokuroError, setMokuroError] = useState<string | null>(null);
+    const [mokuroInstall, setMokuroInstall] = useState<MokuroInstallProgress | null>(null);
+    const canAutoInstallMokuro = !isMobile && /Windows/i.test(navigator.userAgent);
     const [convertingCbz, setConvertingCbz] = useState(false);
     const [exportingCbz, setExportingCbz] = useState(false);
     const [exportStatus, setExportStatus] = useState<{ ok: boolean; message: string } | null>(null);
@@ -433,8 +442,32 @@ export default function MangaReader({
         pageCacheRef.current.clear();
         loadingSetRef.current.clear();
         setPagesByIndex({});
+        setNaturalDimsByPage({});
         setPageErrors({});
         setCacheEpoch((n) => n + 1);
+    }, []);
+
+    useEffect(() => {
+        const vp = viewportRef.current;
+        if (!vp) return;
+        const measure = () => {
+            const css = getComputedStyle(vp);
+            const width = vp.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
+            const height = vp.clientHeight - parseFloat(css.paddingTop) - parseFloat(css.paddingBottom);
+            setStageSize((prev) => (
+                prev.width === width && prev.height === height
+                    ? prev
+                    : { width, height }
+            ));
+        };
+        measure();
+        const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+        ro?.observe(vp);
+        window.addEventListener("resize", measure);
+        return () => {
+            ro?.disconnect();
+            window.removeEventListener("resize", measure);
+        };
     }, []);
 
     useEffect(() => () => {
@@ -1237,6 +1270,24 @@ export default function MangaReader({
         }
     }, [mangaPath, onMetaUpdated]);
 
+    const handleInstallMokuro = useCallback(async () => {
+        if (mokuroInstall) return;
+        setMokuroError(null);
+        setMokuroInstall({ stage: "python", line: "" });
+        const stop = await listen<MokuroInstallProgress>("manga_mokuro_install", (event) => {
+            if (event.payload) setMokuroInstall(event.payload);
+        });
+        try {
+            await installMokuro();
+            setMokuroStatus(await checkMokuroStatus());
+        } catch (error) {
+            setMokuroError(String(error));
+        } finally {
+            stop();
+            setMokuroInstall(null);
+        }
+    }, [mokuroInstall]);
+
     const handleRunMokuroCli = useCallback(async () => {
         if (mokuroRunning) return;
         setMokuroRunning(true);
@@ -1638,24 +1689,35 @@ export default function MangaReader({
         const effectiveBlocks = applyBlockTextOverrides(payload.blocks, overrides[pageIdx]);
         const extraBlocks = sessionBlocksByPage[pageIdx] || [];
         const renderBlocks = extraBlocks.length > 0 ? [...effectiveBlocks, ...extraBlocks] : effectiveBlocks;
-        const natW = payload.width || 1000;
-        const natH = payload.height || 1400;
+        const fallbackDims = naturalDimsByPage[pageIdx];
+        const natW = (payload.width > 0 ? payload.width : fallbackDims?.width) || 1000;
+        const natH = (payload.height > 0 ? payload.height : fallbackDims?.height) || 1400;
         const activeCrop = cropDrag && cropDrag.pageIndex === pageIdx ? cropDrag : null;
+
+        const frameStyle = fitMangaPage(natW, natH, stageSize.width, stageSize.height,
+            prefs.fitMode, prefs.spreadMode === "spread" && visiblePages.length === 2, zoom);
 
         return (
             <div
                 key={pageIdx}
                 className={`manga-page-frame fit-${prefs.fitMode}${prefs.dimBackground ? " is-dimmed" : ""}`}
-                style={{
-                    aspectRatio: `${natW} / ${natH}`,
-                    ...(zoom !== 1 ? { transform: `scale(${zoom})`, transformOrigin: "center top" } : {}),
-                }}
+                style={frameStyle}
             >
                 <img
                     src={payload.imageSrc}
                     alt={`Page ${pageIdx + 1}`}
                     className="manga-page-img"
                     draggable={false}
+                    onLoad={(event) => {
+                        const img = event.currentTarget;
+                        if (img.naturalWidth > 0 && img.naturalHeight > 0 && (payload.width <= 0 || payload.height <= 0)) {
+                            setNaturalDimsByPage((prev) => (
+                                prev[pageIdx]?.width === img.naturalWidth && prev[pageIdx]?.height === img.naturalHeight
+                                    ? prev
+                                    : { ...prev, [pageIdx]: { width: img.naturalWidth, height: img.naturalHeight } }
+                            ));
+                        }
+                    }}
                 />
                 {renderBlocks.length > 0 && (
                     <div
@@ -1669,7 +1731,8 @@ export default function MangaReader({
                             const widthPct = Math.max(1.5, ((x2 - x1) / natW) * 100);
                             const heightPct = Math.max(1.5, ((y2 - y1) / natH) * 100);
                             const sentence = joinMokuroLines(block.lines);
-                            const displayLines = prepareBubbleDisplayLines(block.lines);
+                            const placedLines = placeBubbleLines(block);
+                            const displayLines = placedLines || prepareBubbleDisplayLines(block.lines);
                             const paraGaps = detectBubbleParagraphGaps(block);
                             const isActive =
                                 activeBubble?.pageIndex === pageIdx && activeBubble?.blockIndex === bIdx;
@@ -1685,7 +1748,7 @@ export default function MangaReader({
                             return (
                                 <div
                                     key={bIdx}
-                                    className={`manga-bubble${block.vertical ? " is-vertical" : " is-horizontal"}${isActive ? " is-active" : ""}`}
+                                    className={`manga-bubble${block.vertical ? " is-vertical" : " is-horizontal"}${placedLines ? " is-placed" : ""}${isActive ? " is-active" : ""}`}
                                     style={{
                                         left: `${leftPct}%`,
                                         top: `${topPct}%`,
@@ -1714,11 +1777,9 @@ export default function MangaReader({
                                     }}
                                 >
                                     <div className="manga-bubble-text text-line">
-                                        {displayLines.map((line, lineIdx) => (
-                                            <p
-                                                key={lineIdx}
-                                                className={`manga-bubble-line${paraGaps[lineIdx] ? " has-para-gap" : ""}`}
-                                            >
+                                        {displayLines.map((line, lineIdx) => {
+                                            const placed = placedLines?.[lineIdx];
+                                            const lineBody = (
                                                 <TokenizedLine
                                                     text={line.appendSpace ? `${line.text} ` : line.text}
                                                     searchQuery=""
@@ -1736,8 +1797,33 @@ export default function MangaReader({
                                                         }
                                                         : undefined}
                                                 />
-                                            </p>
-                                        ))}
+                                            );
+                                            if (placed) {
+                                                return (
+                                                    <p
+                                                        key={lineIdx}
+                                                        className="manga-bubble-line is-placed"
+                                                        style={{
+                                                            left: `${placed.left}%`,
+                                                            top: `${placed.top}%`,
+                                                            width: `${placed.width}%`,
+                                                            height: `${placed.height}%`,
+                                                            fontSize: `${Math.max(0.35, Math.min(12, (placed.fontPx * prefs.fontScale / natW) * 100))}cqw`,
+                                                        }}
+                                                    >
+                                                        <span className="manga-bubble-run">{lineBody}</span>
+                                                    </p>
+                                                );
+                                            }
+                                            return (
+                                                <p
+                                                    key={lineIdx}
+                                                    className={`manga-bubble-line${paraGaps[lineIdx] ? " has-para-gap" : ""}`}
+                                                >
+                                                    {lineBody}
+                                                </p>
+                                            );
+                                        })}
                                     </div>
                                     {isActive && (
                                         <button
@@ -2836,7 +2922,7 @@ export default function MangaReader({
 
                 {/* Mokuro OCR manager / CLI runner modal */}
                 {mokuroModalOpen && (
-                    <div className="manga-modal-backdrop" onClick={() => !mokuroRunning && setMokuroModalOpen(false)}>
+                    <div className="manga-modal-backdrop" onClick={() => !mokuroRunning && !mokuroInstall && setMokuroModalOpen(false)}>
                         <div className="manga-modal" onClick={(e) => e.stopPropagation()}>
                             <h3>{isEn ? "Mokuro OCR Text Layer" : "Слой текста Mokuro OCR"}</h3>
                             <p className="manga-modal-desc">
@@ -2888,8 +2974,42 @@ export default function MangaReader({
 
                                     {mokuroStatus && !mokuroStatus.available && (
                                         <div className="manga-mokuro-hint">
-                                            {isEn ? "Install once in terminal:" : "Установи один раз в терминале:"}
-                                            <code>pip install mokuro</code>
+                                            {mokuroInstall ? (
+                                                <div className="manga-mokuro-progress">
+                                                    <div className="manga-mokuro-progress-head">
+                                                        <span>
+                                                            {({
+                                                                python: isEn ? "Step 1/3 · Python 3.12" : "Шаг 1/3 · Python 3.12",
+                                                                pip: isEn ? "Step 2/3 · Preparing pip" : "Шаг 2/3 · Подготовка pip",
+                                                                torch: isEn ? "Step 2/3 · PyTorch with CUDA" : "Шаг 2/3 · PyTorch с CUDA",
+                                                                mokuro: isEn ? "Step 3/3 · mokuro" : "Шаг 3/3 · mokuro",
+                                                                done: isEn ? "Done" : "Готово",
+                                                            } as Record<string, string>)[mokuroInstall.stage] || (isEn ? "Installing…" : "Установка…")}
+                                                        </span>
+                                                    </div>
+                                                    <div className="manga-progress-track">
+                                                        <div className="manga-progress-fill is-indeterminate" />
+                                                    </div>
+                                                    {mokuroInstall.line && <div className="manga-mokuro-eta" title={mokuroInstall.line}>{mokuroInstall.line}</div>}
+                                                </div>
+                                            ) : canAutoInstallMokuro ? (
+                                                <>
+                                                    <button type="button" className="manga-primary-btn" onClick={() => void handleInstallMokuro()}>
+                                                        {isEn ? "Install automatically" : "Установить автоматически"}
+                                                    </button>
+                                                    <span>
+                                                        {isEn
+                                                            ? "Python 3.12 (if missing), PyTorch (CUDA on NVIDIA) and mokuro: about 3 GB, 5–15 min. Keep Setsuna open. Manually:"
+                                                            : "Python 3.12 (если его нет), PyTorch (с CUDA для NVIDIA) и mokuro: около 3 ГБ, 5–15 минут. Не закрывай Setsuna. Вручную:"}
+                                                    </span>
+                                                    <code>pip install mokuro</code>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    {isEn ? "Install once in terminal:" : "Установи один раз в терминале:"}
+                                                    <code>pip install mokuro</code>
+                                                </>
+                                            )}
                                         </div>
                                     )}
 
@@ -2974,6 +3094,8 @@ export default function MangaReader({
                                 </div>
                             )}
 
+                            {isMobile && <RemoteMokuroControls key={tabId} title={displayTitle} isEn={isEn} />}
+
                             <div className="manga-modal-footer">
                                 {isMobile && hasAndroidMangaOcrBridge() && (
                                     <button
@@ -3046,7 +3168,7 @@ export default function MangaReader({
                                 <button
                                     type="button"
                                     className="manga-btn"
-                                    disabled={mokuroRunning}
+                                    disabled={mokuroRunning || Boolean(mokuroInstall)}
                                     onClick={() => setMokuroModalOpen(false)}
                                 >
                                     {isEn ? "Close" : "Закрыть"}

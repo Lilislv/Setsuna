@@ -677,11 +677,11 @@ export const addNote = async (settings: any, noteData: any) => {
     }
     const sceneField = [settings.ankiFieldAudio, settings.ankiFieldMeaning, settings.ankiFieldSentence]
         .find(field => field && field !== 'none');
-    const isVideoClip = noteData.audioMediaType === 'video';
+    const isVideoClip = noteData.audioMediaType === 'video' || noteData.clipMediaType === 'video';
     const clipTargetField = isVideoClip && settings.ankiFieldScreenshot && settings.ankiFieldScreenshot !== 'none'
         ? settings.ankiFieldScreenshot
         : sceneField;
-    if (noteData.playerScene && noteData.audioPath && !clipTargetField) {
+    if (noteData.playerScene && (noteData.audioPath || noteData.clipBase64) && !clipTargetField) {
         return { error: settings.appLanguage === 'en' ? 'Select a screenshot, audio, meaning or sentence field for the clip.' : 'Для клипа выбери поле картинки, озвучки, значения или предложения.' };
     }
     if (localAudio && !bridge) {
@@ -704,6 +704,16 @@ export const addNote = async (settings: any, noteData: any) => {
             fields[clipTargetField] = `${fields[clipTargetField] || ""} ${media}`.trim();
         } catch (error: any) {
             return { error: error.message };
+        }
+    } else if (noteData.clipBase64 && clipTargetField && !bridge) {
+        // Phone-recorded scene sent to AnkiConnect (the AnkiDroid bridge stores it below).
+        try {
+            const storedName = await invokeAnki('storeMediaFile', { filename: noteData.clipFilename, data: noteData.clipBase64 });
+            if (typeof storedName !== 'string' || !storedName) throw new Error('Anki did not store the clip');
+            const media = isVideoClip ? inlineSceneVideo(storedName) : `[sound:${storedName}]`;
+            fields[clipTargetField] = `${fields[clipTargetField] || ""} ${media}`.trim();
+        } catch (error: any) {
+            return { error: error?.message || String(error) };
         }
     } else if (!localAudio && noteData.audioUrl && settings.ankiFieldAudio && settings.ankiFieldAudio !== 'none') {
         note.audio = [
@@ -745,6 +755,10 @@ export const addNote = async (settings: any, noteData: any) => {
                 audioField: localAudio ? settings.ankiFieldAudio : '',
                 audioBase64: localAudio?.data || '',
                 audioFilename: localAudio?.filename || '',
+                clipField: noteData.clipBase64 && clipTargetField ? clipTargetField : '',
+                clipBase64: noteData.clipBase64 || '',
+                clipFilename: noteData.clipFilename || '',
+                clipKind: isVideoClip ? 'video' : 'audio',
             };
             const result = parseBridgeResult<{ result: number | null }>(
                 bridge.addNote(JSON.stringify(payload)),

@@ -1,7 +1,7 @@
 import { useCompatibleVideo } from "./useCompatibleVideo";
 import { readWebText, webVideoPage, type WebTrack } from "./webMedia";
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { usePlayerSource } from "./usePlayerSource";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -39,8 +39,11 @@ import { LibraryDialog } from "./PosterPicker";
 import { catalogEntries, cleanReleaseTitle, inferMediaTitle } from "./posterModel";
 import { PlayerLibrary } from "./PlayerLibrary";
 import { usePlayerLibrary } from "./usePlayerLibrary";
+import { MobilePlayerHome } from "./MobilePlayerHome";
+import { isMobileMediaPath, mobileProgressKey, registerMobileFiles } from "./mobileMedia";
 import { episodeProgress, naturalOrder, positionKey, readProgress, suggestedEpisode, type LibraryDirectory } from "./libraryModel";
 import "./player.css";
+import "./mobile.css";
 
 const ESC_MENU_CLOSE_MS = 180;
 
@@ -82,6 +85,7 @@ export default function PlayerWorkspace(
     },
 ) {
     const en = props.language === "en";
+    const isMobile = isMobilePlatform();
     const library = usePlayerLibrary();
     const [libraryOpen, setLibraryOpen] = useState(true);
     const [libraryQueue, setLibraryQueue] = useState<{ root: string; directory: LibraryDirectory } | null>(null);
@@ -100,12 +104,18 @@ export default function PlayerWorkspace(
     const [urlVisible, setUrlVisible] = useState(false);
     const [url, setUrl] = useState("");
     const [error, setError] = useState("");
+    const mobileVideoInputRef = useRef<HTMLInputElement>(null);
     const [escMenuOpen, setEscMenuOpen] = useState(false);
     const [escMenuMounted, setEscMenuMounted] = useState(false);
     const [escMenuVisible, setEscMenuVisible] = useState(false);
     const [escMenuEntering, setEscMenuEntering] = useState(false);
     const escMenuPanelRef = useRef<HTMLDivElement>(null);
     const pendingMenuActionRef = useRef<(() => void) | null>(null);
+
+    useMobileBackHandler(isMobile && deckPickerOpen, MOBILE_BACK_PRIORITY.MODAL, closeDeckPicker);
+    useMobileBackHandler(isMobile && urlVisible, MOBILE_BACK_PRIORITY.MODAL, () => setUrlVisible(false));
+    useMobileBackHandler(isMobile && !libraryOpen, MOBILE_BACK_PRIORITY.SUBVIEW, () => setLibraryOpen(true));
+
     const openLocalMedia = (paths: string[]) => {
         request.current++;
         setLoading(false);
@@ -119,6 +129,10 @@ export default function PlayerWorkspace(
         setUrlVisible(false);
     };
     const choose = async () => {
+        if (isMobile) {
+            mobileVideoInputRef.current?.click();
+            return;
+        }
         try {
             const paths = await open({
                 multiple: true,
@@ -133,7 +147,7 @@ export default function PlayerWorkspace(
         }
     };
     useEffect(() => {
-        if (!isTauri()) return;
+        if (!isTauri() || isMobile) return;
         let disposed = false;
         let stop: (() => void) | undefined;
         void getCurrentWebview()
@@ -206,6 +220,7 @@ export default function PlayerWorkspace(
     const currentSource = sources[index] || "";
     const sidecars = droppedTracks.length ? droppedTracks : libraryQueue?.directory.subtitles || [];
     const [primaryFile, translationFile] = matchSubtitlePaths(currentSource, sidecars, !matchOnly);
+    const mobileKey = isMobileMediaPath(currentSource) ? mobileProgressKey(currentSource) : undefined;
     const sourceFile = fileName(currentSource).split("?")[0];
     const title = libraryQueue
         ? inferMediaTitle(libraryQueue.directory, libraryQueue.root).title
@@ -288,11 +303,10 @@ export default function PlayerWorkspace(
         setEscMenuOpen(false);
     }, []);
 
-    const isMobilePlayer = isMobilePlatform();
-    useMobileBackHandler(isMobilePlayer && escMenuOpen, MOBILE_BACK_PRIORITY.MODAL, () => {
+    useMobileBackHandler(isMobile && escMenuOpen, MOBILE_BACK_PRIORITY.MODAL, () => {
         setEscMenuOpen(false);
     });
-    useMobileBackHandler(isMobilePlayer && Boolean(props.onHome), MOBILE_BACK_PRIORITY.WORKSPACE, () => {
+    useMobileBackHandler(isMobile && libraryOpen && Boolean(props.onHome), MOBILE_BACK_PRIORITY.WORKSPACE, () => {
         if (!props.onHome) return false;
         props.onHome();
     });
@@ -605,7 +619,7 @@ export default function PlayerWorkspace(
                 );
             let nextSource = address.href;
             let tracks: WebTrack[] = [];
-            if (isPage) {
+            if (isPage && !isMobile) {
                 const page = await readWebText(nextSource);
                 if (request.current !== id) return;
                 const media = webVideoPage(page.text, page.url);
@@ -635,6 +649,9 @@ export default function PlayerWorkspace(
     };
     const sourceActions = (
         <div className="sp-source is-library">
+            {isMobile && props.onHome && (
+                <button onClick={() => props.onHome?.()}>{en ? "← Home" : "← Домой"}</button>
+            )}
             {currentSource && (
                 <button onClick={() => setLibraryOpen(false)}>{en ? "Back to video" : "К видео"}</button>
             )}
@@ -651,7 +668,7 @@ export default function PlayerWorkspace(
                     </button>
                 )}
             </div>
-            {urlVisible && libraryOpen && (
+            {urlVisible && libraryOpen && !isMobile && (
                 <form
                     onSubmit={(e) => {
                         e.preventDefault();
@@ -682,7 +699,36 @@ export default function PlayerWorkspace(
         </div>
     );
     return (
-        <div className="sp-workspace">
+        <div className={`sp-workspace${isMobile ? " is-mobile" : ""}`}>
+            {isMobile && (
+                <input
+                    ref={mobileVideoInputRef}
+                    type="file"
+                    multiple
+                    accept="video/*,audio/*,application/x-subrip,text/vtt,text/x-ssa,text/plain,application/octet-stream"
+                    hidden
+                    onChange={(event) => {
+                        const picked = Array.from(event.currentTarget.files || []);
+                        event.currentTarget.value = "";
+                        const paths = registerMobileFiles(picked);
+                        const media = paths.filter(isMediaPath);
+                        const subtitles = paths.filter(isSubtitlePath);
+                        if (!media.length) {
+                            if (subtitles.length && currentSource) {
+                                setMatchOnly(false);
+                                setDroppedTracks(subtitles);
+                                setLibraryOpen(false);
+                            } else if (picked.length) {
+                                setError(en ? "Pick a video or audio file." : "Выбери видео- или аудиофайл.");
+                            }
+                            return;
+                        }
+                        setMatchOnly(media.length > 1);
+                        setDroppedTracks(subtitles);
+                        openLocalMedia(media);
+                    }}
+                />
+            )}
             {deckPickerOpen &&
                 createPortal(
                     <DeckPicker
@@ -690,7 +736,7 @@ export default function PlayerWorkspace(
                         en={en}
                         current={props.settings.playerAnkiDeck}
                         defaultDeck={props.settings.ankiDeck}
-                        tabName={en ? "Anime Player" : "Аниме-плеер"}
+                        tabName={en ? "Video Player" : "Видео-плеер"}
                         onClose={closeDeckPicker}
                         onPick={(deck) => {
                             props.onDeckChange?.(deck);
@@ -699,7 +745,7 @@ export default function PlayerWorkspace(
                     />,
                     document.body,
                 )}
-            {!libraryOpen && urlVisible && (
+            {urlVisible && (!libraryOpen || isMobile) && (
                 <LibraryDialog
                     title={en ? "Open video URL" : "Открыть видео по URL"}
                     en={en}
@@ -721,14 +767,16 @@ export default function PlayerWorkspace(
                             value={url}
                             onChange={(e) => setUrl(e.target.value)}
                         />
-                        <label>
-                            <input
-                                type="checkbox"
-                                checked={pageMode}
-                                onChange={(e) => setPageMode(e.target.checked)}
-                            />
-                            {en ? "Video page" : "Страница с видео"}
-                        </label>
+                        {!isMobile && (
+                            <label>
+                                <input
+                                    type="checkbox"
+                                    checked={pageMode}
+                                    onChange={(e) => setPageMode(e.target.checked)}
+                                />
+                                {en ? "Video page" : "Страница с видео"}
+                            </label>
+                        )}
                         {error && <span role="alert">{error}</span>}
                         <div className="sp-dialog-actions">
                             <button type="button" onClick={() => setUrlVisible(false)}>
@@ -746,7 +794,24 @@ export default function PlayerWorkspace(
                     {en ? "Drop video or subtitles" : "Отпусти видео или субтитры"}
                 </div>
             )}
-            {libraryOpen ? (
+            {libraryOpen && isMobile && (
+                <MobilePlayerHome
+                    en={en}
+                    current={currentSource ? { title, episode: episodeCountLabel(episodeLabel(currentSource, index, en), sources.length, index, en) } : undefined}
+                    error={error}
+                    deckName={props.settings.playerAnkiDeck}
+                    onOpenFiles={() => void choose()}
+                    onResume={currentSource ? () => setLibraryOpen(false) : undefined}
+                    onOpenUrl={() => {
+                        setError("");
+                        setUrlVisible(true);
+                    }}
+                    onDeck={props.onDeckChange ? () => setDeckPickerOpen(true) : undefined}
+                    onSettings={props.onSettings}
+                    onHome={props.onHome}
+                />
+            )}
+            {libraryOpen ? !isMobile && (
                 <PlayerLibrary
                     library={library}
                     en={en}
@@ -765,6 +830,7 @@ export default function PlayerWorkspace(
                     }
                     shortcutsBlocked={props.shortcutsBlocked || deckPickerOpen || urlVisible || escMenuOpen}
                     source={currentSource}
+                    mediaProgressKey={mobileKey || currentSource}
                     primaryFile={primaryFile}
                     translationFile={translationFile}
                     openFile={choose}
@@ -805,6 +871,7 @@ function episodeCountLabel(label: string, total: number, currentIndex: number, e
 
 function Session({
     source,
+    mediaProgressKey,
     openFile,
     nextEpisode,
     autoNext,
@@ -830,6 +897,7 @@ function Session({
     deckName,
 }: Props & {
     source: string;
+    mediaProgressKey: string;
     openFile: () => void;
     nextEpisode?: () => void;
     autoNext: boolean;
@@ -852,6 +920,7 @@ function Session({
     deckName?: string;
 }) {
     const tr = (en: string, ru: string) => (language === "en" ? en : ru);
+    const isMobile = isMobilePlatform();
     const video = useRef<HTMLVideoElement>(null);
 
     const list = useRef<HTMLDivElement>(null);
@@ -865,7 +934,7 @@ function Session({
         () => filterCuesByRegex(rawTranslations, settings.playerSubtitleRegexFilter),
         [rawTranslations, settings.playerSubtitleRegexFilter],
     );
-    const [resume] = useState(() => episodeProgress(readProgress()[source]));
+    const [resume] = useState(() => episodeProgress(readProgress()[mediaProgressKey]));
     const [offset, setOffset] = useState(resume.offset);
     const [translationOffset, setTranslationOffset] = useState(resume.translationOffset);
     const [current, setCurrent] = useState(0);
@@ -907,6 +976,14 @@ function Session({
     usePlayerSource(video, compatible.copy || source, report);
     const mining = useRef(false);
     const [busy, setBusy] = useState(false);
+    useMobileBackHandler(isMobile && Boolean(draft), MOBILE_BACK_PRIORITY.MODAL, () => {
+        if (!busy) setDraft(null);
+    });
+    useMobileBackHandler(isMobile && studyOpen, MOBILE_BACK_PRIORITY.MODAL, () => setStudyOpen(false));
+    useMobileBackHandler(isMobile && moreMenuOpen, MOBILE_BACK_PRIORITY.MODAL, () => setMoreMenuOpen(false));
+    useMobileBackHandler(isMobile && fullscreen, MOBILE_BACK_PRIORITY.READER_OVERLAY, () => {
+        void document.exitFullscreen().catch(() => {});
+    });
     const lastTime = useRef(0);
     const lastSaved = useRef(-1);
     const playing = useRef(false);
@@ -970,9 +1047,9 @@ function Session({
             idleTimerRef.current = window.setTimeout(() => {
                 setControlsIdle(true);
                 idleTimerRef.current = null;
-            }, 2200);
+            }, isMobile ? 3200 : 2200);
         }
-    }, [isPlaying, studyOpen, draft, moreMenuOpen, shortcutsBlocked]);
+    }, [isMobile, isPlaying, studyOpen, draft, moreMenuOpen, shortcutsBlocked]);
     useEffect(() => {
         wakeControls();
     }, [wakeControls]);
@@ -1011,16 +1088,67 @@ function Session({
         if (range.a !== undefined && current > range.a) setRange({ a: range.a, b: current });
     };
     const toggleFullscreen = () => {
-        const action = document.fullscreenElement
-            ? document.exitFullscreen()
-            : document.documentElement.requestFullscreen();
-        void action.catch((error) => report(String(error)));
+        const leaving = Boolean(document.fullscreenElement);
+        const action = leaving ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+        void action
+            .then(() => {
+                if (!isMobile) return;
+                // Phones: fullscreen watches in landscape, leaving it returns to portrait.
+                const orientation = screen.orientation as ScreenOrientation & {
+                    lock?: (o: string) => Promise<void>;
+                    unlock?: () => void;
+                };
+                if (leaving) orientation.unlock?.();
+                else void orientation.lock?.("landscape").catch(() => {});
+            })
+            .catch((error) => report(String(error)));
     };
     const seekByUser = (position: number) => {
         navCueRef.current = null;
         replayEnd.current = null;
         repeats.current = { id: -1, count: 0 };
         seek(position);
+    };
+    const stepBy = (forward: boolean) => {
+        if (settings.playerArrowSeekMode === "subtitle" && cues.length > 0) {
+            moveCue(forward);
+            flashHud(forward ? "›" : "‹");
+        } else {
+            const step = settings.playerRewindSeconds || 2;
+            seekByUser(current + (forward ? step : -step));
+            flashHud(`${forward ? "+" : "-"}${step}s`);
+        }
+    };
+    // Phones: one tap shows/hides the controls, a double tap on the left/right third
+    // steps back/forward, in the middle it plays/pauses.
+    const tapRef = useRef<{ at: number; timer: number | null }>({ at: 0, timer: null });
+    useEffect(() => () => {
+        if (tapRef.current.timer !== null) window.clearTimeout(tapRef.current.timer);
+    }, []);
+    const handleVideoTap = (event: ReactMouseEvent<HTMLVideoElement>) => {
+        if (!isMobile) {
+            togglePlayback();
+            return;
+        }
+        const tap = tapRef.current;
+        const now = Date.now();
+        if (tap.timer !== null && now - tap.at < 300) {
+            window.clearTimeout(tap.timer);
+            tap.timer = null;
+            const rect = event.currentTarget.getBoundingClientRect();
+            const x = (event.clientX - rect.left) / Math.max(1, rect.width);
+            if (x < 0.36) stepBy(false);
+            else if (x > 0.64) stepBy(true);
+            else togglePlayback();
+            wakeControls();
+            return;
+        }
+        tap.at = now;
+        tap.timer = window.setTimeout(() => {
+            tap.timer = null;
+            if (controlsIdle || !isPlaying) wakeControls();
+            else setControlsIdle(true);
+        }, 300);
     };
     const applyAudio = (next: PlaybackAudio) => {
         const element = video.current;
@@ -1075,10 +1203,10 @@ function Session({
         flashHud(`${tr("Synced", "Синхр.")} ${synced.offset >= 0 ? "+" : ""}${synced.offset.toFixed(1)}s`);
     };
     const persist = (time: number, played = false, complete = false) => {
-        if (!source || source.startsWith("https:") || !Number.isFinite(time)) return;
+        if (!mediaProgressKey || mediaProgressKey.startsWith("https:") || !Number.isFinite(time)) return;
         const saved = readProgress();
-        const item = episodeProgress(saved[source]);
-        delete saved[source];
+        const item = episodeProgress(saved[mediaProgressKey]);
+        delete saved[mediaProgressKey];
         try {
             localStorage.setItem(
                 positionKey,
@@ -1086,7 +1214,7 @@ function Session({
                     Object.fromEntries([
                         ...Object.entries(saved).slice(-4999),
                         [
-                            source,
+                            mediaProgressKey,
                             {
                                 ...item,
                                 time,
@@ -1228,7 +1356,7 @@ function Session({
         }
     };
     const updateLastCard = async (explicitCue?: Cue) => {
-        if (mining.current) return;
+        if (isMobile || mining.current) return;
         const selected = explicitCue || cue || previousCue(cues, clock);
         const selectedScene = selected && sceneFor(selected);
         if (!source || !duration) return;
@@ -1350,23 +1478,9 @@ function Session({
                 if ((e.target as HTMLElement)?.closest("button")) return;
                 togglePlayback();
             } else if (match(settings.playerKeyBack || "ArrowLeft")) {
-                if (settings.playerArrowSeekMode === "subtitle" && cues.length > 0) {
-                    moveCue(false);
-                    flashHud("‹");
-                } else {
-                    const step = settings.playerRewindSeconds || 2;
-                    seekByUser(current - step);
-                    flashHud(`-${step}s`);
-                }
+                stepBy(false);
             } else if (match(settings.playerKeyForward || "ArrowRight")) {
-                if (settings.playerArrowSeekMode === "subtitle" && cues.length > 0) {
-                    moveCue(true);
-                    flashHud("›");
-                } else {
-                    const step = settings.playerRewindSeconds || 2;
-                    seekByUser(current + step);
-                    flashHud(`+${step}s`);
-                }
+                stepBy(true);
             } else if (match(settings.playerKeyReplayCue || "r")) {
                 replayCue();
             } else if (match(settings.playerKeyMine || "m")) {
@@ -1593,8 +1707,8 @@ function Session({
                         <video
                             ref={video}
                             playsInline
-                            onClick={togglePlayback}
-                            onDoubleClick={toggleFullscreen}
+                            onClick={handleVideoTap}
+                            onDoubleClick={isMobile ? undefined : toggleFullscreen}
                             onCanPlay={() => setReady(true)}
                             onEmptied={() => {
                                 setReady(false);
@@ -1702,6 +1816,57 @@ function Session({
                             )}
                         </div>
                     )}
+                    {isMobile && source && !controlsIdle && (
+                        <div className="sp-touch-center" onClick={(e) => e.stopPropagation()}>
+                            <button
+                                type="button"
+                                disabled={!cues.length}
+                                onClick={() => {
+                                    moveCue(false);
+                                    wakeControls();
+                                }}
+                                aria-label={tr("Previous line", "Предыдущая реплика")}
+                            >
+                                <svg viewBox="0 0 20 20" width="22" height="22" fill="currentColor" aria-hidden="true" style={{ transform: "scaleX(-1)" }}>
+                                    <path d="M4.5 4.5h1.8v11H4.5zM8.6 5.2 15.6 10l-7 4.8z" />
+                                </svg>
+                            </button>
+                            <button
+                                type="button"
+                                className="is-main"
+                                disabled={!ready}
+                                onClick={() => {
+                                    togglePlayback();
+                                    wakeControls();
+                                }}
+                                aria-label={isPlaying ? tr("Pause", "Пауза") : tr("Play", "Играть")}
+                            >
+                                {isPlaying ? (
+                                    <svg viewBox="0 0 20 20" width="30" height="30" fill="currentColor" aria-hidden="true">
+                                        <rect x="5" y="3.8" width="3.5" height="12.4" rx="1.1" />
+                                        <rect x="11.5" y="3.8" width="3.5" height="12.4" rx="1.1" />
+                                    </svg>
+                                ) : (
+                                    <svg viewBox="0 0 20 20" width="30" height="30" fill="currentColor" aria-hidden="true">
+                                        <path d="M5.5 3.8a.9.9 0 0 1 1.37-.77l9.5 5.7a.9.9 0 0 1 0 1.54l-9.5 5.7A.9.9 0 0 1 5.5 15.2V3.8Z" />
+                                    </svg>
+                                )}
+                            </button>
+                            <button
+                                type="button"
+                                disabled={!cues.length}
+                                onClick={() => {
+                                    moveCue(true);
+                                    wakeControls();
+                                }}
+                                aria-label={tr("Next line", "Следующая реплика")}
+                            >
+                                <svg viewBox="0 0 20 20" width="22" height="22" fill="currentColor" aria-hidden="true">
+                                    <path d="M4.5 4.5h1.8v11H4.5zM8.6 5.2 15.6 10l-7 4.8z" />
+                                </svg>
+                            </button>
+                        </div>
+                    )}
                 </div>
                 <PlayerTransport
                     en={language === "en"}
@@ -1730,15 +1895,28 @@ function Session({
                     onInteract={wakeControls}
                 >
                     <div className="sp-card-actions">
-                        <button
-                            className="sp-mine-edit"
-                            disabled={busy || !duration}
-                            onClick={() => void updateLastCard()}
-                            title={tr("Update last Anki card with clip & frame (U)", "Прикрепить кадр и звук к последней карточке Anki (U)")}
-                            aria-label={tr("Update last Anki card", "Обновить последнюю карточку Anki")}
-                        >
-                            {busy ? "…" : "↻"}
-                        </button>
+                        {isMobile && (
+                            <button
+                                className="sp-mine-quick"
+                                disabled={busy || !duration}
+                                onClick={() => void mine(false)}
+                                title={tr("Add this line to Anki with its clip", "Добавить реплику в Anki с клипом")}
+                                aria-label={tr("Add line to Anki", "Добавить реплику в Anki")}
+                            >
+                                {busy ? "…" : "+ Anki"}
+                            </button>
+                        )}
+                        {!isMobile && (
+                            <button
+                                className="sp-mine-edit"
+                                disabled={busy || !duration}
+                                onClick={() => void updateLastCard()}
+                                title={tr("Update last Anki card with clip & frame (U)", "Прикрепить кадр и звук к последней карточке Anki (U)")}
+                                aria-label={tr("Update last Anki card", "Обновить последнюю карточку Anki")}
+                            >
+                                {busy ? "…" : "↻"}
+                            </button>
+                        )}
                         <button
                             className="sp-mine-edit"
                             disabled={busy || !duration}
@@ -2030,7 +2208,7 @@ function Session({
                         onSave={(data) => saveCard(data, true)}
                     />
                 )}
-                {compatible.failed && source && !source.startsWith("https:") && (
+                {!isMobile && compatible.failed && source && !source.startsWith("https:") && (
                     <div className="sp-controls">
                         {compatible.busy ? (
                             <>

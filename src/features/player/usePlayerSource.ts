@@ -1,6 +1,7 @@
 import { useEffect, type RefObject } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type Hls from "hls.js";
+import { isMobileMediaPath, mobileMediaUrl } from "./mobileMedia";
 
 export function usePlayerSource(
     video: RefObject<HTMLVideoElement | null>,
@@ -31,7 +32,8 @@ export function usePlayerSource(
                     if (!closed) onError(String(error));
                 });
         } else {
-            element.src = source.startsWith("https:") ? source : convertFileSrc(source);
+            const isDirectUrl = /^(?:https?|blob):/i.test(source);
+            element.src = isMobileMediaPath(source) ? mobileMediaUrl(source) : isDirectUrl ? source : convertFileSrc(source);
         }
         return () => {
             closed = true;

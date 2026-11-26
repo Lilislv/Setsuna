@@ -92,8 +92,8 @@
     min-height: 0;
     overflow: auto;
     display: flex;
-    justify-content: center;
-    align-items: center;
+    justify-content: flex-start;
+    align-items: flex-start;
     padding: 12px 16px;
 }
 
@@ -106,13 +106,13 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    max-width: 100%;
-    max-height: 100%;
+    margin: auto;
+    flex: none;
 }
 
 .manga-spread-stage.mode-webtoon {
     flex-direction: column;
-    max-height: none;
+    margin-block: 0;
     gap: 10px;
     padding-bottom: 56px;
 }
@@ -130,31 +130,6 @@
     overflow: visible;
 }
 
-.manga-page-frame.fit-height {
-    height: calc(100vh - 24px);
-    max-height: 100%;
-    max-width: 100%;
-    width: auto;
-}
-
-.manga-spread-stage.mode-spread .manga-page-frame.fit-height {
-    max-width: calc(50vw - 24px);
-}
-
-.manga-page-frame.fit-width {
-    width: min(920px, calc(100vw - 32px));
-    height: auto;
-}
-
-.manga-spread-stage.mode-spread .manga-page-frame.fit-width {
-    width: min(560px, calc(50vw - 20px));
-}
-
-.manga-page-frame.fit-original {
-    width: auto;
-    height: auto;
-}
-
 .manga-page-frame.is-dimmed .manga-page-img {
     filter: brightness(0.86) contrast(1.03);
 }
@@ -163,7 +138,7 @@
     display: block;
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    object-fit: fill;
     pointer-events: none;
 }
 
@@ -242,14 +217,14 @@
     margin-block-start: 0.45em;
 }
 
-.manga-overlay-layer .manga-bubble.is-horizontal:hover,
-.manga-overlay-layer .manga-bubble.is-horizontal.is-active {
+.manga-overlay-layer .manga-bubble.is-horizontal:not(.is-placed):hover,
+.manga-overlay-layer .manga-bubble.is-horizontal:not(.is-placed).is-active {
     height: auto !important;
     min-height: var(--bubble-h);
 }
 
-.manga-overlay-layer .manga-bubble.is-vertical:hover,
-.manga-overlay-layer .manga-bubble.is-vertical.is-active {
+.manga-overlay-layer .manga-bubble.is-vertical:not(.is-placed):hover,
+.manga-overlay-layer .manga-bubble.is-vertical:not(.is-placed).is-active {
     width: auto !important;
     min-width: var(--bubble-w);
 }
@@ -261,7 +236,31 @@
     padding: 0 !important;
     margin: 0 !important;
     border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
     display: inline !important;
+}
+
+/* Lines placed by Mokuro linesCoords: every column sits on its printed text. */
+.manga-bubble.is-placed .manga-bubble-text {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    inline-size: auto;
+}
+
+.manga-bubble-line.is-placed {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: visible;
+}
+
+.manga-bubble-run {
+    display: block;
 }
 
 /* Mode: hover (invisible art-first; shows crisp opaque card only when hovered/active) */
@@ -631,6 +630,13 @@
     font-size: 11.5px;
     color: var(--text-muted, #9ea7b5);
     font-variant-numeric: tabular-nums;
+}
+
+/* pip / winget output during the one-click Mokuro install: one line, never wraps the dialog */
+.manga-mokuro-hint .manga-mokuro-eta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .manga-mokuro-error {

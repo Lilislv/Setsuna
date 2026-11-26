@@ -2,15 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Tab } from "../../utils/constants";
 import {
     createAppDataFileMetadata,
+    deleteDriveFile,
     downloadAppDataJson,
     getAccessToken,
     loadStoredGoogleRefreshToken,
     uploadAppDataJson,
 } from "../../utils/gdrive";
-import { downloadEpubFromDrive, openEpubBook, uploadEpubToDrive } from "./epubApi";
-import { openMangaVolume } from "../manga/mangaApi";
+import { downloadEpubFromDrive, loadEpubCover, openEpubBook, uploadEpubToDrive } from "./epubApi";
+import { loadMangaCover, openMangaVolume } from "../manga/mangaApi";
 import { isMangaTabData } from "../manga/mangaModel";
-import { setMemoryCover } from "./epubCoverCache";
+import { compactCoverDataUrl, getCachedCover, setMemoryCover } from "./epubCoverCache";
+import { fetchDriveBookCover } from "./driveCover";
 import {
     buildEpubSyncFingerprint,
     emptySyncManifest,
@@ -48,22 +50,25 @@ const FOCUS_THROTTLE_MS = 20_000;
 const AUTO_PUSH_DEBOUNCE_MS = 5_000;
 const PERIODIC_SYNC_MS = 180_000;
 
-let cachedToken: { value: string; expiresAt: number } | null = null;
+let cachedToken: { refreshToken: string; token: Promise<string>; expiresAt: number } | null = null;
 
 async function getValidAccessToken(fallbackRefreshToken?: string): Promise<string | null> {
     const now = Date.now();
-    if (cachedToken && now < cachedToken.expiresAt) {
-        return cachedToken.value;
-    }
     const stored = await loadStoredGoogleRefreshToken().catch(() => null);
     const refreshToken = (stored && stored.trim()) ? stored.trim() : (fallbackRefreshToken?.trim() || '');
     if (!refreshToken) {
         cachedToken = null;
         return null;
     }
-    const token = await getAccessToken(refreshToken);
-    cachedToken = { value: token, expiresAt: now + TOKEN_TTL_MS };
-    return token;
+    if (cachedToken?.refreshToken === refreshToken && now < cachedToken.expiresAt) return cachedToken.token;
+    const token = getAccessToken(refreshToken);
+    cachedToken = { refreshToken, token, expiresAt: now + TOKEN_TTL_MS };
+    try {
+        return await token;
+    } catch (error) {
+        if (cachedToken?.token === token) cachedToken = null;
+        throw error;
+    }
 }
 
 export function useEpubSync({
@@ -82,6 +87,14 @@ export function useEpubSync({
     const [downloadingBookId, setDownloadingBookId] = useState<number | null>(null);
 
     const syncingRef = useRef(false);
+    const uploadingRef = useRef(false);
+    const failedUploadsRef = useRef(new Map<string, number>());
+    const failedCloudCoversRef = useRef(new Map<string, number>());
+    const pendingDownloadsRef = useRef(new Map<number, Promise<boolean>>());
+    const latestDownloadRef = useRef<number | null>(null);
+    const queuedPushRef = useRef(false);
+    const enabledRef = useRef(enabled);
+    enabledRef.current = enabled;
     const lastPullAtRef = useRef(0);
     const lastSyncedFingerprintRef = useRef<string>("");
     const debounceTimerRef = useRef<number | null>(null);
@@ -92,8 +105,109 @@ export function useEpubSync({
     const fallbackRefreshTokenRef = useRef(fallbackRefreshToken);
     fallbackRefreshTokenRef.current = fallbackRefreshToken;
 
-    const syncNow = useCallback(async (opts?: { silent?: boolean; forcePush?: boolean }) => {
-        if (!enabled || syncingRef.current) return;
+    const runBackgroundWork = useCallback(async (snapshot: Tab[], account: string | undefined) => {
+        if (uploadingRef.current) return;
+        uploadingRef.current = true;
+        try {
+            // Older libraries may have only a disk thumbnail or an embedded cover.
+            // Read these after metadata is visible. A failed/no-cover book cannot starve later books.
+            for (const tab of snapshot) {
+                if (!enabledRef.current) return;
+                const path = tab.epub?.path;
+                if (!path || tab.mode !== "epub" || tab.archived || tab.epub?.cloudOnly || tab.epub?.coverThumb) continue;
+                let cover = getCachedCover(path);
+                if (cover === undefined) {
+                    try {
+                        cover = isMangaTabData(tab.epub) ? await loadMangaCover(path) : await loadEpubCover(path);
+                    } catch {
+                        continue;
+                    }
+                    if (getCachedCover(path) === undefined) setMemoryCover(path, cover);
+                }
+                if (!cover) continue;
+                const thumb = await compactCoverDataUrl(cover).catch(() => null);
+                if (thumb && enabledRef.current) {
+                    setTabs((prev) => prev.map((t) => t.id === tab.id && t.epub?.path === path && !t.epub.coverThumb
+                        ? { ...t, epub: { ...t.epub, coverThumb: thumb } } : t));
+                }
+            }
+
+            // Cloud-only books whose uploader never sent a thumbnail (older builds):
+            // read the cover from the Drive file with range requests, then publish it.
+            for (const tab of snapshot) {
+                if (!enabledRef.current) return;
+                const fileId = tab.epub?.driveFileId;
+                if (!fileId || tab.mode !== "epub" || tab.archived || !tab.epub?.cloudOnly || tab.epub.coverThumb) continue;
+                const ext = (tab.epub.fileExt || "").toLowerCase();
+                const kind = isMangaTabData(tab.epub) || ext === "cbz" || ext === "zip" ? "manga" : ext === "epub" ? "epub" : null;
+                if (!kind || (failedCloudCoversRef.current.get(fileId) || 0) > Date.now()) continue;
+                const token = await getValidAccessToken(fallbackRefreshTokenRef.current);
+                if (!token || cachedToken?.refreshToken !== account || !enabledRef.current) return;
+                let thumb: string | null = null;
+                try {
+                    thumb = await fetchDriveBookCover(token, fileId, kind);
+                } catch {
+                    thumb = null;
+                }
+                if (!thumb) {
+                    failedCloudCoversRef.current.set(fileId, Date.now() + 6 * 60 * 60 * 1000);
+                    continue;
+                }
+                setTabs((prev) => prev.map((t) => t.id === tab.id && t.epub?.driveFileId === fileId && !t.epub.coverThumb
+                    ? { ...t, epub: { ...t.epub, coverThumb: thumb } } : t));
+            }
+
+            for (const tab of snapshot) {
+                if (!enabledRef.current || !uploadFilesRef.current) return;
+                const path = tab.epub?.path;
+                if (!path || tab.epub?.cloudOnly || tab.epub?.driveFileId || tab.epub?.fileExt === "manga-dir"
+                    || !/\.[a-z0-9]{2,8}$/i.test(path)) continue;
+                const entry = tabToSyncEntry(tab);
+                if (!entry) continue;
+                const revision = tab.epub?.fileRevision || 0;
+                const key = JSON.stringify([tab.id, path, revision]);
+                if ((failedUploadsRef.current.get(key) || 0) > Date.now()) continue;
+                const stillPending = (t: Tab) => t.id === tab.id && !t.archived && t.epub?.path === path
+                    && !t.epub.cloudOnly && !t.epub.driveFileId && (t.epub.fileRevision || 0) === revision;
+                if (!tabsRef.current.some(stillPending)) continue;
+                const ext = inferFileExtFromPath(path);
+                const token = await getValidAccessToken(fallbackRefreshTokenRef.current);
+                if (!token || cachedToken?.refreshToken !== account || !uploadFilesRef.current || !enabledRef.current) return;
+                let newFileId: string | undefined;
+                try {
+                    newFileId = await createAppDataFileMetadata(token, `setsuna_epub_${entry.bookKey.slice(0, 48)}.${ext}`, {
+                        setsunaType: "epub-book",
+                        bookKey: entry.bookKey.slice(0, 100),
+                    });
+                    await uploadEpubToDrive(token, path, newFileId);
+                } catch (error) {
+                    if (newFileId) await deleteDriveFile(token, newFileId).catch(() => {});
+                    const permanent = /exceeds 250 MB|file is empty/i.test(String(error));
+                    failedUploadsRef.current.set(key, permanent ? Infinity : Date.now() + PERIODIC_SYNC_MS);
+                    continue;
+                }
+                if (!tabsRef.current.some(stillPending)) {
+                    await deleteDriveFile(token, newFileId).catch(() => {});
+                    continue;
+                }
+                // Publish the new ID through the normal serialized manifest sync.
+                setTabs((prev) => prev.map((t) => stillPending(t) && t.epub
+                    ? { ...t, epub: { ...t.epub, driveFileId: newFileId, fileExt: ext } } : t));
+            }
+        } catch (error) {
+            setError(error instanceof Error ? error.message : String(error));
+        } finally {
+            uploadingRef.current = false;
+        }
+    }, [setTabs, tabsRef]);
+
+    const syncNow = useCallback(async (opts?: { silent?: boolean; forcePush?: boolean }): Promise<void> => {
+        if (!enabled) return;
+        if (syncingRef.current) {
+            if (opts?.forcePush) queuedPushRef.current = true;
+            return;
+        }
+        if (opts?.forcePush && !opts.silent) failedUploadsRef.current.clear();
         syncingRef.current = true;
         if (!opts?.silent) {
             setStatus("syncing");
@@ -101,97 +215,43 @@ export function useEpubSync({
         }
 
         try {
-            let accessToken: string | null;
-            try {
-                accessToken = await getValidAccessToken(fallbackRefreshTokenRef.current);
-            } catch {
-                // Retry once by clearing cached token
-                cachedToken = null;
-                accessToken = await getValidAccessToken(fallbackRefreshTokenRef.current);
-            }
+            let accessToken = await getValidAccessToken(fallbackRefreshTokenRef.current);
             if (!accessToken) {
                 setStatus("disconnected");
                 return;
             }
-
-            // 1. Pull latest remote manifest and merge cleanly with local EPUB tabs
-            const remote = await downloadAppDataJson<EpubSyncManifest>(
-                accessToken,
-                EPUB_SYNC_FILENAME,
-                emptySyncManifest(),
-            );
+            let remote: EpubSyncManifest;
+            try {
+                remote = await downloadAppDataJson(accessToken, EPUB_SYNC_FILENAME, emptySyncManifest());
+            } catch (error) {
+                if (!(error instanceof Error && "status" in error && error.status === 401)) throw error;
+                cachedToken = null;
+                accessToken = await getValidAccessToken(fallbackRefreshTokenRef.current);
+                if (!accessToken) {
+                    setStatus("disconnected");
+                    return;
+                }
+                remote = await downloadAppDataJson(accessToken, EPUB_SYNC_FILENAME, emptySyncManifest());
+            }
 
             const currentTabs = tabsRef.current;
             const merged = mergeManifestWithLocalTabs(currentTabs, remote, () => allocateTabIdRef.current());
-            let workingTabs = merged.nextTabs;
-            let workingManifest = merged.mergedManifest;
-            let needManifestUpload = merged.remoteChanged || Boolean(opts?.forcePush);
-
+            const workingTabs = merged.nextTabs;
+            const workingManifest = merged.mergedManifest;
             if (merged.localChanged) {
-                setTabs(workingTabs);
+                setTabs((prev) => prev === currentTabs ? workingTabs
+                    : mergeManifestWithLocalTabs(prev, remote, () => allocateTabIdRef.current()).nextTabs);
             }
 
-            // 2. Optionally upload local book files that aren't in Drive AppData yet (max 2 per cycle)
-            if (uploadFilesRef.current) {
-                let uploadedCount = 0;
-                for (let i = 0; i < workingTabs.length && uploadedCount < 2; i++) {
-                    const tab = workingTabs[i];
-                    if (
-                        tab.mode !== "epub"
-                        || tab.archived
-                        || !tab.epub?.path
-                        || tab.epub.cloudOnly
-                        || tab.epub.driveFileId
-                        || tab.epub.fileExt === "manga-dir"
-                        || !/\.[a-z0-9]{2,7}$/i.test(tab.epub.path)
-                    ) {
-                        continue;
-                    }
-                    const entry = tabToSyncEntry(tab);
-                    if (!entry) continue;
-                    const ext = inferFileExtFromPath(tab.epub.path);
-                    const fileName = `setsuna_epub_${entry.bookKey.slice(0, 48)}.${ext}`;
-                    try {
-                        const driveFileId = await createAppDataFileMetadata(accessToken, fileName, {
-                            setsunaType: "epub-book",
-                            bookKey: entry.bookKey.slice(0, 100),
-                        });
-                        await uploadEpubToDrive(accessToken, tab.epub.path, driveFileId);
-                        uploadedCount += 1;
-                        needManifestUpload = true;
-
-                        // Update both local tab and manifest entry with driveFileId
-                        workingManifest = {
-                            ...workingManifest,
-                            books: {
-                                ...workingManifest.books,
-                                [entry.bookKey]: {
-                                    ...workingManifest.books[entry.bookKey],
-                                    driveFileId,
-                                    fileExt: ext,
-                                },
-                            },
-                        };
-                        const updatedId = tab.id;
-                        workingTabs = workingTabs.map((t) => (
-                            t.id === updatedId && t.epub
-                                ? { ...t, epub: { ...t.epub, driveFileId, fileExt: ext } }
-                                : t
-                        ));
-                        setTabs((prev) => prev.map((t) => (
-                            t.id === updatedId && t.epub
-                                ? { ...t, epub: { ...t.epub, driveFileId, fileExt: ext } }
-                                : t
-                        )));
-                    } catch {
-                        // Skip oversized or unreadable files without blocking position sync
+            if ((merged.remoteChanged || opts?.forcePush) && Object.keys(workingManifest.books).length > 0) {
+                // Keep a previously downloadable revision available until its replacement is fully uploaded.
+                for (const [key, entry] of Object.entries(workingManifest.books)) {
+                    const previous = remote.books?.[key];
+                    if (!entry.driveFileId && previous?.driveFileId && (entry.fileRevision || 0) > (previous.fileRevision || 0)) {
+                        workingManifest.books[key] = { ...entry, driveFileId: previous.driveFileId,
+                            fileRevision: previous.fileRevision, fileExt: previous.fileExt, hasMokuro: previous.hasMokuro };
                     }
                 }
-            }
-
-            // 3. Push merged manifest when anything changed locally or new files uploaded
-            if (needManifestUpload && Object.keys(workingManifest.books).length > 0) {
-                workingManifest = { ...workingManifest, updatedAt: Date.now() };
                 await uploadAppDataJson(accessToken, EPUB_SYNC_FILENAME, workingManifest);
             }
 
@@ -200,17 +260,22 @@ export function useEpubSync({
             setLastSyncedAt(Date.now());
             setStatus("synced");
             setError(null);
+
+            void runBackgroundWork(workingTabs, cachedToken?.refreshToken);
         } catch (err: any) {
             setStatus("error");
             setError(err?.message || String(err));
         } finally {
             syncingRef.current = false;
+            if (queuedPushRef.current && enabledRef.current) {
+                queuedPushRef.current = false;
+                void syncNow({ silent: true, forcePush: true });
+            }
         }
-    }, [enabled, tabsRef, setTabs]);
+    }, [enabled, tabsRef, setTabs, runBackgroundWork]);
 
-    const downloadCloudBook = useCallback(async (tab: Tab): Promise<boolean> => {
+    const downloadBook = useCallback(async (tab: Tab): Promise<boolean> => {
         if (!tab.epub?.driveFileId) return false;
-        setDownloadingBookId(tab.id);
         setError(null);
         try {
             const accessToken = await getValidAccessToken(fallbackRefreshTokenRef.current);
@@ -220,15 +285,18 @@ export function useEpubSync({
             }
             const ext = tab.epub.fileExt || (tab.epub.format === "manga" ? "cbz" : "epub");
             const isManga = isMangaTabData(tab.epub) || ext === "cbz" || ext === "zip";
+            const matchesDownload = (t: Tab) => t.id === tab.id && !t.archived && t.epub?.cloudOnly
+                && t.epub.driveFileId === tab.epub?.driveFileId && t.epub.fileRevision === tab.epub?.fileRevision;
             const storedPath = await downloadEpubFromDrive(accessToken, tab.epub.driveFileId, tab.id, ext);
             if (isManga) {
                 const meta = await openMangaVolume(storedPath);
-                const coverToCache = meta.cover || tab.epub.coverThumb || null;
+                if (!tabsRef.current.some(matchesDownload)) return false;
+                const coverToCache = tab.epub.coverThumb || meta.cover || null;
                 if (coverToCache) {
                     setMemoryCover(storedPath, coverToCache);
                 }
                 setTabs((prev) => prev.map((t) => (
-                    t.id === tab.id && t.epub
+                    matchesDownload(t) && t.epub
                         ? {
                               ...t,
                               name: t.epub.title || meta.title || t.name,
@@ -250,11 +318,11 @@ export function useEpubSync({
                 return true;
             }
             const meta = await openEpubBook(storedPath);
-            if (meta.cover) {
-                setMemoryCover(storedPath, meta.cover);
-            }
+            if (!tabsRef.current.some(matchesDownload)) return false;
+            const coverToCache = tab.epub.coverThumb || meta.cover;
+            if (coverToCache) setMemoryCover(storedPath, coverToCache);
             setTabs((prev) => prev.map((t) => (
-                t.id === tab.id && t.epub
+                matchesDownload(t) && t.epub
                     ? {
                           ...t,
                           name: meta.title || t.name,
@@ -275,17 +343,28 @@ export function useEpubSync({
             )));
             return true;
         } catch (err: any) {
-            setError(err?.message || String(err));
+            if (latestDownloadRef.current === tab.id) setError(err?.message || String(err));
             return false;
-        } finally {
-            setDownloadingBookId(null);
         }
-    }, [setTabs]);
+    }, [setTabs, tabsRef]);
+
+    const downloadCloudBook = useCallback((tab: Tab): Promise<boolean> => {
+        latestDownloadRef.current = tab.id;
+        setDownloadingBookId(tab.id);
+        let pending = pendingDownloadsRef.current.get(tab.id);
+        if (!pending) {
+            pending = downloadBook(tab).finally(() => {
+                pendingDownloadsRef.current.delete(tab.id);
+                if (latestDownloadRef.current === tab.id) setDownloadingBookId(null);
+            });
+            pendingDownloadsRef.current.set(tab.id, pending);
+        }
+        return pending;
+    }, [downloadBook]);
 
     // Auto-pull whenever user enters EPUB workspace or connects Google Drive
     useEffect(() => {
         if (!enabled || !activeInEpub) return;
-        cachedToken = null;
         void syncNow({ silent: false });
     }, [enabled, activeInEpub, fallbackRefreshToken, syncNow]);
 

@@ -275,11 +275,11 @@ export default function SettingsMangaOcr({ language, isMobile }: SettingsMangaOc
                             />
                         </label>
                         <label style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                            {isEn ? "Access token (optional)" : "Токен доступа (необязательно)"}
+                            {isEn ? "Access token (required for full-volume Mokuro)" : "Токен доступа (обязателен для Mokuro всего тома)"}
                             <input
                                 type="text"
                                 className="modern-input"
-                                placeholder={isEn ? "Leave empty on trusted home Wi-Fi" : "Можно оставить пустым в домашней сети"}
+                                placeholder={isEn ? "Use the same token on the phone" : "Укажи такой же токен на телефоне"}
                                 value={prefs.pcServerToken}
                                 onChange={(e) => patchPrefs({ pcServerToken: e.target.value })}
                                 style={{ marginTop: 6 }}

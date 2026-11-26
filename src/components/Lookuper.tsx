@@ -1,6 +1,7 @@
 import { addPlayerNote, subtitleScenes } from "../features/player/mining";
 import type { PlayerScene } from "../features/player/model";
 import { createHoverScanQueue, findHoverTextPoint, sameHoverTextPoint, scanTextNodes, selectScanRange } from '../utils/hoverScan';
+import { trackLookup } from '../utils/lookupStats';
 ﻿import React, { useEffect, useState } from "react";
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useMemo, useRef } from "react";
@@ -850,7 +851,9 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
 
     const borderColor = ankiStatus === 'red' ? colorSame : ankiStatus === 'blue' ? colorOther : ankiStatus === 'green' ? colorNew : 'var(--border-main)';
     const isBtnDisabled = isAdding || (ankiStatus === 'red' && !allowSame) || (ankiStatus === 'blue' && !allowOther);
-    const tooltipText = ankiStatus === 'red' ? t('anki.inDeck') : ankiStatus === 'blue' ? t('anki.inOtherDeck') : t('anki.add');
+    // A tab can route cards to its own deck; name it so a wrong binding is visible before adding.
+    const deckHint = settings?.ankiDeck ? ` → ${settings.ankiDeck}` : '';
+    const tooltipText = ankiStatus === 'red' ? t('anki.inDeck') : ankiStatus === 'blue' ? t('anki.inOtherDeck') : `${t('anki.add')}${deckHint}`;
     const cardExists = ankiStatus === 'red' || ankiStatus === 'blue';
     const openExistingCard = async () => {
         if (!cardExists || !settings?.ankiFieldWord) return;
@@ -899,7 +902,7 @@ export const LookupEntryItem = ({ group, settings, sentence, onWordLookup, activ
                             if (!hasAnki) { alert(t('anki.configure')); return; }
                             handleAddToAnki(firstDictName, group.cleanDictionaries, true);
                         }} 
-                        disabled={isBtnDisabled && hasAnki} title={hasAnki ? t('anki.addScreenshot') : t('anki.configure')}
+                        disabled={isBtnDisabled && hasAnki} title={hasAnki ? `${t('anki.addScreenshot')}${deckHint}` : t('anki.configure')}
                         style={{ ...baseBtnStyle }}
                     >
                         {isAdding ? '...' : <><span style={{fontSize: '16px', marginTop:'-2px'}}>+</span><IconCamera /></>}
@@ -1312,7 +1315,8 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
           };
           const english = extractEnglishWordAtCursor(sentence, codePointToCodeUnitOffset(sentence, cursor));
           try {
-              const result = selectActiveLookupResult(await invoke<any>('scan_cursor', { sentence, cursor }), sentence, scanLive.current.settings);
+              const scanned = await trackLookup(() => invoke<any>('scan_cursor', { sentence, cursor }), (r) => Boolean(r?.entries?.length));
+              const result = selectActiveLookupResult(scanned, sentence, scanLive.current.settings);
               if (!isCurrent()) return;
               if (result?.entries?.length) {
                   const entries = result.entries;
@@ -1361,12 +1365,27 @@ export default function Lookuper({ stack = [], onAppend, onReplace, onReplaceAt,
           if (!matches(event)) queue.request(null);
       };
       const handleBlur = () => { triggerHeld = false; queue.request(null); };
+      // With Shift as the lookup key, a click (or touchpad tap) while it is held made
+      // Chromium extend a native selection from the top of the page over the text.
+      // Over scannable text it is a lookup instead.
+      const handleMouseDown = (event: MouseEvent) => {
+          if (event.button !== 0 || !matches(event)) return;
+          const target = event.target instanceof Element ? event.target : null;
+          if (!target || target.closest('input, textarea, select, button, a, [contenteditable="true"]')) return;
+          const point = findHoverTextPoint(event.clientX, event.clientY);
+          if (!point) return;
+          event.preventDefault();
+          scanPointer.current = { x: event.clientX, y: event.clientY };
+          queue.request(point);
+      };
+      window.addEventListener('mousedown', handleMouseDown, { capture: true });
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('keydown', handleKeyDown, { capture: true });
       window.addEventListener('keyup', handleKeyUp, { capture: true });
       window.addEventListener('blur', handleBlur);
       return () => {
           queue.dispose();
+          window.removeEventListener('mousedown', handleMouseDown, { capture: true });
           window.removeEventListener('mousemove', handleMouseMove);
           window.removeEventListener('keydown', handleKeyDown, { capture: true });
           window.removeEventListener('keyup', handleKeyUp, { capture: true });

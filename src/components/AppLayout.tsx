@@ -353,6 +353,7 @@ export const MobileLayout = ({
     settingsRequest,
     epubBooks = [],
     onOpenEpubFile,
+    onSelectEpubBook,
     onRemoveEpubBook,
     onRemoveEpubBooks,
     onPatchEpubBooks,
@@ -1341,7 +1342,7 @@ export const MobileLayout = ({
                         onHome={() => setActiveMobileView('text')}
                         onSettings={() => openSettingsPage('reading')}
                         onOpenFile={() => onOpenEpubFile?.()}
-                        onSelectBook={(tabId) => switchTab(tabId)}
+                        onSelectBook={(tabId) => (onSelectEpubBook ? onSelectEpubBook(tabId) : switchTab(tabId))}
                         onRemoveBook={(tabId) => onRemoveEpubBook?.(tabId)}
                         onRemoveBooks={(tabIds) => onRemoveEpubBooks?.(tabIds)}
                         onPatchBooks={(tabIds, patch) => onPatchEpubBooks?.(tabIds, patch)}

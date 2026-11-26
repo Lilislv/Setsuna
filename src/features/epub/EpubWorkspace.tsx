@@ -138,7 +138,7 @@ export default function EpubWorkspace({
     const t = getTranslator(language);
 
     const [viewMode, setViewMode] = useState<"library" | "reader">(() => {
-        if (resumePromptBookId || catalogPrompt) return "library";
+        if (resumePromptBookId || catalogPrompt || activeBookTab?.epub?.cloudOnly) return "library";
         if (lastEpubViewMode === "library") return "library";
         if (lastEpubViewMode === "reader" && activeBookTab) return "reader";
         return activeBookTab ? "reader" : "library";
@@ -189,6 +189,9 @@ export default function EpubWorkspace({
         }
     }, [viewMode]);
 
+    const pendingCloudOpenIdRef = useRef<number | null>(null);
+    const pendingCloudStartedRef = useRef(false);
+
     // Switch into reader view automatically when a new book tab becomes active,
     // except when any book was just removed/deleted (stay in or return to the
     // library instead of opening a fallback book).
@@ -198,7 +201,9 @@ export default function EpubWorkspace({
         const nextBookIds = new Set(books.map((b) => b.id));
         const prevId = prevActiveTabIdRef.current;
         const prevBookIds = prevBookIdsRef.current;
-        setViewMode((cur) =>
+        const waitingForSelection = pendingCloudOpenIdRef.current !== null
+            && (activeTabId !== pendingCloudOpenIdRef.current || !bookPath || activeBookTab?.epub?.cloudOnly);
+        setViewMode((cur) => waitingForSelection ? "library" :
             resolveEpubViewModeAfterChange({
                 currentViewMode: cur,
                 prevActiveTabId: prevId,
@@ -210,7 +215,7 @@ export default function EpubWorkspace({
         );
         prevActiveTabIdRef.current = activeTabId;
         prevBookIdsRef.current = nextBookIds;
-    }, [activeTabId, books, catalogPrompt]);
+    }, [activeTabId, bookPath, activeBookTab?.epub?.cloudOnly, books, catalogPrompt]);
 
     // Esc menu enter/exit animation lifecycle (identical to AppMenu.tsx)
     useEffect(() => {
@@ -520,9 +525,46 @@ export default function EpubWorkspace({
     }, [activeBookTab, bookPath, bookMeta, fetchChapter, onProgressChange]);
 
     const handleSelectBook = useCallback((tabId: number) => {
+        const target = books.find((b) => b.id === tabId);
+        if (!target?.epub || target.archived) return;
+        if (target.epub.cloudOnly) {
+            if (!target.epub.driveFileId) return;
+            setViewMode("library");
+            pendingCloudOpenIdRef.current = tabId;
+            pendingCloudStartedRef.current = downloadingBookId === tabId;
+            onSelectBook(tabId);
+            return;
+        }
+        if (!target.epub.path) return;
+        pendingCloudOpenIdRef.current = null;
+        pendingCloudStartedRef.current = false;
         onSelectBook(tabId);
         setViewMode("reader");
-    }, [onSelectBook]);
+    }, [books, downloadingBookId, onSelectBook]);
+
+    useEffect(() => {
+        const pendingId = pendingCloudOpenIdRef.current;
+        if (pendingId === null) return;
+        if (downloadingBookId === pendingId) {
+            pendingCloudStartedRef.current = true;
+            return;
+        }
+        const target = books.find((b) => b.id === pendingId);
+        if (!target) {
+            pendingCloudOpenIdRef.current = null;
+            pendingCloudStartedRef.current = false;
+            return;
+        }
+        if (!target.epub?.cloudOnly && target.epub?.path && activeTabId === pendingId) {
+            pendingCloudOpenIdRef.current = null;
+            pendingCloudStartedRef.current = false;
+            setViewMode("reader");
+        } else if (target.epub?.cloudOnly && pendingCloudStartedRef.current && downloadingBookId === null) {
+            // Download finished with an error — stay in library rather than opening an old book
+            pendingCloudOpenIdRef.current = null;
+            pendingCloudStartedRef.current = false;
+        }
+    }, [activeTabId, books, downloadingBookId]);
 
     const handleWorkspaceConvertToCbz = useCallback(async (tabId: number): Promise<MangaExportResult | null> => {
         if (!onConvertMangaToCbz) return null;
@@ -721,6 +763,8 @@ export default function EpubWorkspace({
         ? books.find((b) => b.id === resumePromptBookId && !b.archived) || null
         : null;
 
+    const resumeCover = (resumeBook?.epub?.path && coversByPath[resumeBook.epub.path]) || resumeBook?.epub?.coverThumb;
+
     useMobileBackHandler(isMobile && Boolean(resumeBook), MOBILE_BACK_PRIORITY.MODAL, () => {
         onDismissResumePrompt?.();
     });
@@ -916,9 +960,9 @@ export default function EpubWorkspace({
                     <div className="epub-modal-card epub-resume-modal" onClick={(e) => e.stopPropagation()}>
                         <div className="epub-resume-body">
                             <div className="epub-resume-cover-wrap">
-                                {resumeBook.epub?.path && coversByPath[resumeBook.epub.path] ? (
+                                {resumeCover ? (
                                     <img
-                                        src={coversByPath[resumeBook.epub.path]!}
+                                        src={resumeCover}
                                         alt={resumeBook.epub?.title || resumeBook.name}
                                         className="epub-resume-cover"
                                     />

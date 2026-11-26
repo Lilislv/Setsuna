@@ -22,7 +22,7 @@ const LOOKUP_INDEXES: [&str; 8] = [
 
 /// True when the database already has the current schema, so opening it for a
 /// lookup needs no writes at all.
-fn schema_is_current(conn: &Connection) -> bool {
+pub fn schema_is_current(conn: &Connection) -> bool {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap_or(0);
     if version != DICTIONARY_SCHEMA_VERSION {
         return false;
@@ -110,6 +110,18 @@ pub fn ensure_canonical_schema(conn: &mut Connection) -> Result<LegacyMigrationR
     if import_active() || schema_is_current(conn) {
         return Ok(LegacyMigrationReport::default());
     }
+    apply_canonical_schema(conn, &mut |_| {})
+}
+
+/// Brings the database to the current schema and builds any missing lookup index.
+/// `progress` gets 0..=100. On a multi-GB database left without indexes (app closed
+/// while an import was building them) this takes minutes, so the app runs it once at
+/// startup with a visible progress pill (`repair_dictionary_database`).
+pub fn apply_canonical_schema(
+    conn: &mut Connection,
+    progress: &mut dyn FnMut(f64),
+) -> Result<LegacyMigrationReport, String> {
+    progress(0.0);
     conn.execute_batch(CANONICAL_SCHEMA)
         .map_err(|error| format!("Failed to prepare dictionary database: {error}"))?;
 
@@ -120,11 +132,27 @@ pub fn ensure_canonical_schema(conn: &mut Connection) -> Result<LegacyMigrationR
         }
     }
     let report = migrate_legacy_mobile_dictionary(conn)?;
-    rebuild_indexes(conn)?;
+    progress(5.0);
+    for (done, (name, table, column)) in LOOKUP_INDEX_DEFS.iter().enumerate() {
+        conn.execute_batch(&format!("CREATE INDEX IF NOT EXISTS {name} ON {table}({column});"))
+            .map_err(|error| format!("Failed to build dictionary indexes: {error}"))?;
+        progress(5.0 + 95.0 * (done + 1) as f64 / LOOKUP_INDEX_DEFS.len() as f64);
+    }
     conn.pragma_update(None, "user_version", DICTIONARY_SCHEMA_VERSION)
         .map_err(|error| format!("Failed to set dictionary schema version: {error}"))?;
     Ok(report)
 }
+
+const LOOKUP_INDEX_DEFS: [(&str, &str, &str); 8] = [
+    ("idx_term", "entries", "term"),
+    ("idx_reading", "entries", "reading"),
+    ("idx_freq_term", "frequencies", "term"),
+    ("idx_freq_reading", "frequencies", "reading"),
+    ("idx_pitch_term", "pitches", "term"),
+    ("idx_pitch_reading", "pitches", "reading"),
+    ("idx_pron_term", "pronunciations", "term"),
+    ("idx_pron_reading", "pronunciations", "reading"),
+];
 
 pub fn rebuild_indexes(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(

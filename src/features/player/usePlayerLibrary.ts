@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { isMobilePlatform } from "../../utils/platform";
 import { libraryKey, naturalOrder, type LibraryFolder } from "./libraryModel";
 
 type Scan = { folder: LibraryFolder } | { error: string };
@@ -21,6 +22,7 @@ export function usePlayerLibrary() {
     const [pending, setPending] = useState(false);
 
     useEffect(() => {
+        if (isMobilePlatform()) return;
         let cancelled = false;
         setResults({});
         try {
@@ -67,6 +69,7 @@ export function usePlayerLibrary() {
         refresh: () => setRevision((value) => value + 1),
         chooseFolder: () =>
             changeRoots(async () => {
+                if (isMobilePlatform()) return;
                 const path = await open({ directory: true, recursive: false, multiple: false });
                 if (typeof path !== "string") return;
                 setRoots((roots) => (roots.includes(path) ? roots : [...roots, path]));
@@ -75,7 +78,9 @@ export function usePlayerLibrary() {
             }),
         removeFolder: (path: string) =>
             changeRoots(async () => {
-                await invoke("player_forget_library_folder", { path });
+                if (!isMobilePlatform()) {
+                    await invoke("player_forget_library_folder", { path });
+                }
                 setRoots((roots) => roots.filter((root) => root !== path));
             }),
     };

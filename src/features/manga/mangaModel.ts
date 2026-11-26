@@ -48,6 +48,18 @@ export interface MangaMokuroStatus {
 
 export type MangaSpreadMode = "single" | "spread" | "webtoon";
 export type MangaFitMode = "height" | "width" | "original";
+
+export function fitMangaPage(
+    width: number, height: number, viewportWidth: number, viewportHeight: number,
+    mode: MangaFitMode, twoUp: boolean, zoom: number,
+): { width: number; height: number } {
+    // The viewport's content box excludes padding. Adjacent pages share an 8px gap.
+    const available = Math.max(1, twoUp ? (viewportWidth - 8) / 2 : viewportWidth);
+    let scale = 1;
+    if (mode === "width") scale = Math.min(available, twoUp ? 560 : 920) / width;
+    if (mode === "height") scale = Math.min(available / width, Math.max(1, viewportHeight) / height);
+    return { width: width * scale * zoom, height: height * scale * zoom };
+}
 export type MangaOverlayMode = "hover" | "outline" | "readable";
 export type MangaCropMode = "bubble" | "full";
 export type MangaBgTheme = "dark" | "black" | "gray" | "paper";
@@ -162,6 +174,69 @@ export function prepareBubbleDisplayLines(lines: string[]): BubbleDisplayLine[] 
         const appendSpace = Boolean(next && !CJK_RE.test(curLast) && !CJK_RE.test(nextFirst));
         out.push({ text: cur, offset, appendSpace });
         offset += Array.from(cur).length + (appendSpace ? 1 : 0);
+    }
+    return out;
+}
+
+export interface PlacedBubbleLine extends BubbleDisplayLine {
+    /** Line box relative to the block box, in percent of the block box size. */
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    /** Font size in source-image pixels. */
+    fontPx: number;
+}
+
+/**
+ * Place every OCR line exactly where Mokuro found it (`linesCoords`), so the overlay
+ * columns sit on top of the printed text instead of being re-flowed and centred in
+ * the block box. Returns null when the coordinates do not match the lines (old
+ * files, edited text with a different line count, manual crop OCR).
+ */
+export function placeBubbleLines(
+    block: Pick<MokuroBlock, "box" | "vertical" | "lines" | "linesCoords">,
+): PlacedBubbleLine[] | null {
+    const raw = block.lines || [];
+    const coords = block.linesCoords;
+    if (!coords || coords.length !== raw.length || raw.length === 0) return null;
+    const display = prepareBubbleDisplayLines(raw);
+    const rawIndices = raw
+        .map((line, idx) => (line.replace(/\r?\n/g, "").trim() ? idx : -1))
+        .filter((idx) => idx >= 0);
+    if (rawIndices.length !== display.length || display.length === 0) return null;
+    const [bx1, by1, bx2, by2] = block.box;
+    const bw = Math.max(1, bx2 - bx1);
+    const bh = Math.max(1, by2 - by1);
+    const out: PlacedBubbleLine[] = [];
+    for (let i = 0; i < display.length; i += 1) {
+        const poly = coords[rawIndices[i]];
+        if (!Array.isArray(poly)) return null;
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (const pt of poly) {
+            if (!Array.isArray(pt) || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
+            minX = Math.min(minX, pt[0]);
+            maxX = Math.max(maxX, pt[0]);
+            minY = Math.min(minY, pt[1]);
+            maxY = Math.max(maxY, pt[1]);
+        }
+        const w = maxX - minX;
+        const h = maxY - minY;
+        if (!(w > 0) || !(h > 0)) return null;
+        const chars = Math.max(1, Array.from(display[i].text).length);
+        const along = block.vertical ? h : w;
+        const across = block.vertical ? w : h;
+        out.push({
+            ...display[i],
+            left: ((minX - bx1) / bw) * 100,
+            top: ((minY - by1) / bh) * 100,
+            width: (w / bw) * 100,
+            height: (h / bh) * 100,
+            fontPx: Math.max(4, Math.min(across * 0.92, along / chars)),
+        });
     }
     return out;
 }

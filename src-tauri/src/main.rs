@@ -82,6 +82,7 @@ mod epub_import;
 mod manga_import;
 mod manga_catalog;
 mod manga_ocr_server;
+mod mokuro_setup;
 #[cfg(target_os = "windows")]
 mod global_lookup;
 #[cfg(target_os = "linux")]
@@ -97,7 +98,7 @@ mod local_audio;
 mod player_library;
 mod player_media;
 mod player_posters;
-use dictionary_import::{import_dictionaries, import_dictionary};
+use dictionary_import::{import_dictionaries, import_dictionary, repair_dictionary_database};
 use epub_import::{epub_chapter, epub_cover, epub_drive_download, epub_drive_upload, epub_gallery, epub_open, epub_prune, epub_read_binary, epub_scan_folder, epub_search, epub_store, import_epub};
 use japanese_tokenizer::segment_text as segment_japanese_text;
 use lookup_normalization::{japanese_lookup_variants, katakana_to_hiragana};
@@ -6067,6 +6068,7 @@ fn main() {
             local_audio::lookup_online_audio,
             import_dictionary,
             import_dictionaries,
+            repair_dictionary_database,
             import_epub,
             epub_store,
             epub_prune,
@@ -6094,6 +6096,7 @@ fn main() {
             manga_import::manga_scan_folder,
             manga_import::manga_extract_archive,
             manga_import::manga_mokuro_status,
+            mokuro_setup::manga_install_mokuro,
             manga_import::manga_run_mokuro,
             manga_import::manga_export_mobile_cbz,
             manga_import::manga_convert_to_cbz,
@@ -6103,6 +6106,9 @@ fn main() {
             manga_ocr_server::manga_ocr_local_recognize,
             manga_ocr_server::manga_ocr_remote_health,
             manga_ocr_server::manga_ocr_remote_recognize,
+            manga_ocr_server::manga_ocr_set_remote_mokuro_state,
+            manga_ocr_server::manga_ocr_remote_mokuro_request,
+            manga_ocr_server::manga_ocr_remote_mokuro_status,
             get_diagnostics_log_path,
             log_frontend_diagnostics,
             dictionary_engine::lookup_word,

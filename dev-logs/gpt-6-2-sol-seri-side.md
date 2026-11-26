@@ -1,5 +1,12 @@
 # Work Log — `gpt-6-2-sol` (`seri` side)
 
+## 2026-11-25 — Gemini Android hotfix handoff (local)
+
+- Synced dev at e0a1244 and reviewed the Gemini 4 Neon Seri hotfix tracker. Retained the Android platform version override 0.6.0-beta. Work stays local.
+- Player on Android uses a persistent file input and a short-lived Blob URL, plus independent file pickers for original and translated subtitles. Reopening the same file uses its name, size and modification date in setsuna.player.positions to restore the viewing position. Direct HTTPS playback and desktop cinema controls stay shared. Android Anki cards send text via AnkiDroid. FFmpeg clips remain desktop-only. Desktop Anki 25.9.4 on Windows decoded WebM VP9/Opus inside a disposable card, including audio, and Check Media accepted the attachment. Default padding is 0.5 s before and after a cue.
+- EPUB selection in App.tsx now invalidates pending cloud opens when a different selection wins or the reader closes. The desktop remote Mokuro host is mounted once from App.tsx and resolves paths through the PC library.
+- Verification and remaining steps are being recorded here as the checks finish. No phone was connected to ADB at the start.
+
 ## 2026-11-24 — Poster library and themed playback controls
 
 - Baseline `4576f61` includes the video poster grid and `player_search_posters`. Titles are inferred from folder and release filenames. Poster choices persist in `setsuna.player.posters`. AniList, Jikan, TVmaze and Commons use keyless search. TMDB uses an optional session token or `SETSUNA_TMDB_TOKEN`.

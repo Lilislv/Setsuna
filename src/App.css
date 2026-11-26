@@ -2009,6 +2009,10 @@ body {
     gap: 8px;
     font-family: var(--font-stack);
     letter-spacing: normal;
+    /* Own compositing layer, no backdrop blur: nested blur layers (settings overlay)
+       made WebView2 drop and re-show the pill while content scrolled. */
+    isolation: isolate;
+    will-change: transform;
     animation: importPillIn 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .import-pill {
@@ -2018,8 +2022,7 @@ body {
     padding: 4px 12px 4px 4px;
     border: 1px solid var(--line, var(--border-main));
     border-radius: 999px;
-    background: var(--surface-glass, var(--bg-panel));
-    backdrop-filter: blur(14px);
+    background: var(--bg-panel);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
     color: var(--text-main);
     font: inherit;
@@ -2048,8 +2051,7 @@ body {
     padding: 14px 14px 12px;
     border: 1px solid var(--line, var(--border-main));
     border-radius: 14px;
-    background: var(--surface-glass, var(--bg-panel));
-    backdrop-filter: blur(16px);
+    background: var(--bg-panel);
     box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
     color: var(--text-main);
     font-size: 12.5px;

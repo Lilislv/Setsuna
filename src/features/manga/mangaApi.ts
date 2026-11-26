@@ -58,6 +58,16 @@ export const checkMokuroStatus = async (): Promise<MangaMokuroStatus> => {
     return invoke<MangaMokuroStatus>("manga_mokuro_status");
 };
 
+export interface MokuroInstallProgress {
+    stage: "python" | "pip" | "torch" | "mokuro" | "done" | string;
+    line: string;
+}
+
+/** Installs Python (if needed), PyTorch and mokuro on Windows; progress via `manga_mokuro_install`. */
+export const installMokuro = async (): Promise<void> => {
+    await invoke("manga_install_mokuro");
+};
+
 export const runMokuroOnVolume = async (path: string): Promise<MangaMeta> => {
     return invoke<MangaMeta>("manga_run_mokuro", { path });
 };
@@ -146,6 +156,45 @@ export const recognizeMangaCropRemote = async (
     imageBase64: string,
 ): Promise<MangaOcrResult> => {
     return invoke<MangaOcrResult>("manga_ocr_remote_recognize", { url, token, imageBase64 });
+};
+
+export interface RemoteMokuroJobState {
+    jobId: number;
+    state: "idle" | "queued" | "running" | "converting" | "done" | "error";
+    title: string;
+    bookKey?: string | null;
+    message?: string | null;
+    error?: string | null;
+    current?: number | null;
+    total?: number | null;
+    updatedAt?: number;
+}
+
+export const setRemoteMokuroState = async (state: RemoteMokuroJobState): Promise<void> => {
+    return invoke<void>("manga_ocr_set_remote_mokuro_state", { state });
+};
+
+export const requestRemotePcMokuro = async (
+    url: string,
+    token: string | undefined,
+    title: string,
+    bookKey?: string | null,
+    autoConvertCbz = true,
+): Promise<RemoteMokuroJobState> => {
+    return invoke<RemoteMokuroJobState>("manga_ocr_remote_mokuro_request", {
+        url,
+        token,
+        title,
+        bookKey: bookKey || null,
+        autoConvertCbz,
+    });
+};
+
+export const fetchRemotePcMokuroStatus = async (
+    url: string,
+    token: string | undefined,
+): Promise<RemoteMokuroJobState> => {
+    return invoke<RemoteMokuroJobState>("manga_ocr_remote_mokuro_status", { url, token });
 };
 
 export interface MangaCatalogCandidate {

@@ -31,3 +31,15 @@ test('release, leaving text and unmount invalidate both active and queued lookup
         queue.dispose();
     }
 });
+test('a stalled lookup does not block the next ones', async () => {
+    const shown = [];
+    const queue = createHoverScanQueue((a, b) => a === b, async (cursor, current) => {
+        if (cursor === 0) await new Promise(() => {});
+        if (current()) shown.push(cursor);
+    }, 20);
+    queue.request(0); queue.request(1);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.deepEqual(shown, [1]);
+    queue.request(2); await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(shown, [1, 2]); queue.dispose();
+});

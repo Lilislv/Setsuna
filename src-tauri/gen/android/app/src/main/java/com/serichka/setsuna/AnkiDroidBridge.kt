@@ -114,6 +114,26 @@ class AnkiDroidBridge(private val activity: Activity) {
             }
         }
 
+        // Player scene recorded on the phone (video or audio clip of the subtitle line).
+        val clipField = note.optString("clipField", "")
+        val clipBase64 = note.optString("clipBase64", "")
+        if (clipField.isNotBlank() && clipBase64.isNotBlank()) {
+            val index = model.fields.indexOf(clipField)
+            if (index >= 0) {
+                val filename = note.optString("clipFilename", "")
+                require(filename.matches(Regex("setsuna_clip_[a-f0-9]+\\.(webm|mp4|m4a|ogg)"))) { "Invalid clip filename" }
+                require(clipBase64.length <= 48 * 1024 * 1024) { "Clip is too large" }
+                val mediaName = storeBase64Media(clipBase64, filename)
+                val media = if (note.optString("clipKind") == "video") {
+                    val src = mediaName.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+                    """<video src="$src" controls playsinline preload="metadata" style="display:block;width:640px;max-width:100%;height:auto;margin:0 auto"></video>"""
+                } else {
+                    "[sound:$mediaName]"
+                }
+                fields[index] = listOf(fields[index], media).filter { it.isNotBlank() }.joinToString(" ")
+            }
+        }
+
         val values = ContentValues().apply {
             put(NOTE_MID, model.id)
             put(NOTE_FLDS, joinFields(fields))

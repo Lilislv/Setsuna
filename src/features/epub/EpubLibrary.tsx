@@ -33,6 +33,7 @@ import { isMangaTabData, type MangaMeta } from "../manga/mangaModel";
 import type { MangaExportResult } from "../manga/mangaApi";
 import CatalogPickerModal from "../manga/CatalogPickerModal";
 import MangaBatchMokuroModal from "../manga/MangaBatchMokuroModal";
+import RemoteMokuroControls from "../manga/RemoteMokuroControls";
 import { compactCoverDataUrl } from "./epubCoverCache";
 import { MOBILE_BACK_PRIORITY, useMobileBackHandler } from "../../utils/mobileBack";
 
@@ -631,7 +632,8 @@ export default function EpubLibrary({
         const series = resolveBookSeries(book, activeBooks);
         const tags = book.epub?.tags || [];
         const status = resolveBookStatus(book);
-        const coverSrc = (book.epub?.path ? coversByPath[book.epub.path] : null) || book.epub?.coverThumb || null;
+        const localCover = book.epub?.path ? coversByPath[book.epub.path] : null;
+        const coverSrc = book.epub?.cloudOnly ? book.epub.coverThumb || localCover : localCover || book.epub?.coverThumb;
         const isSelected = selectedIds.has(book.id);
         const isCoverBlurred = Boolean(book.epub?.coverBlurred);
         const isCloudOnly = Boolean(book.epub?.cloudOnly);
@@ -1824,6 +1826,9 @@ export default function EpubLibrary({
                             <span>{isEn ? "Open" : "Открыть"}</span>
                         </button>
 
+                        {isMobile && isMangaTabData(book.epub) && (
+                            <RemoteMokuroControls key={book.id} title={bookTitle} isEn={isEn} />
+                        )}
                         {hasMangaTools && (
                             <>
                                 <div className="epub-ctx-divider" />

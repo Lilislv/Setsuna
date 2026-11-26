@@ -260,7 +260,7 @@ const parseGoogleJson = async (res: Response, context: string) => {
     }
     if (!res.ok || data.error) {
         const details = data.error_description || data.error?.message || data.error || data.raw || `${res.status}`;
-        throw new Error(`${context}: ${details}`);
+        throw Object.assign(new Error(`${context}: ${details}`), { status: res.status });
     }
     return data;
 };
@@ -529,26 +529,58 @@ export async function createAppDataFileMetadata(
     return data.id as string;
 }
 
+let appDataCache: { token: string; ids: Map<string, string> } | undefined;
+
+async function withAppDataFile(
+    accessToken: string,
+    name: string,
+    createIfMissing: boolean,
+    request: (fileId: string) => Promise<Response>,
+) {
+    if (appDataCache?.token !== accessToken) {
+        appDataCache = { token: accessToken, ids: new Map() };
+    }
+    const ids = appDataCache.ids;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        let fileId: string | undefined = ids.get(name) ?? (await getAppDataFile(accessToken, name))?.id;
+        if (!fileId) {
+            if (!createIfMissing) return null;
+            fileId = await createAppDataFileMetadata(accessToken, name);
+        }
+        ids.set(name, fileId);
+        const response = await request(fileId);
+        if (response.status !== 404) return { fileId, response };
+        ids.delete(name);
+    }
+    if (createIfMissing) throw new Error(`${name} upload failed: file not found`);
+    return null;
+}
+
 export async function uploadAppDataFile(accessToken: string, name: string, body: string, contentType = 'application/json') {
-    let fileId = (await getAppDataFile(accessToken, name))?.id;
-    if (!fileId) fileId = await createAppDataFileMetadata(accessToken, name);
-    const uploadRes = await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': contentType },
-        body,
-    });
-    await parseGoogleJson(uploadRes, `${name} upload failed`);
-    return fileId;
+    const result = await withAppDataFile(accessToken, name, true, (id) =>
+        driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(id)}?uploadType=media`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': contentType },
+            body,
+        }),
+    );
+    if (!result) throw new Error(`${name} upload failed: file not found`);
+    await parseGoogleJson(result.response, `${name} upload failed`);
+    return result.fileId;
 }
 
 export async function downloadAppDataFileText(accessToken: string, name: string) {
-    const file = await getAppDataFile(accessToken, name);
-    if (!file?.id) return null;
-    const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`${name} download failed: ${await res.text().catch(() => '') || res.status}`);
+    const result = await withAppDataFile(accessToken, name, false, (id) =>
+        driveFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+    );
+    if (!result) return null;
+    const res = result.response;
+    if (!res.ok) {
+        const details = await res.text().catch(() => '');
+        throw Object.assign(new Error(`${name} download failed: ${details || res.status}`), { status: res.status });
+    }
     return res.text();
 }
 

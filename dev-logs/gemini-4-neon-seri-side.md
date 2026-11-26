@@ -5,6 +5,33 @@
 
 ---
 
+## 2026-11-25 — Mobile `0.6.0-beta` Hotfix Tracker (Live Handoff Log for Claude / Next Agent)
+
+> **Purpose:** Tracks fixes for the 5 bugs + 2 enhancements reported right after `v0.6.0` on Android. Any agent continuing this work should read the checklists below first.
+
+### Checklist & Status
+1. **[IN PROGRESS] Bug #1 — APK installs as `0.1.0-alpha` (`src-tauri/tauri.android.conf.json`)**
+   - Root cause: `tauri.android.conf.json` still had `"version": "0.1.0-alpha"` which overrides `tauri.conf.json` when Tauri CLI runs `android build` and regenerates `src-tauri/gen/android/app/tauri.properties` (`tauri.android.versionName`).
+   - Fix: Set `"version": "0.6.0-beta"` in `src-tauri/tauri.android.conf.json`.
+2. **[TODO] Bug #5 — Manga OCR bubbles shifted/misaligned on phone (`src/features/manga/MangaReader.tsx`, `src/features/manga/manga.css`)**
+   - Root cause: `.manga-page-frame.fit-height` used `height: calc(100vh - 24px); max-width: 100%;` which overrode `aspect-ratio` on narrow portrait phone viewports while `.manga-page-img` used `object-fit: contain`. That created black letterbox bars above/below the image, causing `.manga-overlay-layer` (`inset: 0`) to shift upward above the rendered manga page.
+   - Plan: Measure `viewportRef` with `ResizeObserver` (`stageSize`), read `naturalWidth`/`naturalHeight` on `<img onLoad>` fallback, compute exact aspect-locked `width` & `height` inline on `.manga-page-frame`, and change `.manga-page-img` to `object-fit: fill`.
+3. **[TODO] Bug #4 & Enhancement A — Clicking cloud book opens last-read book + missing synced covers (`EpubWorkspace.tsx`, `EpubLibrary.tsx`, `useEpubSync.ts`, `epubCoverCache.ts`, `App.tsx`, `AppLayout.tsx`)**
+   - Root cause A (wrong book opens): `EpubWorkspace.handleSelectBook` immediately ran `setViewMode("reader")` on click before `epubSync.downloadCloudBook(target)` finished, so while downloading, `activeBookTab` stayed on the previously active book and opened THAT book instead!
+   - Root cause B (no covers on synced books): Books imported on PC earlier or before `coverThumb` existed didn't backfill `coverThumb` into `epub-sync.json`, so Android saw `cloudOnly: true` books without thumbnails.
+   - Plan: Keep `viewMode === "library"` while `cloudOnly` downloads (`pendingCloudOpenIdRef`), open reader only once `target` becomes local; backfill compressed `coverThumb` in `useEpubSync` from cache/covers before manifest upload.
+4. **[TODO] Bug #2 — Slow EPUB/Manga Google Drive sync on PC & Android (`src/utils/gdrive.ts`, `src/features/epub/useEpubSync.ts`)**
+   - Root cause: `useEpubSync` cleared `cachedToken` on every workspace entry, `gdrive.ts` listed all AppData files on pull & push, and `syncNow()` awaited up to 2 full `.epub`/`.cbz` file uploads BEFORE updating `lastSyncedAt`/`status = "synced"`.
+   - Plan: Cache `appData` file IDs in `gdrive.ts`, keep valid OAuth token, complete manifest metadata sync (`epub-sync.json`) immediately, and move `.epub`/`.cbz` binary uploads to a non-blocking background queue (`failedUploadKeysRef` prevents repeated retries of broken/oversized files).
+5. **[TODO] Bug #3 — Video Player doesn't open on Android (`featureFlags.ts`, `usePlayerLibrary.ts`, `PlayerWorkspace.tsx`, `App.tsx`)**
+   - Root cause: `ANIME_PLAYER_AVAILABLE = !isMobilePlatform()` hid the Video Player tile completely on phone, and `usePlayerLibrary` / `PlayerWorkspace` called desktop-only `player_*` Tauri commands.
+   - Plan: Enable `ANIME_PLAYER_AVAILABLE = true`, guard desktop-only `player_*` Rust commands on mobile, support HTML5 `<input type="file">` video/audio + subtitle files + URL playback + word lookup on Android.
+6. **[TODO] Enhancement B — Remote Mokuro request from Phone to PC (`src-tauri/src/manga_ocr_server.rs`, `main.rs`, `lib.rs`, `App.tsx`, `MangaReader.tsx`, `EpubLibrary.tsx`)**
+   - Plan: Add `POST /mokuro/request` and `GET /mokuro/status` on the existing PC LAN OCR HTTP server + Tauri commands so phone triggers Mokuro OCR + optional CBZ convert + Drive sync on PC over Wi-Fi.
+7. **[PENDING] Android APK Rebuild & GitHub Upload:** After verifying all fixes (`npm run build`, `verify-public-build.mjs`, `node --test`, `cargo check`), rebuild `app-universal-release.apk` with `--target aarch64` so the installed Android app displays `0.6.0-beta` and includes all fixes.
+
+---
+
 ## 2026-11-25 — Release `0.6.0 beta` Preparation (Pushed to `dev` & `main` + `v0.6.0`)
 
 - **UI status labels across Desktop & Mobile (`HomeScreen.tsx`, `HomeScreen.css`, `EpubLibrary.tsx`, `epub.css`, `PlayerLibrary.tsx`, `library.css`, `SettingsModal.tsx`, `SettingsAI.tsx`, `AiPanel.tsx`, `AiPanel.css`, `SettingsLookup.tsx`, `AppLayout.tsx`, `appRuntime.ts`):**

@@ -12,6 +12,7 @@ mod epub_import;
 mod manga_import;
 mod manga_catalog;
 mod manga_ocr_server;
+mod mokuro_setup;
 mod lookup_normalization;
 mod japanese_deinflector;
 mod local_audio;
@@ -1216,6 +1217,7 @@ pub fn run() {
             local_audio::lookup_online_audio,
             dictionary_import::import_dictionary,
             dictionary_import::import_dictionaries,
+            dictionary_import::repair_dictionary_database,
             dictionary_engine::get_installed_dicts,
             dictionary_engine::clear_database,
             dictionary_engine::delete_dictionaries,
@@ -1278,6 +1280,7 @@ pub fn run() {
             manga_import::manga_scan_folder,
             manga_import::manga_extract_archive,
             manga_import::manga_mokuro_status,
+            mokuro_setup::manga_install_mokuro,
             manga_import::manga_run_mokuro,
             manga_import::manga_export_mobile_cbz,
             manga_import::manga_convert_to_cbz,
@@ -1290,6 +1293,9 @@ pub fn run() {
             manga_ocr_server::manga_ocr_local_recognize,
             manga_ocr_server::manga_ocr_remote_health,
             manga_ocr_server::manga_ocr_remote_recognize,
+            manga_ocr_server::manga_ocr_set_remote_mokuro_state,
+            manga_ocr_server::manga_ocr_remote_mokuro_request,
+            manga_ocr_server::manga_ocr_remote_mokuro_status,
             save_workspace_state,
             load_workspace_state,
             stop_capture_agent_server,

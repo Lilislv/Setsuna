@@ -14,6 +14,7 @@ import {
     extractVolumeNumberFromBook,
     extractVolumeNumberFromText,
     findSpreadIndexForPage,
+    fitMangaPage,
     formatVolumeTitleWithSeries,
     inferBookCatalogQuery,
     isMangaFileExtension,
@@ -21,9 +22,37 @@ import {
     joinMokuroLines,
     needsMangaTitleCleanup,
     normalizeOcrServerUrl,
+    placeBubbleLines,
     prepareBubbleDisplayLines,
     resolveMobileOcrChain,
 } from "../src/features/manga/mangaModel.ts";
+
+test("placeBubbleLines puts each OCR column where Mokuro found it", () => {
+    const block = {
+        box: [200, 100, 330, 300],
+        vertical: true,
+        fontSize: 30,
+        lines: ["フォス！", "", "いるんだろ！"],
+        linesCoords: [
+            [[290, 100], [330, 100], [330, 220], [290, 220]],
+            [[0, 0], [0, 0], [0, 0], [0, 0]],
+            [[200, 180], [236, 180], [236, 300], [200, 300]],
+        ],
+    };
+    const placed = placeBubbleLines(block);
+    assert.equal(placed.length, 2);
+    assert.deepEqual(
+        placed.map(({ text, offset, left, top, width, height }) => ({ text, offset, left, top, width, height })),
+        [
+            { text: "フォス！", offset: 0, left: (90 / 130) * 100, top: 0, width: (40 / 130) * 100, height: 60 },
+            { text: "いるんだろ！", offset: 4, left: 0, top: 40, width: (36 / 130) * 100, height: 60 },
+        ],
+    );
+    assert.equal(placed[0].fontPx, 30);
+    assert.equal(placed[1].fontPx, 20);
+    assert.equal(placeBubbleLines({ ...block, linesCoords: undefined }), null);
+    assert.equal(placeBubbleLines({ ...block, lines: ["明日は雨"] }), null);
+});
 
 test("joinMokuroLines joins Japanese lines without spaces and English lines with spaces", () => {
     assert.equal(joinMokuroLines(["お前", "何してるんだ！？"]), "お前何してるんだ！？");
@@ -49,6 +78,13 @@ test("computeBubbleCropRect expands around bubble and clamps to page bounds", ()
     const centerRect = computeBubbleCropRect([460, 600, 540, 800], 1000, 1400);
     assert.ok(centerRect.x > 0 && centerRect.x + centerRect.width <= 1000);
     assert.ok(centerRect.y > 0 && centerRect.y + centerRect.height <= 1400);
+});
+
+test("manga page frame preserves OCR coordinates on portrait, landscape, spread and zoom", () => {
+    assert.deepEqual(fitMangaPage(1000, 1500, 360, 700, "height", false, 1), { width: 360, height: 540 });
+    assert.deepEqual(fitMangaPage(1000, 1500, 700, 360, "height", false, 1), { width: 240, height: 360 });
+    assert.deepEqual(fitMangaPage(1000, 1500, 608, 700, "width", true, 2), { width: 600, height: 900 });
+    assert.deepEqual(fitMangaPage(1000, 1500, 360, 700, "original", false, 1), { width: 1000, height: 1500 });
 });
 
 test("countMangaBlocksChars and applyBlockTextOverrides handle edits cleanly", () => {

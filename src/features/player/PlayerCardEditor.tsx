@@ -7,11 +7,13 @@ export type SceneDraft = { word: string; sentence: string; meaning: string; scen
 export function PlayerCardEditor({
     draft,
     en,
+    textOnly = false,
     onClose,
     onSave,
 }: {
     draft: SceneDraft;
     en: boolean;
+    textOnly?: boolean;
     onClose: () => void;
     onSave: (draft: SceneDraft) => Promise<string | undefined>;
 }) {
@@ -70,28 +72,30 @@ export function PlayerCardEditor({
                         onChange={(e) => setValue({ ...value, meaning: e.target.value })}
                     />
                 </label>
-                <div className="sp-interval">
-                    {(["start", "end"] as const).map((key, i) => (
-                        <label key={key}>
-                            {(en ? ["Clip start", "Clip end"] : ["Начало клипа", "Конец клипа"])[i]} ·{" "}
-                            {formatClock(value.scene[key])}
-                            <input
-                                required
-                                type="number"
-                                min={0}
-                                max={value.scene.duration}
-                                step="any"
-                                value={value.scene[key]}
-                                onChange={(e) =>
-                                    setValue({
-                                        ...value,
-                                        scene: { ...value.scene, [key]: Number(e.target.value) },
-                                    })
-                                }
-                            />
-                        </label>
-                    ))}
-                </div>
+                {!textOnly && (
+                    <div className="sp-interval">
+                        {(["start", "end"] as const).map((key, i) => (
+                            <label key={key}>
+                                {(en ? ["Clip start", "Clip end"] : ["Начало клипа", "Конец клипа"])[i]} ·{" "}
+                                {formatClock(value.scene[key])}
+                                <input
+                                    required
+                                    type="number"
+                                    min={0}
+                                    max={value.scene.duration}
+                                    step="any"
+                                    value={value.scene[key]}
+                                    onChange={(e) =>
+                                        setValue({
+                                            ...value,
+                                            scene: { ...value.scene, [key]: Number(e.target.value) },
+                                        })
+                                    }
+                                />
+                            </label>
+                        ))}
+                    </div>
+                )}
                 {error && <output role="alert">{error}</output>}
                 <footer>
                     <button type="button" disabled={saving} onClick={onClose}>

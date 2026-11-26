@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { isMobilePlatform } from "../../utils/platform";
 
 function release(token: string) {
+    if (isMobilePlatform()) return Promise.resolve();
     return invoke("release_player_video", { token }).catch(console.warn);
 }
 
@@ -26,7 +28,7 @@ export function useCompatibleVideo(source: string, report: (message: string) => 
         [source],
     );
     const prepare = async () => {
-        if (active.current) return;
+        if (active.current || isMobilePlatform()) return;
         const token = crypto.randomUUID();
         active.current = token;
         setBusy(true);

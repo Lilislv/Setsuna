@@ -22,21 +22,32 @@ export default function DeckPicker({ open, tabName, current, defaultDeck, en, on
     const [error, setError] = useState(false);
     const [query, setQuery] = useState("");
     const searchRef = useRef<HTMLInputElement>(null);
+    // Callers pass inline callbacks, and the reader re-renders every second while its
+    // timer runs. Depending on them reset the list to "Loading…" and cleared the search
+    // each tick, so the row under the cursor changed between press and release and a
+    // neighbouring deck was bound to the tab.
+    const onCloseRef = useRef(onClose);
+    const loadDecksRef = useRef(loadDecks);
+    onCloseRef.current = onClose;
+    loadDecksRef.current = loadDecks;
 
     useEffect(() => {
         if (!open) return;
         setQuery("");
         setError(false);
         setDecks(null);
-        loadDecks()
-            .then((list) => setDecks(Array.isArray(list) ? list : []))
-            .catch(() => { setError(true); setDecks([]); });
+        let alive = true;
+        loadDecksRef.current()
+            .then((list) => { if (alive) setDecks(Array.isArray(list) ? list : []); })
+            .catch(() => { if (alive) { setError(true); setDecks([]); } });
         requestAnimationFrame(() => searchRef.current?.focus());
-        const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+        const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onCloseRef.current(); };
         window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, onClose]);
+        return () => {
+            alive = false;
+            window.removeEventListener("keydown", onKey);
+        };
+    }, [open]);
 
     const filtered = useMemo(() => {
         const q = query.trim().toLowerCase();
